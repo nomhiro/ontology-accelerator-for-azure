@@ -18,6 +18,11 @@ apps/*/dist/
 *.tsbuildinfo
 .pnpm-store/
 
+# ---- 生成物 ----
+# just gen-api が FastAPI から書き出す。派生物なのでコミットしない。
+/openapi.json
+apps/web/src/api/schema.ts
+
 # ---- azd / Azure ----
 .azure/
 *.azd.env

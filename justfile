@@ -86,8 +86,12 @@ dev-web:
 # ---------------------------------------------------------------------------
 
 # FastAPI の OpenAPI から Web 用の TypeScript 型を生成する
+#
+# ファイルの書き出しはシェルのリダイレクトに任せず Python 側で行う。
+# PowerShell の `>` は UTF-16LE で書き出すため、Node (openapi-typescript) が
+# 解釈できない JSON ができてしまう。
 gen-api:
-    uv run python -c "import json; from ontology_api.main import app; print(json.dumps(app.openapi(), ensure_ascii=False, indent=2))" > openapi.json
+    uv run python -c "import json, pathlib; from ontology_api.main import app; pathlib.Path('openapi.json').write_text(json.dumps(app.openapi(), ensure_ascii=False, indent=2), encoding='utf-8')"
     pnpm --filter @ontology-accelerator/web gen:api
 
 # ---------------------------------------------------------------------------
