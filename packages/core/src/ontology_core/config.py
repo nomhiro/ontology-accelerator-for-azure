@@ -85,6 +85,18 @@ class Settings(BaseSettings):
     mcp_read_only: bool = Field(default=True, alias="MCP_READ_ONLY")
     core_api_url: str = Field(default="http://localhost:8000", alias="CORE_API_URL")
 
+    # MCP の Streamable HTTP トランスポートが受け付ける Host ヘッダ(カンマ区切り)。
+    # SDK は DNS リバインディング対策として Host を検証し、既定では 127.0.0.1 しか
+    # 許可しない。Container Apps の FQDN でアクセスすると 421 Invalid Host header に
+    # なるため、デプロイ時は Bicep が自身の FQDN を設定する。
+    # 空のときは検証を無効化する(ローカル開発とポートフォワード経由の利用のため)。
+    mcp_allowed_hosts: str = Field(default="", alias="MCP_ALLOWED_HOSTS")
+
+    @property
+    def mcp_allowed_host_list(self) -> list[str]:
+        """`MCP_ALLOWED_HOSTS` を分割して返す。"""
+        return [host.strip() for host in self.mcp_allowed_hosts.split(",") if host.strip()]
+
     @property
     def postgres_dsn(self) -> str:
         """SQLAlchemy 用の DSN。

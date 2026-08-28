@@ -265,6 +265,7 @@ module mcp './modules/mcp-server.bicep' = {
     location: location
     tags: tags
     containerAppsEnvironmentId: containerAppsEnvironment.outputs.id
+    containerAppsEnvironmentDefaultDomain: containerAppsEnvironment.outputs.defaultDomain
     containerRegistryLoginServer: shared.outputs.containerRegistryLoginServer
     identityId: shared.outputs.identityId
     identityClientId: shared.outputs.identityClientId

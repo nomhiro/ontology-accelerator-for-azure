@@ -5,6 +5,9 @@
 @description('MCP Server コンテナアプリの名前。')
 param name string
 
+@description('Container Apps 環境の既定ドメイン。自身の FQDN を組み立てて MCP_ALLOWED_HOSTS に渡すために使う。')
+param containerAppsEnvironmentDefaultDomain string
+
 @description('リソースを配置するリージョン。')
 param location string
 
@@ -151,6 +154,14 @@ resource mcp 'Microsoft.App/containerApps@2024-03-01' = {
               // 設計原則: エージェントへは読み取りのみを提供する。
               name: 'MCP_READ_ONLY'
               value: 'true'
+            }
+            {
+              // MCP SDK は DNS リバインディング対策として Host ヘッダを検証し、
+              // 既定では 127.0.0.1 しか許可しない。未設定だと Container Apps の
+              // FQDN でのアクセスが 421 Invalid Host header になるため、
+              // 自身の FQDN を明示的に許可する。
+              name: 'MCP_ALLOWED_HOSTS'
+              value: '${name}.${containerAppsEnvironmentDefaultDomain}'
             }
             {
               name: 'CORE_API_URL'
