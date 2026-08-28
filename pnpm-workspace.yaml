@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+
+# pnpm 10 は既定でインストール時のビルドスクリプトを実行しない。
+# esbuild はネイティブバイナリの配置にビルドスクリプトが必要なため明示的に許可する。
+onlyBuiltDependencies:
+  - esbuild

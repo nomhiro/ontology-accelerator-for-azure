@@ -1,0 +1,16 @@
+# Windows で開発し Linux の CI / コンテナで動かすため、改行を LF に固定する。
+* text=auto eol=lf
+
+# バイナリ扱い(改行変換を行わない)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.jar binary
+*.woff binary
+*.woff2 binary
+
+# 言語判定をドキュメントに引きずられないようにする
+docs/** linguist-documentation

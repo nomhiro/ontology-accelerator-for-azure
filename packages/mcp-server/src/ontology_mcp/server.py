@@ -1,0 +1,114 @@
+"""MCP サーバーの定義。
+
+## 設計方針
+
+ツールの実処理は**すべて Core API に委譲する**。ストアを直接叩かないのは、
+名前空間ごとの認可判定と「どのバージョンの何をエージェントへ返したか」の監査記録を
+Core API 側の一箇所に集めるため(`docs/adr/0006-ontology-versioning-and-audit.md`)。
+
+クエリのガードはここでも先に適用する。Core API 側でも同じガードが働くので二重だが、
+明らかに危険な入力を境界で落としておく方が安全側に倒れる。
+
+## Phase 0 の実装状況
+
+`list_namespaces` と `sparql_query` を Core API 経由で実装している。呼び出し元の
+Entra ID トークンを Core API へ引き継ぐ処理は Phase 1 で実装する(現時点では
+`AUTH_MODE=disabled` のローカル開発でのみ通る)。
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+from mcp.server.mcpserver import MCPServer
+
+from ontology_core.config import get_settings
+from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query
+
+_settings = get_settings()
+logging.basicConfig(level=_settings.log_level.upper())
+logger = logging.getLogger(__name__)
+
+mcp = MCPServer(
+    "ontology-accelerator",
+    instructions=(
+        "承認済みのビジネスオントロジーを参照するためのツール群。"
+        "まず list_namespaces で対象の名前空間を確認し、"
+        "sparql_query で読み取り専用の SPARQL クエリを実行する。"
+    ),
+)
+
+
+def _api_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        base_url=_settings.core_api_url,
+        timeout=_settings.sparql_query_timeout_seconds,
+    )
+
+
+@mcp.tool()
+async def list_namespaces() -> list[dict[str, Any]]:
+    """参照できるオントロジーの名前空間を列挙する。
+
+    Returns:
+        名前空間の一覧。各要素は name / display_name / description / base_iri を持つ。
+    """
+    async with _api_client() as client:
+        response = await client.get("/namespaces")
+        response.raise_for_status()
+        result: list[dict[str, Any]] = response.json()
+        return result
+
+
+@mcp.tool()
+async def sparql_query(namespace: str, query: str) -> dict[str, Any]:
+    """指定した名前空間に対して読み取り専用の SPARQL クエリを実行する。
+
+    Args:
+        namespace: 対象の名前空間の名前。`list_namespaces` で取得できる。
+        query: SPARQL の SELECT または ASK クエリ。更新操作と SERVICE 句は使えない。
+
+    Returns:
+        SPARQL Results JSON 形式の結果。
+
+    Raises:
+        ValueError: クエリが読み取り専用の条件を満たさないとき。
+    """
+    try:
+        ensure_agent_safe_query(query, allow_service=_settings.sparql_allow_service)
+    except QueryRejectedError as exc:
+        # MCP のツールエラーとしてエージェントへ理由を返す。
+        raise ValueError(str(exc)) from exc
+
+    async with _api_client() as client:
+        response = await client.post(
+            f"/namespaces/{namespace}/sparql",
+            json={"query": query},
+        )
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+
+def build_app() -> Any:
+    """Streamable HTTP の ASGI アプリを組み立てる。
+
+    uvicorn から `ontology_mcp.server:build_app` をファクトリとして起動する。
+    """
+    return mcp.streamable_http_app(stateless_http=True, json_response=True)
+
+
+def main() -> None:
+    """開発用のエントリポイント。"""
+    if not _settings.mcp_read_only:
+        logger.warning(
+            "MCP_READ_ONLY=false が設定されていますが、このサーバーは書き込み経路を"
+            "持ちません。設定は無視されます"
+        )
+    mcp.run(transport="streamable-http", stateless_http=True, json_response=True)
+
+
+if __name__ == "__main__":
+    main()

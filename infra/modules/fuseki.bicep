@@ -1,0 +1,284 @@
+// Apache Jena Fuseki を Container Apps 上に構築するモジュール。設計の核心部分。
+// 「トリプルストアは再構築可能な射影」という原則を実装する: initContainer が Blob 上の
+// 正本スナップショットを TDB2 にロードし、startup probe がロード完了までトラフィックを止める。
+// ingress は internal のみで、書き込み口 (SPARQL Update / GSP) は Core API からしか届かない。
+
+@description('Fuseki コンテナアプリの名前。')
+param name string
+
+@description('リソースを配置するリージョン。')
+param location string
+
+@description('全リソースに付与する共通タグ。')
+param tags object
+
+@description('azd deploy のターゲット識別に使うサービス名。')
+param serviceName string = 'fuseki'
+
+@description('Container Apps 環境のリソースID。')
+param containerAppsEnvironmentId string
+
+@description('コンテナイメージの取得元 ACR のログインサーバー。')
+param containerRegistryLoginServer string
+
+@description('ユーザー割り当てマネージドID のリソースID。')
+param identityId string
+
+@description('ユーザー割り当てマネージドID のクライアントID。Azure SDK の資格情報選択に使う。')
+param identityClientId string
+
+@description('デプロイするイメージ。azd deploy 前 (初回 provision 時) は空文字でプレースホルダを使う。')
+param imageName string = ''
+
+@description('Fuseki コンテナに割り当てる vCPU 数 (文字列。例: 0.5)。')
+param cpu string = '0.5'
+
+@description('Fuseki コンテナに割り当てるメモリ (例: 1Gi)。')
+param memory string = '1Gi'
+
+@description('JVM のヒープ設定など。メモリ割当を上げた場合はここも合わせて調整する。')
+param javaOptions string = '-Xmx768m -XX:+UseSerialGC'
+
+@description('グラフの永続化方式。ephemeral は EmptyDir + 起動時再構築、azureFiles は Azure Files マウント。')
+@allowed([
+  'ephemeral'
+  'azureFiles'
+])
+param graphPersistence string
+
+@description('azureFiles のときに使う Container Apps 環境の storages 定義名。')
+param fusekiStorageName string = ''
+
+@description('Fuseki のデータセット名。SPARQL エンドポイントのパスに現れる。')
+param fusekiDataset string = 'ds'
+
+@description('オントロジー正本を格納する Blob エンドポイント URL。')
+param storageAccountUrl string
+
+@description('オントロジー正本の Blob コンテナ名。')
+param ontologyBlobContainer string
+
+@description('Fuseki admin パスワードの Key Vault シークレット URI。')
+param fusekiPasswordSecretUri string
+
+@description('Application Insights の接続文字列。')
+param applicationInsightsConnectionString string
+
+@description('ログレベル。')
+param logLevel string = 'INFO'
+
+// azd deploy がイメージを差し替えるまでの間に使う暫定イメージ。
+// 初回 provision ではこのイメージで起動するため Fuseki 本体は立ち上がらないが、
+// ARM デプロイ自体は成功する (リビジョンが unhealthy になるだけ)。
+var placeholderImage = 'mcr.microsoft.com/k8se/quickstart:latest'
+var resolvedImage = empty(imageName) ? placeholderImage : imageName
+
+var useAzureFiles = graphPersistence == 'azureFiles' && !empty(fusekiStorageName)
+var databasesMountPath = '/fuseki/databases'
+var volumeName = 'fuseki-databases'
+
+// ephemeral: レプリカスコープの一時ボリューム (EmptyDir)。レプリカ生存期間中は保持され、
+// コンテナ再起動をまたいで残る。容量は 0.5 vCPU で 2 GiB、1 vCPU で 4 GiB。
+// azureFiles: 環境に定義した SMB 共有をマウントする (オプトイン。ストア自体を正本にしたい場合)。
+var volumes = useAzureFiles
+  ? [
+      {
+        name: volumeName
+        storageType: 'AzureFile'
+        storageName: fusekiStorageName
+        // TDB2 はファイルロックに依存する。SMB 上での競合を避けるため BRL を無効化する。
+        // 単一レプリカ固定 (maxReplicas: 1) が前提。
+        mountOptions: 'nobrl'
+      }
+    ]
+  : [
+      {
+        name: volumeName
+        storageType: 'EmptyDir'
+      }
+    ]
+
+var sharedEnv = [
+  {
+    name: 'FUSEKI_DATASET'
+    value: fusekiDataset
+  }
+  {
+    name: 'FUSEKI_BASE'
+    value: '/fuseki'
+  }
+  {
+    // containers/fuseki/load-snapshot.sh と entrypoint.sh が読む TDB2 の作成先。
+    name: 'TDB_LOCATION'
+    value: '${databasesMountPath}/${fusekiDataset}'
+  }
+  {
+    name: 'AZURE_STORAGE_ACCOUNT_URL'
+    value: storageAccountUrl
+  }
+  {
+    name: 'ONTOLOGY_BLOB_CONTAINER'
+    value: ontologyBlobContainer
+  }
+  {
+    name: 'AZURE_CLIENT_ID'
+    value: identityClientId
+  }
+  {
+    name: 'LOG_LEVEL'
+    value: logLevel
+  }
+]
+
+resource fuseki 'Microsoft.App/containerApps@2024-03-01' = {
+  name: name
+  location: location
+  // azd deploy はこのタグでデプロイ先コンテナアプリを特定する。
+  tags: union(tags, { 'azd-service-name': serviceName })
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${identityId}': {}
+    }
+  }
+  properties: {
+    environmentId: containerAppsEnvironmentId
+    workloadProfileName: 'Consumption'
+    configuration: {
+      activeRevisionsMode: 'Single'
+      ingress: {
+        // 設計原則: Fuseki は外部に一切出さない。読み書きは Core API / MCP 経由のみ。
+        external: false
+        targetPort: 3030
+        transport: 'auto'
+        // 環境内からの http:// アクセス (SPARQL_QUERY_ENDPOINT 等) を許可する。
+        allowInsecure: true
+        traffic: [
+          {
+            latestRevision: true
+            weight: 100
+          }
+        ]
+      }
+      secrets: [
+        {
+          name: 'fuseki-admin-password'
+          keyVaultUrl: fusekiPasswordSecretUri
+          identity: identityId
+        }
+      ]
+      registries: [
+        {
+          server: containerRegistryLoginServer
+          identity: identityId
+        }
+      ]
+    }
+    template: {
+      // initContainer が Blob から最新スナップショットを取得し tdb2.tdbloader で
+      // EmptyDir (または Azure Files) にロードする。スクリプト本体は containers/fuseki/ 側。
+      // NOTE: azd deploy は initContainer のイメージを更新しない。初回 azd up の直後は
+      // プレースホルダのままなので、続けて azd provision を実行して配線を揃える。
+      // その間もこのコマンドは exit 0 で抜けるためレプリカが起動不能にはならない。
+      initContainers: [
+        {
+          name: 'load-snapshot'
+          image: resolvedImage
+          command: [
+            '/bin/sh'
+          ]
+          args: [
+            '-c'
+            'if [ -x /opt/fuseki-init/load-snapshot.sh ]; then /opt/fuseki-init/load-snapshot.sh; else echo "load-snapshot.sh not found (placeholder image); skipping snapshot load"; fi'
+          ]
+          resources: {
+            cpu: json(cpu)
+            memory: memory
+          }
+          env: sharedEnv
+          volumeMounts: [
+            {
+              volumeName: volumeName
+              mountPath: databasesMountPath
+            }
+          ]
+        }
+      ]
+      containers: [
+        {
+          name: 'fuseki'
+          image: resolvedImage
+          resources: {
+            cpu: json(cpu)
+            memory: memory
+          }
+          env: concat(sharedEnv, [
+            {
+              name: 'JAVA_OPTIONS'
+              value: javaOptions
+            }
+            {
+              // entrypoint.sh がこの値から shiro.ini を生成し admin API を保護する。
+              name: 'FUSEKI_ADMIN_PASSWORD'
+              secretRef: 'fuseki-admin-password'
+            }
+            {
+              name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+              value: applicationInsightsConnectionString
+            }
+          ])
+          volumeMounts: [
+            {
+              volumeName: volumeName
+              mountPath: databasesMountPath
+            }
+          ]
+          probes: [
+            {
+              // ロード完了 (= Fuseki が応答可能) までトラフィックを流さない。
+              // failureThreshold x periodSeconds = 最大 5 分の再構築時間を許容する。
+              type: 'Startup'
+              httpGet: {
+                path: '/$/ping'
+                port: 3030
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 30
+              successThreshold: 1
+            }
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/$/ping'
+                port: 3030
+                scheme: 'HTTP'
+              }
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
+              successThreshold: 1
+            }
+          ]
+        }
+      ]
+      scale: {
+        // Phase 1 は単一レプリカ固定。複数レプリカにすると内部 ingress の
+        // ロードバランスにより射影書き込みが 1 レプリカにしか届かず、複製間が乖離する。
+        minReplicas: 1
+        maxReplicas: 1
+      }
+      volumes: volumes
+    }
+  }
+}
+
+output name string = fuseki.name
+output internalFqdn string = fuseki.properties.configuration.ingress.fqdn
+output dataset string = fusekiDataset
+output queryEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/${fusekiDataset}/sparql'
+output updateEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/${fusekiDataset}/update'
+output gspEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/${fusekiDataset}/data'
+output adminEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/$/'

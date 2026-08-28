@@ -1,0 +1,103 @@
+## デモ用の最小オントロジー。
+##
+## Phase 1 の「azd up して SPARQL が返る」を確認するために同梱している。
+## 実際の利用では Scan → Model のフロー(Phase 2)で生成・承認したものが入る。
+##
+## 小売ドメインのごく一部を、W3C 標準(OWL / SKOS / SHACL)で表現した例。
+
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+@prefix sh:    <http://www.w3.org/ns/shacl#> .
+@prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
+@prefix retail: <https://example.com/ontology/retail#> .
+
+retail: rdf:type owl:Ontology ;
+    rdfs:label "小売コアオントロジー(サンプル)"@ja ;
+    rdfs:comment "デモ用の最小例。実データではない"@ja ;
+    owl:versionInfo "0.1.0" .
+
+# ---------------------------------------------------------------------------
+# クラス
+# ---------------------------------------------------------------------------
+retail:Product rdf:type owl:Class ;
+    rdfs:label "商品"@ja ;
+    rdfs:comment "販売する単位。SKU 単位で識別する"@ja .
+
+retail:Customer rdf:type owl:Class ;
+    rdfs:label "顧客"@ja .
+
+retail:Order rdf:type owl:Class ;
+    rdfs:label "注文"@ja .
+
+retail:Store rdf:type owl:Class ;
+    rdfs:label "店舗"@ja .
+
+# ---------------------------------------------------------------------------
+# プロパティ
+# ---------------------------------------------------------------------------
+retail:orderedBy rdf:type owl:ObjectProperty ;
+    rdfs:label "注文者"@ja ;
+    rdfs:domain retail:Order ;
+    rdfs:range retail:Customer .
+
+retail:includesProduct rdf:type owl:ObjectProperty ;
+    rdfs:label "対象商品"@ja ;
+    rdfs:domain retail:Order ;
+    rdfs:range retail:Product .
+
+retail:placedAt rdf:type owl:ObjectProperty ;
+    rdfs:label "注文店舗"@ja ;
+    rdfs:domain retail:Order ;
+    rdfs:range retail:Store .
+
+retail:sku rdf:type owl:DatatypeProperty , owl:FunctionalProperty ;
+    rdfs:label "SKU"@ja ;
+    rdfs:domain retail:Product ;
+    rdfs:range xsd:string .
+
+retail:orderedAt rdf:type owl:DatatypeProperty ;
+    rdfs:label "注文日時"@ja ;
+    rdfs:domain retail:Order ;
+    rdfs:range xsd:dateTime .
+
+# ---------------------------------------------------------------------------
+# 統制語彙(SKOS)
+# ---------------------------------------------------------------------------
+retail:OrderStatusScheme rdf:type skos:ConceptScheme ;
+    rdfs:label "注文ステータス"@ja .
+
+retail:Placed rdf:type skos:Concept ;
+    skos:inScheme retail:OrderStatusScheme ;
+    skos:prefLabel "受注"@ja .
+
+retail:Shipped rdf:type skos:Concept ;
+    skos:inScheme retail:OrderStatusScheme ;
+    skos:prefLabel "出荷済"@ja ;
+    skos:broader retail:Placed .
+
+# ---------------------------------------------------------------------------
+# データ品質の制約(SHACL)
+#   Phase 2 で pyshacl による検証に使う。
+# ---------------------------------------------------------------------------
+retail:ProductShape rdf:type sh:NodeShape ;
+    sh:targetClass retail:Product ;
+    sh:property [
+        sh:path retail:sku ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:pattern "^[A-Z]{3}-[0-9]{6}$" ;
+        sh:message "SKU は 'ABC-123456' の形式である必要があります"@ja ;
+    ] .
+
+retail:OrderShape rdf:type sh:NodeShape ;
+    sh:targetClass retail:Order ;
+    sh:property [
+        sh:path retail:orderedBy ;
+        sh:class retail:Customer ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:message "注文には必ず 1 人の顧客が紐づきます"@ja ;
+    ] .

@@ -1,0 +1,73 @@
+# Azure Developer CLI テンプレート定義。
+# `azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証する。
+# スキーマ: https://aka.ms/azure.yaml.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: ontology-accelerator-for-azure
+
+metadata:
+  template: ontology-accelerator-for-azure@0.1.0
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+services:
+  # Core API (FastAPI)。Control Plane + Data Layer + Context Manager。
+  # Fuseki への書き込み (SPARQL Update / Graph Store Protocol) を行える唯一のサービス。
+  api:
+    project: packages/api
+    language: python
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      # uv workspace が packages/core をパス依存で参照するため、リポジトリルートを
+      # ビルドコンテキストにする (packages/api だけでは core を COPY できない)。
+      # .github/workflows/ci.yml の `context: .` と同じ前提。
+      context: ../../
+
+  # MCP Server (Python MCP SDK / Streamable HTTP)。読み取り専用ツールのみ公開する。
+  mcp:
+    project: packages/mcp-server
+    language: python
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../../
+
+  # Apache Jena Fuseki。initContainer が Blob の正本から TDB2 を起動時に再構築する。
+  # containers/fuseki 内で自己完結するため context の指定は不要。
+  fuseki:
+    project: containers/fuseki
+    language: docker
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+
+  # Web フロントエンド (React + Vite + Fluent UI)。
+  web:
+    project: apps/web
+    language: js
+    host: staticwebapp
+    dist: dist
+
+hooks:
+  # TODO(Phase 1): サンプルオントロジーを Blob (ontologies コンテナ) にアップロードする
+  # スクリプトを scripts/postprovision.{sh,ps1} として実装し、下の run をそのパスに差し替える。
+  # スクリプト未実装の間は案内メッセージのみ出す。
+  postprovision:
+    posix:
+      shell: sh
+      continueOnError: true
+      interactive: false
+      run: |
+        echo "postprovision: サンプルオントロジーのアップロードは Phase 1 で実装予定です。"
+        echo "  予定パス: scripts/postprovision.sh -> ${AZURE_STORAGE_ACCOUNT_URL}${ONTOLOGY_BLOB_CONTAINER}"
+    windows:
+      shell: pwsh
+      continueOnError: true
+      interactive: false
+      run: |
+        Write-Host "postprovision: サンプルオントロジーのアップロードは Phase 1 で実装予定です。"
+        Write-Host "  予定パス: scripts/postprovision.ps1 -> $env:AZURE_STORAGE_ACCOUNT_URL$env:ONTOLOGY_BLOB_CONTAINER"

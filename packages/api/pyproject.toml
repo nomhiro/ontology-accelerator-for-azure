@@ -1,0 +1,30 @@
+[project]
+name = "ontology-api"
+version = "0.0.1"
+description = "Core API: 名前空間・RBAC の管理、SPARQL の仲介、エージェントへのコンテキスト提供"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "ontology-core",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+]
+
+[project.optional-dependencies]
+# Phase 1 で正本の PostgreSQL を接続する際に有効化する。
+postgres = [
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.14",
+]
+
+[tool.uv.sources]
+ontology-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ontology_api"]

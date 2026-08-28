@@ -1,0 +1,22 @@
+[project]
+name = "ontology-core"
+version = "0.0.1"
+description = "共有ライブラリ: ドメインモデル、SPARQL ストア抽象、Entra ID 検証、設定"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "httpx>=0.28",
+    "rdflib>=7.1",
+    "azure-identity>=1.19",
+    "pyjwt[crypto]>=2.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ontology_core"]

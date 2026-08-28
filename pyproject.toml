@@ -1,0 +1,83 @@
+# uv workspace のルート。ここ自体はパッケージではなく、
+# packages/* を束ねて共通の lint / 型検査 / テスト設定を提供する。
+[project]
+name = "ontology-accelerator-for-azure"
+version = "0.0.1"
+description = "Ontology Accelerator for Azure - workspace root"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "ontology-core",
+    "ontology-api",
+    "ontology-mcp",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+ontology-core = { workspace = true }
+ontology-api = { workspace = true }
+ontology-mcp = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "httpx>=0.28",
+]
+
+# ---------------------------------------------------------------------------
+# lint / format
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["packages/core/src", "packages/api/src", "packages/mcp-server/src"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "S",   # flake8-bandit
+    "ASYNC",
+    "RUF",
+]
+ignore = [
+    "S101", # テストでの assert は許容する
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S", "N"]
+
+# ---------------------------------------------------------------------------
+# 型検査
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+mypy_path = "packages/core/src:packages/api/src:packages/mcp-server/src"
+explicit_package_bases = true
+# サードパーティに型が無いものは個別に無視する
+[[tool.mypy.overrides]]
+module = ["mcp.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# テスト
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["packages/core/tests", "packages/api/tests", "packages/mcp-server/tests"]
+asyncio_mode = "auto"
+addopts = "-q"

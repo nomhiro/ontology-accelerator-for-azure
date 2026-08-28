@@ -1,0 +1,91 @@
+Ontology Accelerator for Azure
+Copyright 2026 Hiroki Nomura
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+--------------------------------------------------------------------------------
+関連プロジェクトについて / Relationship to other projects
+--------------------------------------------------------------------------------
+
+本プロジェクトは AWS の Context Ontology Accelerator
+(https://github.com/aws/context-ontology-accelerator, Apache-2.0,
+Copyright Amazon.com, Inc. or its affiliates) のアーキテクチャおよび概念を
+参考にした独立実装であり、フォークではありません。同プロジェクトのソースコード、
+設定ファイル、ドキュメント本文、サンプルオントロジー、プロンプト文はいずれも
+複製していないため、Apache-2.0 §4 に基づく帰属表示義務は発生していません。
+将来いずれかのファイルを複製する場合は、対象を台帳管理し本 NOTICE に追記します。
+
+This project is an independent implementation inspired by the architecture and
+concepts of the AWS Context Ontology Accelerator. It is not a fork, and no
+source code, configuration, documentation text, sample ontology, or prompt text
+was copied from it.
+
+本プロジェクトは Amazon Web Services および Microsoft とは提携・承認・
+スポンサー関係にありません。AWS, Amazon, Azure, Microsoft は各社の商標です。
+
+This project is not affiliated with, endorsed by, or sponsored by Amazon Web
+Services or Microsoft. AWS, Amazon, Azure, and Microsoft are trademarks of
+their respective owners.
+
+--------------------------------------------------------------------------------
+第三者コンポーネント / Third-party components
+--------------------------------------------------------------------------------
+
+本プロジェクトは以下の第三者コンポーネントを利用またはコンテナイメージに同梱
+します。各コンポーネントは自身のライセンスの下で配布されており、それぞれの
+著作権は各権利者に帰属します。詳細な一覧と取得元は
+docs/third-party-licenses.md を参照してください。
+
+Apache Jena / Apache Jena Fuseki (Apache License 2.0)
+  Copyright The Apache Software Foundation
+  https://jena.apache.org/
+  既定のトリプルストアとして、コンテナイメージに同梱します。
+
+Ontop (Apache License 2.0)
+  Copyright Ontop developers / Free University of Bozen-Bolzano
+  https://ontop-vkg.org/
+  仮想ナレッジグラフ (Phase 3)。配布イメージに同梱される JDBC ドライバは
+  別ライセンスの可能性があるため、自前の Dockerfile で必要分のみを追加します。
+
+ELK reasoner (Apache License 2.0)
+  Copyright ELK developers
+  https://github.com/liveontologies/elk-reasoner
+  既定の OWL 推論器 (Phase 4)。
+
+Oxigraph (MIT License / Apache License 2.0)
+  https://github.com/oxigraph/oxigraph
+  代替トリプルストア候補。
+
+rdflib (BSD 3-Clause License)
+  Copyright RDFLib Team
+  https://github.com/RDFLib/rdflib
+
+pyshacl (Apache License 2.0)
+  https://github.com/RDFLib/pySHACL
+
+FastAPI (MIT License)          https://github.com/fastapi/fastapi
+Fluent UI React (MIT License)  https://github.com/microsoft/fluentui
+Cytoscape.js (MIT License)     https://github.com/cytoscape/cytoscape.js
+
+--------------------------------------------------------------------------------
+同梱しないコンポーネント / Components deliberately NOT bundled
+--------------------------------------------------------------------------------
+
+HermiT (LGPL-3.0)
+  https://www.hermit-reasoner.com/
+  HermiT は LGPL-3.0 で提供されるため、**本プロジェクトの配布物には同梱しません**。
+  利用したい場合の任意有効化オプションとして、コンテナビルド時に利用者側が取得する
+  方式を採り、Azure Container Apps Job の別プロセスとして実行する構成のみを
+  サポートします。既定の OWL 推論器は Apache-2.0 の ELK です。
+
+  HermiT is LGPL-3.0 licensed and is NOT bundled in any distribution of this
+  project. It may be fetched at container build time as an opt-in and is run
+  only as a separate process (an Azure Container Apps Job).
+
+owlready2 (LGPL-3.0)
+  改変版 HermiT を同梱する Python ライブラリであるため採用しません。
+  rdflib + pyshacl + 別プロセスの Java 推論器で代替します。
+
+Virtuoso Open Source (GPL)
+  ライセンス非互換のため検討対象外です。
