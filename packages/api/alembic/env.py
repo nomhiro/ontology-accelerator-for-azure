@@ -1,9 +1,9 @@
 import asyncio
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy.engine import Connection
 
-from alembic import context
 from ontology_core.config import get_settings
 from ontology_core.db import Base, create_engine_and_factory
 
