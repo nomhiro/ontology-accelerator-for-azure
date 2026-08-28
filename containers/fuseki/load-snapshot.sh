@@ -99,18 +99,39 @@ fi
 # ---------------------------------------------------------------------------
 # マネージド ID でストレージ用のトークンを取得する
 # ---------------------------------------------------------------------------
-imds_url="http://169.254.169.254/metadata/identity/oauth2/token"
-imds_url="${imds_url}?api-version=2018-02-01&resource=https%3A%2F%2Fstorage.azure.com%2F"
-if [ -n "${AZURE_CLIENT_ID:-}" ]; then
-    imds_url="${imds_url}&client_id=${AZURE_CLIENT_ID}"
-fi
+# 取得方式が実行環境で違う点に注意。
+#   - Container Apps / App Service / Functions:
+#       IDENTITY_ENDPOINT に X-IDENTITY-HEADER を付けて要求する。
+#       169.254.169.254 の IMDS は**応答しない**。
+#   - VM / AKS / スケールセット:
+#       169.254.169.254 の IMDS を Metadata: true ヘッダで叩く。
+# 前者を優先し、無い環境では後者にフォールバックする。
+token_resource="https%3A%2F%2Fstorage.azure.com%2F"
 
-log "マネージド ID のトークンを取得します"
-token=$(curl -fsSL -H 'Metadata: true' "${imds_url}" \
-    | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+fetch_token() {
+    if [ -n "${IDENTITY_ENDPOINT:-}" ] && [ -n "${IDENTITY_HEADER:-}" ]; then
+        log "マネージド ID のトークンを取得します (IDENTITY_ENDPOINT 方式)"
+        token_url="${IDENTITY_ENDPOINT}?api-version=2019-08-01&resource=${token_resource}"
+        if [ -n "${AZURE_CLIENT_ID:-}" ]; then
+            token_url="${token_url}&client_id=${AZURE_CLIENT_ID}"
+        fi
+        curl -fsSL -H "X-IDENTITY-HEADER: ${IDENTITY_HEADER}" "${token_url}"
+        return
+    fi
+
+    log "マネージド ID のトークンを取得します (IMDS 方式)"
+    token_url="http://169.254.169.254/metadata/identity/oauth2/token"
+    token_url="${token_url}?api-version=2018-02-01&resource=${token_resource}"
+    if [ -n "${AZURE_CLIENT_ID:-}" ]; then
+        token_url="${token_url}&client_id=${AZURE_CLIENT_ID}"
+    fi
+    curl -fsSL -H 'Metadata: true' "${token_url}"
+}
+
+token=$(fetch_token | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
 
 if [ -z "${token}" ]; then
-    log "トークンの取得に失敗しました"
+    log "トークンの取得に失敗しました。マネージド ID の割り当てとロール付与を確認してください"
     exit 1
 fi
 
