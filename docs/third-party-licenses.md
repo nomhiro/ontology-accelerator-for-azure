@@ -1,8 +1,10 @@
 # 第三者コンポーネントのライセンス
 
-本プロジェクトは [Apache License 2.0](../LICENSE) で公開されています。依存する第三者コンポーネントはすべて **Apache-2.0 と互換であることを確認済み**です。帰属表示は [NOTICE](../NOTICE) にも記載しています。
+本プロジェクトは [Apache License 2.0](../LICENSE) で公開されています。帰属表示は [NOTICE](../NOTICE) にも記載しています。
 
-> **ライセンス自動スキャンの CI 化は Phase 4** で対応します。現時点では本ドキュメントを手動で維持しています。依存関係を追加する際は、この表への追記を Pull Request に含めてください。
+> **この表の範囲**: 設計判断を伴う主要コンポーネント(トリプルストア、推論器、RDF 処理系など)を対象としています。推移的依存を含む全依存関係の網羅的な棚卸しではありません。個々のバージョンは `uv.lock` と `pnpm-lock.yaml` が正本です。
+>
+> **ライセンス自動スキャンの CI 化は Phase 4** で対応します。それまでは本ドキュメントを手動で維持するため、主要な依存関係を追加する際はこの表への追記を Pull Request に含めてください。
 
 ## 採用するコンポーネント
 
@@ -15,9 +17,10 @@
 | pyshacl | Apache-2.0 | https://github.com/RDFLib/pySHACL | ✓ SHACL 検証(Phase 2) |
 | ELK reasoner | Apache-2.0 | https://github.com/liveontologies/elk-reasoner | ✓ **既定の OWL 推論器**にする |
 | HermiT | **LGPL-3.0** | https://www.hermit-reasoner.com/ | △ 同梱せず、任意有効化のコンテナビルド時取得。ACA Job の**別プロセス**として動かす構成が LGPL 上最も安全。NOTICE に明記 |
-| FastAPI | MIT | https://github.com/fastapi/fastapi | ✓ |
-| Fluent UI | MIT | https://github.com/microsoft/fluentui | ✓ |
-| Cytoscape.js | MIT | https://github.com/cytoscape/cytoscape.js | ✓ |
+| FastAPI | MIT | https://github.com/fastapi/fastapi | ✓ 利用中 |
+| Fluent UI | MIT | https://github.com/microsoft/fluentui | ✓ 利用中 |
+| MCP Python SDK | MIT | https://github.com/modelcontextprotocol/python-sdk | ✓ 利用中 |
+| Cytoscape.js | MIT | https://github.com/cytoscape/cytoscape.js | ○ グラフ可視化の候補。**まだ依存関係に追加していない**(Phase 2) |
 
 ## 採用しないコンポーネント
 
