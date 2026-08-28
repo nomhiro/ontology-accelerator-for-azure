@@ -25,6 +25,12 @@ set -eu
 # この値を上書きする。ここの既定値を変えるときは Bicep 側も合わせること
 # (グラフ IRI の体系はバージョン管理の中心的な値なので、IaC 側で明示している)。
 : "${GRAPH_IRI_BASE:=urn:ontology:graph}"
+# 既存の TDB2 があるとき再構築せずそのまま使うか。
+#
+# graphPersistence=azureFiles は「ストア自体を正本にしたい」利用者向けの構成で、
+# そこで毎回 Blob から作り直すとストア側の更新を失う。Bicep がそのモードでのみ
+# true を渡す。既定 (ephemeral) では毎回作り直す。
+: "${PRESERVE_EXISTING_TDB:=false}"
 
 log() { echo "load-snapshot: $*" >&2; }
 
@@ -68,6 +74,15 @@ prepare_empty_tdb() {
     mkdir -p "${TDB_LOCATION}"
     rm -rf "${STAGING_DIR}"
 }
+
+# ---------------------------------------------------------------------------
+# 既存の TDB2 を温存する構成なら何もしない
+# ---------------------------------------------------------------------------
+if [ "${PRESERVE_EXISTING_TDB}" = "true" ] && [ -d "${TDB_LOCATION}" ] \
+    && [ -n "$(ls -A "${TDB_LOCATION}" 2>/dev/null)" ]; then
+    log "既存の TDB2 を温存します (PRESERVE_EXISTING_TDB=true): ${TDB_LOCATION}"
+    exit 0
+fi
 
 rm -rf "${STAGING_DIR}"
 mkdir -p "${STAGING_DIR}" "$(dirname "${TDB_LOCATION}")"

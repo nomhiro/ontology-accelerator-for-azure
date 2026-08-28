@@ -108,6 +108,12 @@ var volumes = useAzureFiles
 
 var sharedEnv = [
   {
+    // azureFiles は「ストア自体を正本にしたい」構成なので、毎回 Blob から
+    // 作り直してストア側の更新を失わないようにする。ephemeral では毎回作り直す。
+    name: 'PRESERVE_EXISTING_TDB'
+    value: useAzureFiles ? 'true' : 'false'
+  }
+  {
     name: 'FUSEKI_DATASET'
     value: fusekiDataset
   }
@@ -194,30 +200,15 @@ resource fuseki 'Microsoft.App/containerApps@2024-03-01' = {
       // NOTE: azd deploy は initContainer のイメージを更新しない。初回 azd up の直後は
       // プレースホルダのままなので、続けて azd provision を実行して配線を揃える。
       // その間もこのコマンドは exit 0 で抜けるためレプリカが起動不能にはならない。
-      initContainers: [
-        {
-          name: 'load-snapshot'
-          image: resolvedImage
-          command: [
-            '/bin/sh'
-          ]
-          args: [
-            '-c'
-            'if [ -x /opt/fuseki-init/load-snapshot.sh ]; then /opt/fuseki-init/load-snapshot.sh; else echo "load-snapshot.sh not found (placeholder image); skipping snapshot load"; fi'
-          ]
-          resources: {
-            cpu: json(cpu)
-            memory: memory
-          }
-          env: sharedEnv
-          volumeMounts: [
-            {
-              volumeName: volumeName
-              mountPath: databasesMountPath
-            }
-          ]
-        }
-      ]
+      // init コンテナは使わない。
+      //
+      // azd は provision → deploy の順に実行し、deploy が差し替えるのは
+      // メインコンテナのイメージだけである。init コンテナのイメージは Bicep 経由で
+      // しか更新されないため、init を使うと `azd up` 一回ではタグが揃わず、
+      // 利用者が `azd provision` をもう一度実行する必要があった。
+      // 正本からの再構築は containers/fuseki/entrypoint.sh がメインコンテナ内で
+      // 行うので、コードとイメージタグは構造的に常に一致する。
+      // Startup プローブ (下記) が再構築の完了までトラフィックを流さない。
       containers: [
         {
           name: 'fuseki'

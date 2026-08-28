@@ -79,7 +79,7 @@ flowchart LR
   MCP --> SEARCH
   MCP --> API
 
-  BLOB == "init コンテナが起動時にビルド<br/>tdb2.tdbloader → EmptyDir" ==> FUSEKI
+  BLOB == "entrypoint が起動時にビルド<br/>tdb2.tdbloader → EmptyDir" ==> FUSEKI
   ONTOP -- JDBC --> CUSTDB
   SCANJOB --> CUSTDB
   SCANJOB --> PG
@@ -175,7 +175,7 @@ flowchart LR
   end
 
   subgraph replica["Fuseki レプリカ"]
-    INIT["init コンテナ<br/>Blob から最新スナップショット取得<br/>tdb2.tdbloader で EmptyDir へロード"]
+    INIT["Fuseki の entrypoint<br/>Blob から最新スナップショット取得<br/>tdb2.tdbloader で EmptyDir へロード"]
     ED[("EmptyDir<br/>replica-scoped ephemeral")]
     F["Fuseki 本体<br/>startup probe が<br/>ロード完了まで待機"]
     INIT --> ED --> F
@@ -193,7 +193,7 @@ flowchart LR
 ```
 
 - **正本** — 承認済みオントロジーをバージョン付き TTL として Blob に、メタデータ・承認履歴・R2RML マッピングを PostgreSQL に保存します
-- **起動時ビルド** — ACA の **init コンテナ**が Blob から最新スナップショットを取得し `tdb2.tdbloader` で EmptyDir にロードしたうえで Fuseki を起動します。**startup probe** によりロード完了までトラフィックを流しません
+- **起動時ビルド** — Fuseki コンテナの **entrypoint** が Blob から最新スナップショットを取得し `tdb2.tdbloader` で EmptyDir にロードしたうえで Fuseki を起動します。**startup probe** によりロード完了までトラフィックを流しません。init コンテナを使わない理由は [ADR-0002](adr/0002-triple-store-as-rebuildable-projection.md) の補記を参照(azd の provision→deploy 順で init のイメージタグが揃わないため)
 - **書き込み** — Core API が正本に書いた後、Fuseki へ射影します。SPARQL Update 経由の直接書き込みは封じます
 
 ### 得られる効果

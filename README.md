@@ -15,7 +15,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 ### 動作を確認済み(ローカル)
 
 - `docker compose up` で Fuseki 6.2.0 + PostgreSQL 16 が起動する
-- init コンテナが `samples/retail-core.ttl` から TDB2 を構築し、名前付きグラフ `urn:ontology:graph/retail-core` として読み込む(= 「再構築可能な射影」設計の実装)
+- Fuseki の entrypoint が `samples/retail-core.ttl` から TDB2 を構築し、名前付きグラフ `urn:ontology:graph/retail-core` として読み込む(= 「再構築可能な射影」設計の実装)
 - Fuseki の `/ds/sparql` が SPARQL 1.1 で応答する
 - Core API 経由の読み取りクエリが通り、更新クエリと `SERVICE` 句はガードで HTTP 400 になる
 - Fuseki 側でも `SERVICE` の実行が無効化されている(HTTP 422 / SSRF 対策)。管理 API は無認証で 401
@@ -27,7 +27,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 `azd up` を実サブスクリプションで実行し、以下を確認しました。
 
 - `azd up` が成功する(プロビジョニング 5 分 6 秒 + デプロイ 2 分 41 秒)。API / MCP / Fuseki / Web の 4 サービスがデプロイされる
-- **Blob(正本)から init コンテナが TDB2 を再構築し、Fuseki が SPARQL を返す** — 「再構築可能な射影」設計が実環境で成立
+- **Blob(正本)から Fuseki の entrypoint が TDB2 を再構築し、SPARQL を返す** — 「再構築可能な射影」設計が実環境で成立
   (名前付きグラフ `urn:ontology:graph/approved_retail-core`、60 トリプル、OWL クラス 4 件、SHACL NodeShape 2 件)
 - Fuseki 側で `SERVICE` 句が HTTP 422 でブロックされる(SSRF 対策)
 - Fuseki は internal ingress のため外部から到達できない
@@ -38,7 +38,6 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 ### 未実装・未検証
 
 - **Entra ID の App 登録を伴う認証経路は未検証です。** API がトークンを拒否すること(401)までは確認済みですが、有効なトークンで通す検証は App 登録が必要なため行っていません
-- Scan / Model の機能は存在しません(Phase 2)
 - **Scan / Model の機能は存在しません** — オントロジーの自動生成、レビュー・承認フロー、スキーマ発見はいずれも Phase 2 です
 - MCP サーバーはツール定義まで。Ontop 連邦クエリ・ベクトル検索・OWL 推論は Phase 3〜4 です
 - 名前空間ごとの RBAC は強制されていません(Phase 2)
@@ -88,7 +87,7 @@ flowchart LR
   API --> ONTOP
   MCP --> FUSEKI
   MCP --> SEARCH
-  BLOB -- "init コンテナが起動時にビルド → EmptyDir" --> FUSEKI
+  BLOB -- "entrypoint が起動時にビルド → EmptyDir" --> FUSEKI
   ONTOP -- JDBC --> CUSTDB
   JOBS --> PG
   JOBS --> CUSTDB
@@ -125,7 +124,7 @@ flowchart TB
 
 ## クイックスタート
 
-> **ローカル開発の手順は動作確認済みです。**`azd up` による Azure へのデプロイは Phase 0 では未検証です(Bicep の構文検証のみ)。
+> **ローカル開発と `azd up` はいずれも動作確認済みです**(japaneast の実サブスクリプションで検証)。ただしオントロジーの生成・レビュー機能は未実装のため、デプロイして得られるのはサンプルオントロジーを SPARQL / MCP で参照できる状態までです。
 
 ### 前提ツール
 
@@ -178,8 +177,7 @@ azd up          # just deploy でも同じ
 
 #### 初回デプロイ時の注意
 
-- **初回 `azd up` の直後は、Fuseki が起動していてもグラフが空になります。** azd は provision → deploy の順に実行するため、provision の時点ではコンテナイメージがまだ存在せずプレースホルダが入ります。続く `azd deploy` が差し替えるのは各コンテナアプリの**メインコンテナのみ**で、init コンテナは更新されません。**`azd provision` をもう一度実行すると init とメインのイメージタグが揃います**(実デプロイで確認済み)
-- **サンプルオントロジーの投入は現時点では手動です。** postprovision フックは Phase 1 で実装予定のため、`azd up` 後に以下を実行してください。Blob に置いたうえで Fuseki のリビジョンを再起動すると、init コンテナが TDB2 を作り直してグラフが見えるようになります
+- **サンプルオントロジーの投入は現時点では手動です。** postprovision フックは Phase 1 で実装予定のため、`azd up` 後に以下を実行してください。Blob に置いたうえで Fuseki のリビジョンを再起動すると、entrypoint が TDB2 を作り直してグラフが見えるようになります
 
   ```bash
   # 1. 正本となる TTL を Blob へ置く (パスの approved/ 配下が読み込み対象)

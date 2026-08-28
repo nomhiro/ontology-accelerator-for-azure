@@ -31,7 +31,7 @@
    - メタデータ・承認履歴・R2RML マッピングを PostgreSQL に保存する(詳細は [ADR-0003](0003-postgresql-as-system-of-record.md))
 
 2. **ストアのデータは EmptyDir に置き、起動時に再構築する**
-   - ACA の **init コンテナ**が Blob から最新スナップショットを取得し、`tdb2.tdbloader` で EmptyDir にロードする
+   - Fuseki コンテナの **entrypoint** が起動時に Blob から最新スナップショットを取得し、`tdb2.tdbloader` で EmptyDir にロードしてから Fuseki を起動する(当初は init コンテナで行っていた。変更理由は後述の「補記」を参照)
    - ロード完了後に Fuseki 本体を起動する
    - **startup probe** により、ロードが完了するまでトラフィックを流さない
 
@@ -128,3 +128,51 @@ Azure Files Premium の最小 100 GiB × $0.192/GiB/月 = **月 $19 が不要に
 - [ADR-0003](0003-postgresql-as-system-of-record.md) — 本決定の前提として、正本を PostgreSQL + Blob に置く判断が必要になる
 - [ADR-0006](0006-ontology-versioning-and-audit.md) — 不変リビジョンを Blob に保存する設計は、本決定の射影モデルと一体である
 - [SECURITY.md](../../SECURITY.md) — 書き込み口を Core API に限定する制約が、SPARQL 攻撃面対策の前提になる
+
+---
+
+## 補記: init コンテナから entrypoint への変更 (2026-08-28)
+
+実サブスクリプションへの `azd up` で判明した問題により、再構築を行う場所を
+**ACA の init コンテナから Fuseki コンテナの entrypoint へ移した**。
+
+### 問題
+
+azd は provision → deploy の順に実行し、deploy が差し替えるのは各コンテナアプリの
+**メインコンテナのイメージだけ**である。init コンテナのイメージは Bicep 経由でしか
+更新されないため、次の順序問題が起きていた。
+
+1. `azd provision` 実行時点ではイメージがまだ存在せず、init にはプレースホルダが入る
+2. `azd deploy` がメインコンテナだけを新しいイメージに差し替える
+3. init は古い(あるいはプレースホルダの)イメージのまま残り、コードとタグが乖離する
+
+結果として **`azd up` 一回では正しく動かず**、利用者が `azd provision` をもう一度
+実行して初めて配線が揃うという状態だった。実測でも init が
+`azd-deploy-1787918225`、メインが `azd-deploy-1787919880` という乖離を確認している。
+
+OSS として配布する以上、初回の `azd up` が一発で通らないのは受け入れがたい。
+
+### 決定
+
+再構築を entrypoint (`containers/fuseki/entrypoint.sh`) で行う。同一イメージ内の
+処理になるため、**コードとイメージタグは構造的に常に一致する**。この問題は設定で
+回避するのではなく、発生し得ない形に変えた。
+
+- Startup プローブ (failureThreshold 30 × periodSeconds 10 = 最大 5 分) が
+  再構築の完了までトラフィックを流さない
+- 再構築に失敗したら entrypoint が異常終了する。空のグラフを黙って配らない
+- `docker compose` でも同じ流れになり、ローカルと Container Apps の差が縮んだ
+
+### 併せて入れたガード
+
+`graphPersistence=azureFiles` は「ストア自体を正本にしたい」利用者向けの構成であり、
+そこで毎回 Blob から作り直すとストア側の更新を失う。`PRESERVE_EXISTING_TDB` を
+追加し、既存の TDB2 があるときは再構築せずそのまま使うようにした。Bicep は
+`azureFiles` のときだけ `true` を渡す(既定の `ephemeral` では毎回作り直す)。
+
+### トレードオフ
+
+- init コンテナによる「ロードと配信の関心の分離」は失われた。ただし本設計では
+  ロードは起動処理の一部であり、分離の利得は上記の不整合リスクに見合わない
+- レプリカが再作成されるたびに再構築が走る。オントロジー規模では数秒で終わるため
+  許容する。大規模化した場合は `azureFiles` か AKS + Managed Disk へ移る

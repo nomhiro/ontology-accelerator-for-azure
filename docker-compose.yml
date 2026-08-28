@@ -11,25 +11,11 @@
 name: ontology-accelerator
 
 services:
-  # 正本(ローカルでは samples/)から TDB2 を構築する。Fuseki の起動前に一度だけ走る。
-  fuseki-init:
-    build:
-      context: ./containers/fuseki
-    entrypoint: ["/opt/fuseki-init/load-snapshot.sh"]
-    environment:
-      LOCAL_TTL_DIR: /samples
-      TDB_LOCATION: /fuseki/databases/ds
-    volumes:
-      - fuseki-data:/fuseki/databases
-      - ./samples:/samples:ro
-    restart: "no"
-
+  # entrypoint.sh が起動時に正本(ローカルでは samples/)から TDB2 を作り直してから
+  # Fuseki を起動する。Container Apps 上と同じ流れ。
   fuseki:
     build:
       context: ./containers/fuseki
-    depends_on:
-      fuseki-init:
-        condition: service_completed_successfully
     ports:
       # 別のプロジェクトで 3030 を使っている場合は FUSEKI_PORT で変更できる。
       - "${FUSEKI_PORT:-3030}:3030"
@@ -38,8 +24,11 @@ services:
       # ローカル専用の値。デプロイ時は Key Vault から注入する。
       FUSEKI_ADMIN_PASSWORD: localdev
       JAVA_OPTIONS: "-Xmx1g"
+      # Blob の代わりにマウントした samples/ から読み込む。
+      LOCAL_TTL_DIR: /samples
     volumes:
       - fuseki-data:/fuseki/databases
+      - ./samples:/samples:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:3030/$$/ping"]
       interval: 10s
