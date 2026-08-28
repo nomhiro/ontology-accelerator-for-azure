@@ -28,8 +28,11 @@ setup-web:
 # 検査
 # ---------------------------------------------------------------------------
 
-# lint・型検査・テストをまとめて実行する(CI と同じ内容)
+# lint・型検査・テストをまとめて実行する(integration は含まない)
 check: lint typecheck test
+
+# lint・型検査・テスト・integrationテストをすべて実行する(CI と同じ内容)
+check-all: lint typecheck test test-integration
 
 lint:
     uv run ruff check .
@@ -46,8 +49,13 @@ typecheck:
 typecheck-web:
     pnpm --filter @ontology-accelerator/web typecheck
 
+# 単体テスト(DB不要)
 test:
-    uv run pytest
+    uv run pytest -m "not integration"
+
+# integrationテスト(要: just up)
+test-integration:
+    uv run pytest -m integration
 
 # Bicep をビルドして構文を検証する
 lint-infra:

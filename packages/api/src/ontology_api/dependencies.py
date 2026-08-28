@@ -10,12 +10,14 @@ from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ontology_core.auth.entra import Principal, TokenVerificationError, TokenVerifier
 from ontology_core.config import AuthMode, Settings, get_settings
+from ontology_core.db import create_engine_and_factory, session_scope
 from ontology_core.sparql.client import FusekiStore, SparqlStore
 
-__all__ = ["CurrentPrincipal", "SettingsDep", "StoreDep"]
+__all__ = ["CurrentPrincipal", "SessionDep", "SettingsDep", "StoreDep"]
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
@@ -83,3 +85,18 @@ async def sparql_store(settings: SettingsDep) -> AsyncIterator[SparqlStore]:
 
 
 StoreDep = Annotated[SparqlStore, Depends(sparql_store)]
+
+
+@lru_cache(maxsize=1)
+def _session_factory() -> async_sessionmaker[AsyncSession]:
+    """プロセス内で 1 つのエンジンを共有する。"""
+    _engine, factory = create_engine_and_factory(get_settings())
+    return factory
+
+
+async def db_session() -> AsyncIterator[AsyncSession]:
+    async for session in session_scope(_session_factory()):
+        yield session
+
+
+SessionDep = Annotated[AsyncSession, Depends(db_session)]

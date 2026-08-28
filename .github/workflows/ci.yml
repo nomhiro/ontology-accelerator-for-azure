@@ -50,6 +50,18 @@ jobs:
     needs: changes
     if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ontology
+          POSTGRES_USER: ontology
+          POSTGRES_PASSWORD: localdev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -68,7 +80,9 @@ jobs:
       - name: 型検査
         run: uv run mypy packages
 
-      - name: テスト
+      - name: テスト(単体 + integration)
+        env:
+          POSTGRES_PASSWORD: localdev
         run: uv run pytest
 
   web:

@@ -88,3 +88,6 @@ ignore_missing_imports = true
 testpaths = ["packages/core/tests", "packages/api/tests", "packages/mcp-server/tests"]
 asyncio_mode = "auto"
 addopts = "-q"
+markers = [
+    "integration: 実際の PostgreSQL を必要とするテスト",
+]
