@@ -20,6 +20,10 @@ set -eu
 : "${BLOB_API_VERSION:=2021-12-02}"
 : "${JENA_HOME:=/opt/jena}"
 # 名前付きグラフ IRI の接頭辞。Phase 1 で名前空間とバージョンを含む形に整える。
+#
+# デプロイ環境では infra/modules/fuseki.bicep の graphIriBase パラメータが
+# この値を上書きする。ここの既定値を変えるときは Bicep 側も合わせること
+# (グラフ IRI の体系はバージョン管理の中心的な値なので、IaC 側で明示している)。
 : "${GRAPH_IRI_BASE:=urn:ontology:graph}"
 
 log() { echo "load-snapshot: $*" >&2; }

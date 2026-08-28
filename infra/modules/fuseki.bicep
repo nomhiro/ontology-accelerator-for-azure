@@ -129,6 +129,12 @@ var sharedEnv = [
     value: ontologyBlobContainer
   }
   {
+    // ADR-0006 のバージョン付き名前付きグラフの接頭辞。スクリプト側にも同じ既定値が
+    // あるが、グラフ IRI の体系はインフラ側で明示しておく。
+    name: 'GRAPH_IRI_BASE'
+    value: graphIriBase
+  }
+  {
     name: 'AZURE_CLIENT_ID'
     value: identityClientId
   }
