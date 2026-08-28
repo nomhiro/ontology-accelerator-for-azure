@@ -22,8 +22,12 @@ __all__ = [
     "version_graph_iri",
 ]
 
-_NAMESPACE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
-_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$")
+# `$` は re.MULTILINE を指定しなくても「文字列末尾の直前の改行」にマッチしてしまい、
+# 末尾に改行を付けるだけで検証をすり抜けられる(例: "ds\n" が予約名チェックも通過する)。
+# `^`/`$` によるアンカーではなくこの落とし穴が構造的に存在しないため、
+# パターン自体にはアンカーを付けず、呼び出し側で `fullmatch` を使う。
+_NAMESPACE_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{1,62}")
+_VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]{0,63}")
 
 # `ds` は射影の作業用に config.ttl が定義する固定データセット。
 # 名前空間名として使わせない。
@@ -40,7 +44,7 @@ def validate_namespace_name(namespace: str) -> str:
     Raises:
         NamespaceNameError: 形式が不正、または予約名のとき。
     """
-    if not _NAMESPACE_PATTERN.match(namespace):
+    if not _NAMESPACE_PATTERN.fullmatch(namespace):
         raise NamespaceNameError(
             f"名前空間名 '{namespace}' は使えません。"
             "小文字英数字とハイフンのみ、2〜63 文字、先頭は英数字です"
@@ -56,7 +60,7 @@ def validate_version(version: str) -> str:
     Raises:
         NamespaceNameError: IRI やパスに使えない文字を含むとき。
     """
-    if not _VERSION_PATTERN.match(version):
+    if not _VERSION_PATTERN.fullmatch(version):
         raise NamespaceNameError(f"バージョン '{version}' は使えません")
     return version
 

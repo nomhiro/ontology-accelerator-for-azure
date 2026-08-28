@@ -12,6 +12,7 @@ from ontology_core.graphs import (
     NamespaceNameError,
     dataset_name,
     validate_namespace_name,
+    validate_version,
     version_graph_iri,
 )
 
@@ -71,3 +72,26 @@ def test_version_graph_iri_validates_namespace() -> None:
 def test_invalid_versions_are_rejected(bad_version: str) -> None:
     with pytest.raises(NamespaceNameError):
         version_graph_iri(BASE, "retail-core", bad_version)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "retail-core\n",  # 末尾改行 ($ アンカーの落とし穴)
+        "ds\n",  # 予約名 + 末尾改行でチェックをすり抜けないこと
+        "retail\ncore",  # 途中の改行
+        "retail-core\r\n",
+        "retail-core\t",
+        " retail-core",  # 先頭空白
+        "retail-core ",  # 末尾空白
+    ],
+)
+def test_whitespace_and_newline_are_rejected(bad: str) -> None:
+    with pytest.raises(NamespaceNameError):
+        validate_namespace_name(bad)
+
+
+@pytest.mark.parametrize("bad", ["1.0.0\n", "1.0.0\r\n", "1.0\n.0"])
+def test_version_rejects_newline(bad: str) -> None:
+    with pytest.raises(NamespaceNameError):
+        validate_version(bad)
