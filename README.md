@@ -22,10 +22,23 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - 名前空間 CRUD がスタブ実装(メモリ上)で動作する
 - lint (ruff) / 型検査 (mypy strict) / テスト (pytest 16 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
+### 動作を確認済み(Azure 実環境 / japaneast)
+
+`azd up` を実サブスクリプションで実行し、以下を確認しました。
+
+- `azd up` が成功する(プロビジョニング 5 分 6 秒 + デプロイ 2 分 41 秒)。API / MCP / Fuseki / Web の 4 サービスがデプロイされる
+- **Blob(正本)から init コンテナが TDB2 を再構築し、Fuseki が SPARQL を返す** — 「再構築可能な射影」設計が実環境で成立
+  (名前付きグラフ `urn:ontology:graph/approved_retail-core`、60 トリプル、OWL クラス 4 件、SHACL NodeShape 2 件)
+- Fuseki 側で `SERVICE` 句が HTTP 422 でブロックされる(SSRF 対策)
+- Fuseki は internal ingress のため外部から到達できない
+- API `/healthz` が応答し、トークン無しの `GET /namespaces` は **401**(`AUTH_MODE=entra` が機能)
+- MCP `/mcp` が `tools/list` を返す(`list_namespaces` / `sparql_query`)
+- API / MCP の scale-to-zero が機能する(初回アクセスはコールドスタート)
+
 ### 未実装・未検証
 
-- **`azd up` は未検証です。** Bicep は構文検証(`az bicep build`)のみ。実際のサブスクリプションへデプロイした実績はありません
-- Entra ID による認証経路(`AUTH_MODE=entra`)は配線のみで未検証。動作確認は `AUTH_MODE=disabled` で行っています
+- **Entra ID の App 登録を伴う認証経路は未検証です。** API がトークンを拒否すること(401)までは確認済みですが、有効なトークンで通す検証は App 登録が必要なため行っていません
+- Scan / Model の機能は存在しません(Phase 2)
 - **Scan / Model の機能は存在しません** — オントロジーの自動生成、レビュー・承認フロー、スキーマ発見はいずれも Phase 2 です
 - MCP サーバーはツール定義まで。Ontop 連邦クエリ・ベクトル検索・OWL 推論は Phase 3〜4 です
 - 名前空間ごとの RBAC は強制されていません(Phase 2)
@@ -165,7 +178,23 @@ azd up          # just deploy でも同じ
 
 #### 初回デプロイ時の注意
 
-- **初回 `azd up` の直後は、Fuseki が起動していてもグラフが空になります。** azd は provision → deploy の順に実行するため、provision の時点ではコンテナイメージがまだ存在せずプレースホルダが入ります。続く `azd deploy` が差し替えるのは各コンテナアプリの**メインコンテナのみ**で、init コンテナは更新されません。`azd provision` をもう一度実行すると init の配線が揃います
+- **初回 `azd up` の直後は、Fuseki が起動していてもグラフが空になります。** azd は provision → deploy の順に実行するため、provision の時点ではコンテナイメージがまだ存在せずプレースホルダが入ります。続く `azd deploy` が差し替えるのは各コンテナアプリの**メインコンテナのみ**で、init コンテナは更新されません。**`azd provision` をもう一度実行すると init とメインのイメージタグが揃います**(実デプロイで確認済み)
+- **サンプルオントロジーの投入は現時点では手動です。** postprovision フックは Phase 1 で実装予定のため、`azd up` 後に以下を実行してください。Blob に置いたうえで Fuseki のリビジョンを再起動すると、init コンテナが TDB2 を作り直してグラフが見えるようになります
+
+  ```bash
+  # 1. 正本となる TTL を Blob へ置く (パスの approved/ 配下が読み込み対象)
+  az storage blob upload \
+    --account-name $(azd env get-value AZURE_STORAGE_ACCOUNT_NAME) \
+    --container-name ontologies \
+    --name approved/retail-core.ttl \
+    --file samples/retail-core.ttl \
+    --auth-mode login --overwrite
+
+  # 2. Fuseki を再起動して Blob から射影を作り直す
+  REV=$(az containerapp revision list -g <resource-group> -n <fuseki-app> \
+    --query "[?properties.active].name | [0]" -o tsv)
+  az containerapp revision restart -g <resource-group> -n <fuseki-app> --revision "$REV"
+  ```
 - **Key Vault のロール割り当ては RBAC の伝播待ちで初回に失敗しうる**ため、失敗した場合は数分待って再実行してください
 - **CI からサービスプリンシパルでデプロイする場合**は `principalType=ServicePrincipal` を指定してください。`principalId` が空だと Key Vault Secrets Officer の割り当てが作られないため、シークレット書き込み権限を別途付与する必要があります
 - `graphPersistence: azureFiles` を選ぶ場合、Azure Files は **SMB (Premium)** でマウントします。NFS はカスタム VNet が必須で `minimal` ティアと両立しないためです。この構成は**単一レプリカ前提**である点に注意してください(詳細は [ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md))
