@@ -105,28 +105,16 @@ class Settings(BaseSettings):
         return [host.strip() for host in self.mcp_allowed_hosts.split(",") if host.strip()]
 
     @property
-    def postgres_dsn(self) -> str:
-        """SQLAlchemy 用の DSN。
-
-        パスワードが空のときは Entra ID のトークン認証を使う前提。
-        トークンの取得は Phase 1 で実装する。
-        """
-        auth = (
-            f"{self.postgres_user}:{self.postgres_password}"
-            if self.postgres_password
-            else self.postgres_user
-        )
-        return (
-            f"postgresql+asyncpg://{auth}@{self.postgres_host}:{self.postgres_port}"
-            f"/{self.postgres_database}"
-        )
-
-    @property
     def async_postgres_dsn(self) -> str:
-        """SQLAlchemy async エンジン用の DSN。
+        """SQLAlchemy async エンジン用の DSN。DSN の正本はこの property のみ。
 
         `DATABASE_URL` が与えられていればそれを優先する。パスワードが空の場合は
         Entra ID のトークンを実行時に取得して渡すため、DSN にはパスワードを含めない。
+        Entra ID のトークンには有効期限があり、DSN 文字列に一度だけ埋め込むと
+        期限切れ後に接続できなくなる。そのためパスワード(または Entra トークン)は
+        DSN ではなく SQLAlchemy の `connect_args["password"]` に callable を渡し、
+        接続のたびに評価させる方式を取る(asyncpg は callable を受け付ける)。
+        DSN に平文パスワードを埋め込む実装に戻さないこと。
         """
         if self.database_url:
             return self.database_url
