@@ -70,6 +70,18 @@ async def blob_store() -> AsyncIterator[OntologyBlobStore]:
         await service.create_container(container)
     except Exception:  # 既存なら無視
         pass
+
+    # 前のテストが残した Blob をすべて削除する。コンテナごと削除して作り直すと、
+    # Azurite では削除直後の再作成が「コンテナ削除中」エラーになりテストが不安定になる
+    # ため、コンテナは残したまま中身だけ空にする(コンテナ再作成に戻さないこと)。
+    cc = service.get_container_client(container)
+    async for blob in cc.list_blobs():
+        await cc.delete_blob(blob.name)
+
     store = OntologyBlobStore.from_client(service, container=container, prefix="approved/")
     yield store
     await store.aclose()
+    # `OntologyBlobStore.aclose()` は渡されたコンテナクライアントだけを閉じる
+    # (`from_client` で外から渡されたクライアントの所有権を持たない設計のため)。
+    # ここで作った `service`(BlobServiceClient)はフィクスチャ側で閉じる。
+    await service.close()
