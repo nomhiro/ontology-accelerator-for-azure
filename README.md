@@ -163,6 +163,14 @@ azd up          # just deploy でも同じ
 
 `deploymentTier`(`minimal` / `production`)と `graphPersistence`(`ephemeral` / `azureFiles`)を Bicep パラメータで切り替えられます。評価目的であれば既定の `minimal` + `ephemeral` のままで構いません。
 
+#### 初回デプロイ時の注意
+
+- **初回 `azd up` の直後は、Fuseki が起動していてもグラフが空になります。** azd は provision → deploy の順に実行するため、provision の時点ではコンテナイメージがまだ存在せずプレースホルダが入ります。続く `azd deploy` が差し替えるのは各コンテナアプリの**メインコンテナのみ**で、init コンテナは更新されません。`azd provision` をもう一度実行すると init の配線が揃います
+- **Key Vault のロール割り当ては RBAC の伝播待ちで初回に失敗しうる**ため、失敗した場合は数分待って再実行してください
+- **CI からサービスプリンシパルでデプロイする場合**は `principalType=ServicePrincipal` を指定してください。`principalId` が空だと Key Vault Secrets Officer の割り当てが作られないため、シークレット書き込み権限を別途付与する必要があります
+- `graphPersistence: azureFiles` を選ぶ場合、Azure Files は **SMB (Premium)** でマウントします。NFS はカスタム VNet が必須で `minimal` ティアと両立しないためです。この構成は**単一レプリカ前提**である点に注意してください(詳細は [ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md))
+- Static Web Apps は japaneast に対応していないため、Web だけ `webLocation`(既定 `eastasia`)で別リージョンに配置されます
+
 ### 削除
 
 ```bash

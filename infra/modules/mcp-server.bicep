@@ -182,6 +182,36 @@ resource mcp 'Microsoft.App/containerApps@2024-03-01' = {
               value: sparqlMaxResults
             }
           ]
+          // /healthz は認証不要でプロセスの生存だけを返す (Core API・ストアの到達性は
+          // 含めない)。build_app() が MCP のルーターに Route を append しているため、
+          // Streamable HTTP の /mcp と同じアプリで応答する。
+          probes: [
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/healthz'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 3
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+              successThreshold: 1
+            }
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/healthz'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
+              successThreshold: 1
+            }
+          ]
         }
       ]
       scale: {

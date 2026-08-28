@@ -52,6 +52,9 @@ param fusekiStorageName string = ''
 @description('Fuseki のデータセット名。SPARQL エンドポイントのパスに現れる。')
 param fusekiDataset string = 'ds'
 
+@description('load-snapshot.sh が各 TTL を読み込む名前付きグラフ IRI の接頭辞。config.ttl が unionDefaultGraph を有効にしているため、既定グラフではなく名前付きグラフへ読み込む必要がある。')
+param graphIriBase string = 'urn:ontology:graph'
+
 @description('オントロジー正本を格納する Blob エンドポイント URL。')
 param storageAccountUrl string
 
@@ -86,8 +89,13 @@ var volumes = useAzureFiles
         name: volumeName
         storageType: 'AzureFile'
         storageName: fusekiStorageName
-        // TDB2 はファイルロックに依存する。SMB 上での競合を避けるため BRL を無効化する。
-        // 単一レプリカ固定 (maxReplicas: 1) が前提。
+        // nobrl はバイトレンジロックを無効化する。TDB2 の観点では「ロックによる
+        // 保護が効かなくなる」設定であり、次の2条件が同時に成り立つ前提でのみ許容できる:
+        //   1. maxReplicas: 1 で書き込み者が1つに固定されている
+        //   2. トリプルストアが正本ではなく再構築可能な射影である (ADR-0002)
+        // レプリカを increase する場合、nobrl のままでは安全でない。読み取り水平
+        // スケールを行うなら ephemeral (レプリカごとに自分のコピーを持つ) か、
+        // AKS + Managed Disk への昇格を選ぶこと。
         mountOptions: 'nobrl'
       }
     ]

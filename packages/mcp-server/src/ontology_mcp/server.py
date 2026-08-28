@@ -23,9 +23,14 @@ from typing import Any
 
 import httpx
 from mcp.server.mcpserver import MCPServer
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from ontology_core.config import get_settings
 from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query
+from ontology_mcp import __version__
 
 _settings = get_settings()
 logging.basicConfig(level=_settings.log_level.upper())
@@ -92,12 +97,29 @@ async def sparql_query(namespace: str, query: str) -> dict[str, Any]:
         return result
 
 
-def build_app() -> Any:
+async def _healthz(request: Request) -> JSONResponse:
+    """プロセスの生存確認。
+
+    Core API の `/healthz` と同じ方針で、依存先(Core API・ストア)の到達性は
+    含めない。Container Apps の liveness probe が依存先の一時的な不調で
+    レプリカを落とさないようにするため。
+    """
+    del request
+    return JSONResponse({"status": "ok", "version": __version__})
+
+
+def build_app() -> Starlette:
     """Streamable HTTP の ASGI アプリを組み立てる。
 
     uvicorn から `ontology_mcp.server:build_app` をファクトリとして起動する。
+
+    ヘルスチェック用の経路は、MCP のアプリを別の Starlette でラップせず
+    **既存のルーターに追加する**。ラップすると内側のアプリの lifespan が
+    実行されず、セッションマネージャが起動しないため。
     """
-    return mcp.streamable_http_app(stateless_http=True, json_response=True)
+    app = mcp.streamable_http_app(stateless_http=True, json_response=True)
+    app.router.routes.append(Route("/healthz", _healthz, methods=["GET"]))
+    return app
 
 
 def main() -> None:
