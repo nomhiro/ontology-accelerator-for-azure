@@ -116,61 +116,93 @@ class FusekiStore(SparqlStore):
     # ---- SPARQL 1.1 Protocol ----
 
     async def query(self, sparql: str, *, dataset: str) -> dict[str, Any]:
-        response = await self._client.post(
+        response = await self._send(
+            "POST",
             self._resolve(self._query_endpoint, dataset),
+            operation="クエリ",
             content=sparql.encode("utf-8"),
             headers={
                 "Content-Type": "application/sparql-query; charset=utf-8",
                 "Accept": "application/sparql-results+json",
             },
         )
-        self._raise_for_status(response, "クエリ")
         result: dict[str, Any] = response.json()
         return result
 
     async def update(self, sparql: str, *, dataset: str) -> None:
-        response = await self._client.post(
+        await self._send(
+            "POST",
             self._resolve(self._update_endpoint, dataset),
+            operation="更新",
             content=sparql.encode("utf-8"),
             headers={"Content-Type": "application/sparql-update; charset=utf-8"},
         )
-        self._raise_for_status(response, "更新")
 
     async def put_graph(self, graph_iri: str, turtle: str, *, dataset: str) -> None:
-        response = await self._client.put(
+        await self._send(
+            "PUT",
             self._resolve(self._gsp_endpoint, dataset),
+            operation="グラフの置き換え",
             params={"graph": graph_iri},
             content=turtle.encode("utf-8"),
             headers={"Content-Type": "text/turtle; charset=utf-8"},
         )
-        self._raise_for_status(response, "グラフの置き換え")
 
     # ---- 管理操作(Fuseki 固有) ----
 
     async def list_datasets(self) -> list[str]:
-        response = await self._client.get(
-            f"{self._admin_endpoint}datasets", auth=self._admin_auth or httpx.USE_CLIENT_DEFAULT
+        response = await self._send(
+            "GET",
+            f"{self._admin_endpoint}datasets",
+            operation="データセット一覧の取得",
+            auth=self._admin_auth or httpx.USE_CLIENT_DEFAULT,
         )
-        self._raise_for_status(response, "データセット一覧の取得")
         payload: dict[str, Any] = response.json()
         return [str(entry["ds.name"]).lstrip("/") for entry in payload.get("datasets", [])]
 
     async def create_dataset(self, dataset: str) -> None:
-        response = await self._client.post(
+        await self._send(
+            "POST",
             f"{self._admin_endpoint}datasets",
+            operation="データセットの作成",
             data={"dbName": dataset, "dbType": "tdb2"},
             auth=self._admin_auth or httpx.USE_CLIENT_DEFAULT,
         )
-        self._raise_for_status(response, "データセットの作成")
 
     async def delete_dataset(self, dataset: str) -> None:
-        response = await self._client.delete(
+        await self._send(
+            "DELETE",
             f"{self._admin_endpoint}datasets/{dataset}",
+            operation="データセットの削除",
             auth=self._admin_auth or httpx.USE_CLIENT_DEFAULT,
         )
-        self._raise_for_status(response, "データセットの削除")
 
     # ---- 内部 ----
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        operation: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """HTTP リクエストを送り、失敗を必ず `SparqlStoreError` に包んで返す。
+
+        `SparqlStore` は「ストアとのやり取りに失敗したら `SparqlStoreError` が来る」
+        ことを契約として抽象化している。呼び出し側(Core API)はこの契約に基づいて
+        トランザクションの境界(正本への書き込みをロールバックするかどうか)を
+        判断するため、接続不能やタイムアウトなどの `httpx` の例外を生のまま
+        漏らしてはならない。素通しすると、想定していない例外型が
+        `except SparqlStoreError` をすり抜けて外側の例外処理(DB ロールバック等)を
+        誤発動させ、正本と射影の分裂を招く。
+        """
+        try:
+            response = await self._client.request(method, url, **kwargs)
+        except httpx.HTTPError as exc:
+            raise SparqlStoreError(f"{operation}に失敗しました: {exc}") from exc
+        self._raise_for_status(response, operation)
+        return response
 
     @staticmethod
     def _resolve(template: str, dataset: str) -> str:

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_core.db import NamespaceRow
@@ -47,9 +48,15 @@ class NamespaceRepository:
     ) -> Namespace:
         """名前空間を作る。
 
+        事前に `get()` で存在確認するが、これは check-then-insert であり同時に
+        同名で作成要求が来た場合は両方が確認を通過し得る(競合)。その場合は
+        後から `flush()` する側が一意制約違反の `IntegrityError` になるため、
+        それを最後の砦として捕捉し `NamespaceExistsError` に変換する。
+
         Raises:
             NamespaceNameError: 名前が不正なとき。
-            NamespaceExistsError: 既に存在するとき。
+            NamespaceExistsError: 既に存在するとき(事前チェック、または
+                競合による一意制約違反)。
         """
         validate_namespace_name(name)
         if await self.get(name) is not None:
@@ -63,7 +70,11 @@ class NamespaceRepository:
             created_by=created_by,
         )
         self._session.add(row)
-        await self._session.flush()
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            await self._session.rollback()
+            raise NamespaceExistsError(f"名前空間 '{name}' は既に存在します") from exc
         await self._session.refresh(row)
         return _to_model(row)
 

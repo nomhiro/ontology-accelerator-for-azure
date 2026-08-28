@@ -38,6 +38,29 @@ async def test_create_is_rejected_when_duplicated(session: AsyncSession) -> None
         await repo.create(name="dup", **kwargs)
 
 
+async def test_create_is_rejected_when_precheck_race_slips_through(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """事前の get() チェックをすり抜けても DB の一意制約が最後の砦になること。
+
+    本物の同時リクエストによる競合(2 つの create() が両方 get() で None を
+    見た直後に両方が INSERT を試みる)を決定的に再現するのはタイミング依存で
+    難しいため、事前チェックがすり抜けた状況を monkeypatch で直接再現する。
+    """
+    repo = NamespaceRepository(session)
+    kwargs = dict(display_name="x", description="", base_iri="https://e.example/#", created_by="t")
+    await repo.create(name="raced", **kwargs)
+    await session.commit()
+
+    async def _always_missing(_self: NamespaceRepository, _name: str) -> None:
+        return None
+
+    monkeypatch.setattr(NamespaceRepository, "get", _always_missing)
+
+    with pytest.raises(NamespaceExistsError):
+        await repo.create(name="raced", **kwargs)
+
+
 async def test_invalid_name_is_rejected_before_touching_db(session: AsyncSession) -> None:
     repo = NamespaceRepository(session)
     with pytest.raises(NamespaceNameError):
