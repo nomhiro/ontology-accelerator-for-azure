@@ -14,7 +14,9 @@ dependencies = [
     "pyjwt[crypto]>=2.10",
     "sqlalchemy>=2.0",
     "asyncpg>=0.30",
-    "azure-storage-blob>=12.24",
+    # [aio] extra が azure-core[aio](→ aiohttp)を引き込む。extra なしだと
+    # azure.storage.blob.aio の非同期トランスポート生成時に ImportError で落ちる。
+    "azure-storage-blob[aio]>=12.24",
 ]
 
 [build-system]

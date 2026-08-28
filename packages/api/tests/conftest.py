@@ -1,8 +1,8 @@
 """テスト用のフィクスチャ。
 
-integration マークのテストは実際の PostgreSQL を使う。ローカルでは
-`just up` で立てた compose の PostgreSQL を、CI では services の
-PostgreSQL を使う。**スキップはしない** — 接続できなければ失敗させる。
+integration マークのテストは実際の PostgreSQL / Azurite を使う。ローカルでは
+`just up` で立てた compose の PostgreSQL と Azurite を、CI では services の
+それらを使う。**スキップはしない** — 接続できなければ失敗させる。
 静かにスキップされたテストは、通っているように見えて何も検証しない。
 """
 
@@ -13,8 +13,10 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
+from azure.storage.blob.aio import BlobServiceClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import AuthMode, Settings
 from ontology_core.db import Base, create_engine_and_factory
 
@@ -45,3 +47,29 @@ async def session() -> AsyncIterator[AsyncSession]:
 @pytest.fixture
 def settings() -> Settings:
     return _test_settings()
+
+
+# Azurite の既定アカウント。キーは Azurite が公開している固定値で、秘密ではない。
+#
+# ポートは docker-compose.yml の AZURITE_PORT と揃える。10000 番を別のプロジェクトで
+# 使っている場合に備えて環境変数から読む(Fuseki の FUSEKI_PORT と同じ扱い)。
+_PORT = os.environ.get("AZURITE_PORT", "10000")
+_CONN = (
+    "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;"
+    "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;"
+    f"BlobEndpoint=http://localhost:{_PORT}/devstoreaccount1;"
+)
+
+
+@pytest_asyncio.fixture
+async def blob_store() -> AsyncIterator[OntologyBlobStore]:
+    """Azurite に対する `OntologyBlobStore`。Task 6 の test_projection.py も使う。"""
+    service = BlobServiceClient.from_connection_string(_CONN)
+    container = "ontologies-test"
+    try:
+        await service.create_container(container)
+    except Exception:  # 既存なら無視
+        pass
+    store = OntologyBlobStore.from_client(service, container=container, prefix="approved/")
+    yield store
+    await store.aclose()
