@@ -80,6 +80,29 @@ jobs:
       - name: 型検査
         run: uv run mypy packages
 
+      # test_blob.py が使う Azurite(Blob エミュレータ)。`jobs.*.services` は
+      # postgres と違って起動コマンドを上書きできない(`command`/`args` に相当する
+      # フィールドが無く、`options` は `docker create` の OPTIONS 部分にしか差し込めない)。
+      # 既定コマンドのままだと `--blobHost 0.0.0.0` は効くが `--skipApiVersionCheck` が
+      # 無いため、SDK が送る x-ms-version を Azurite が拒否して
+      # `HttpResponseError: The API version ... is not supported by Azurite` になる
+      # (ローカルで実測確認済み)。そのためステップとして直接 `docker run` し、
+      # `docker-compose.yml` の azurite サービスと同じ起動コマンドを渡す。
+      - name: Azurite(Blob エミュレータ)を起動する
+        run: |
+          docker run -d --name azurite -p 10000:10000 \
+            mcr.microsoft.com/azure-storage/azurite:latest \
+            azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+          for i in $(seq 1 30); do
+            if docker logs azurite 2>&1 | grep -q "successfully listen"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Azurite が起動しませんでした" >&2
+          docker logs azurite
+          exit 1
+
       - name: テスト(単体 + integration)
         env:
           POSTGRES_PASSWORD: localdev
