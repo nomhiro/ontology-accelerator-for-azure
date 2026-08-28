@@ -59,6 +59,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S", "N"]
+# Alembic の雛形・自動生成ファイル。isort の並びや行長など雛形の書式まで
+# 手直しする必要はないため、このディレクトリはまとめて対象外にする。
+"packages/api/alembic/**" = ["ALL"]
 
 # ---------------------------------------------------------------------------
 # 型検査
@@ -69,6 +72,9 @@ strict = true
 warn_unreachable = true
 mypy_path = "packages/core/src:packages/api/src:packages/mcp-server/src"
 explicit_package_bases = true
+# Alembic の自動生成マイグレーション。型注釈が古い書式(Union等)のままで
+# 生成されるため、手で直さず対象外にする。env.py は手書きなので対象に含める。
+exclude = "packages/api/alembic/versions/"
 # サードパーティに型が無いものは個別に無視する
 [[tool.mypy.overrides]]
 module = ["mcp.*"]

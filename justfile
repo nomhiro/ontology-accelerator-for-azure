@@ -69,6 +69,19 @@ down:
 clean:
     docker compose down -v
 
+# DBマイグレーションを適用する(要: just up)
+#
+# `cd packages/api && ...` は使わない。Windows PowerShell 5.1 (powershell.exe)
+# は `&&` をステートメント区切りとして解釈できずに壊れる
+# (fix(justfile): gen-api がPowerShellで壊れるのを修正 と同種の罠)。
+# `uv run --directory` でシェルをまたいで安全に作業ディレクトリを切り替える。
+migrate:
+    uv run --directory packages/api alembic upgrade head
+
+# 新しいマイグレーションを生成する
+migrate-new message:
+    uv run --directory packages/api alembic revision --autogenerate -m "{{message}}"
+
 # Core API を起動する(要: just up)
 dev-api:
     uv run uvicorn ontology_api.main:app --reload --port 8000
