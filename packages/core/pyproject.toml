@@ -12,6 +12,9 @@ dependencies = [
     "rdflib>=7.1",
     "azure-identity>=1.19",
     "pyjwt[crypto]>=2.10",
+    "sqlalchemy>=2.0",
+    "asyncpg>=0.30",
+    "azure-storage-blob>=12.24",
 ]
 
 [build-system]

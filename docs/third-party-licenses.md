@@ -21,6 +21,9 @@
 | Fluent UI | MIT | https://github.com/microsoft/fluentui | ✓ 利用中 |
 | MCP Python SDK | MIT | https://github.com/modelcontextprotocol/python-sdk | ✓ 利用中 |
 | Cytoscape.js | MIT | https://github.com/cytoscape/cytoscape.js | ○ グラフ可視化の候補。**まだ依存関係に追加していない**(Phase 2) |
+| SQLAlchemy | MIT | https://github.com/sqlalchemy/sqlalchemy | ✓ 正本(PostgreSQL)へのアクセス |
+| asyncpg | Apache-2.0 | https://github.com/MagicStack/asyncpg | ✓ 正本(PostgreSQL)への async アクセス。psycopg3 は LGPL-3.0 のため採用しない |
+| azure-storage-blob | MIT | https://github.com/Azure/azure-sdk-for-python | ✓ 正本 TTL の読み書き |
 
 ## 採用しないコンポーネント
 

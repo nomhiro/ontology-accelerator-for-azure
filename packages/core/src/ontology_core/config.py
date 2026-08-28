@@ -69,10 +69,17 @@ class Settings(BaseSettings):
     postgres_database: str = Field(default="ontology", alias="POSTGRES_DATABASE")
     postgres_user: str = Field(default="ontology", alias="POSTGRES_USER")
     postgres_password: str = Field(default="", alias="POSTGRES_PASSWORD")
+    # 接続文字列を直接与えたい場合に使う。空なら postgres_* から組み立てる。
+    database_url: str = Field(default="", alias="DATABASE_URL")
 
     # ---- 正本(Blob: バージョン付き TTL) ----
     azure_storage_account_url: str = Field(default="", alias="AZURE_STORAGE_ACCOUNT_URL")
     ontology_blob_container: str = Field(default="ontologies", alias="ONTOLOGY_BLOB_CONTAINER")
+    # 名前付きグラフ IRI の接頭辞。containers/fuseki/load-snapshot.sh と
+    # infra/modules/fuseki.bicep の graphIriBase と同じ値でなければならない。
+    graph_iri_base: str = Field(default="urn:ontology:graph", alias="GRAPH_IRI_BASE")
+    # 承認済み TTL を置く Blob のプレフィックス。ローダの BLOB_PREFIX と揃える。
+    ontology_blob_prefix: str = Field(default="approved/", alias="BLOB_PREFIX")
 
     # ---- Azure 共通 ----
     azure_client_id: str = Field(default="", alias="AZURE_CLIENT_ID")
@@ -110,8 +117,22 @@ class Settings(BaseSettings):
             else self.postgres_user
         )
         return (
-            f"postgresql+psycopg://{auth}@{self.postgres_host}:{self.postgres_port}"
+            f"postgresql+asyncpg://{auth}@{self.postgres_host}:{self.postgres_port}"
             f"/{self.postgres_database}"
+        )
+
+    @property
+    def async_postgres_dsn(self) -> str:
+        """SQLAlchemy async エンジン用の DSN。
+
+        `DATABASE_URL` が与えられていればそれを優先する。パスワードが空の場合は
+        Entra ID のトークンを実行時に取得して渡すため、DSN にはパスワードを含めない。
+        """
+        if self.database_url:
+            return self.database_url
+        return (
+            f"postgresql+asyncpg://{self.postgres_user}@"
+            f"{self.postgres_host}:{self.postgres_port}/{self.postgres_database}"
         )
 
 

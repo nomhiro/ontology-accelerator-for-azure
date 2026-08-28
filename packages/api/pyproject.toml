@@ -9,13 +9,6 @@ dependencies = [
     "ontology-core",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
-]
-
-[project.optional-dependencies]
-# Phase 1 で正本の PostgreSQL を接続する際に有効化する。
-postgres = [
-    "sqlalchemy>=2.0",
-    "psycopg[binary]>=3.2",
     "alembic>=1.14",
 ]
 
