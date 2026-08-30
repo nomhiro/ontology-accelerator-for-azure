@@ -114,17 +114,31 @@ def _get_blob_credential() -> DefaultAzureCredential:
 async def blob_store(settings: SettingsDep) -> AsyncIterator[OntologyBlobStore]:
     """リクエストごとに正本 TTL の Blob クライアントを提供する。
 
-    `OntologyBlobStore.from_account_url` が `BlobServiceClient` を新しく作るため、
-    このクラスが所有権を持つ(`aclose()` で閉じる)。`DefaultAzureCredential` は
-    `_get_blob_credential()` がプロセス内で共有するものであり、このリクエストが
-    生成したものではないため、ここでは閉じない(プロセスの生存期間中は保持する)。
+    `azure_storage_connection_string`(ローカル専用、Azurite 向け)が設定されて
+    いればそちらを優先する。`from_account_url` + `DefaultAzureCredential` では
+    Azurite(HTTP・共有キー認証)に認証できず、ローカルで Blob 依存の経路
+    (publish / versions / delete)を動かす手段が無くなるため(final-fix-brief.md
+    修正1 / I-1)。デプロイ環境では接続文字列を設定しないので従来どおり
+    `from_account_url` + マネージド ID の経路になる。
+
+    いずれの生成元も `OntologyBlobStore` が `BlobServiceClient` の所有権を持つ
+    (`aclose()` で閉じる)。`DefaultAzureCredential` は `_get_blob_credential()` が
+    プロセス内で共有するものであり、このリクエストが生成したものではないため、
+    ここでは閉じない(プロセスの生存期間中は保持する)。
     """
-    store = OntologyBlobStore.from_account_url(
-        settings.azure_storage_account_url,
-        container=settings.ontology_blob_container,
-        prefix=settings.ontology_blob_prefix,
-        credential=_get_blob_credential(),
-    )
+    if settings.azure_storage_connection_string:
+        store = OntologyBlobStore.from_connection_string(
+            settings.azure_storage_connection_string,
+            container=settings.ontology_blob_container,
+            prefix=settings.ontology_blob_prefix,
+        )
+    else:
+        store = OntologyBlobStore.from_account_url(
+            settings.azure_storage_account_url,
+            container=settings.ontology_blob_container,
+            prefix=settings.ontology_blob_prefix,
+            credential=_get_blob_credential(),
+        )
     try:
         yield store
     finally:

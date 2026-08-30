@@ -74,6 +74,14 @@ class ReconcileReport:
     # はしない。** データセットの削除は破壊的で、DB 側の行が別の理由で失われていた
     # 場合にデータを消してしまうため、運用者の判断に委ねる。
     orphan_datasets: list[str] = field(default_factory=list)
+    # PostgreSQL に対応する行が無い Blob(TTL)の一覧。
+    #
+    # 一意制約レースの回復パス(I-2)で負けた側が書いた Blob や、名前空間削除後の
+    # TOCTOU ウィンドウ(O-1、Blob 一覧取得と PG DELETE の間に並行 publish が
+    # Blob を書く)で残る Blob がこれに当たる。orphan_datasets と同じ理由で
+    # **報告するが削除しない**(オントロジーは不変リビジョン、ADR-0006)。
+    # これが Phase 1 における唯一の検出手段であり、削除は運用者の手動判断に委ねる。
+    orphan_blobs: list[str] = field(default_factory=list)
 
 
 def _next_version(previous: OntologyVersion | None) -> str:
@@ -168,6 +176,16 @@ class ProjectionService:
                 # 回復できないので、そのまま呼び出し元に伝える。
                 raise
             recorded = conflict
+            # `resolved` と `graph_iri` も勝った側の値に揃える(final-fix-brief.md
+            # 修正2(a) / I-2)。揃えないと、この後の put_graph が負けた側の
+            # ローカル変数のまま(=自分が使おうとした版の graph_iri)呼ばれてしまい、
+            # 「ストアに居るが正本に無い」孤児グラフが生まれる。さらに
+            # mark_projected(namespace, resolved) もこの版の行が存在しないため
+            # NoResultFound(SparqlStoreError ではないので握り潰されず 500)になる。
+            # 再計算(version_graph_iri を再度呼ぶ等)ではなく `recorded` が
+            # 実際に持っている値をそのまま使う。計算式のずれが入る余地を無くすため。
+            resolved = recorded.version
+            graph_iri = recorded.graph_iri
         else:
             await AuditRepository(self._session).record(
                 namespace=namespace,
@@ -235,6 +253,12 @@ class ProjectionService:
         report.orphan_datasets = sorted(existing - known - {"ds"})
 
         versions = VersionRepository(self._session)
+
+        # 正本(PG)に対応する行が無い Blob を報告する(削除はしない。
+        # orphan_datasets と同じ理由。final-fix-brief.md 修正2(b) / I-2)。
+        all_blobs = set(await self._blob.list_versions())
+        report.orphan_blobs = sorted(all_blobs - await versions.all_blob_paths())
+
         for version in await versions.unprojected():
             try:
                 turtle = await self._blob.get_version(version.blob_path)

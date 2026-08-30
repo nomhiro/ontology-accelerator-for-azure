@@ -132,3 +132,36 @@ async def test_unexpected_json_shape_is_wrapped_in_list_datasets() -> None:
     finally:
         await store.aclose()
         await client.aclose()
+
+
+@pytest.mark.parametrize("body", ["[]", '"oops"', "null"])
+async def test_non_dict_json_body_is_wrapped_in_list_datasets(body: str) -> None:
+    """M-2: JSON としては正しく解析できても dict でない本文
+    (`[]` / `"oops"` / `null`)は、修正前は `payload.get(...)` の
+    `AttributeError` が未捕捉のまま漏れていた(`except (KeyError, TypeError)` では
+    掛からない)。`_send_json` の時点で dict であることを検証し、
+    `SparqlStoreError` に包むこと。
+    """
+    store, client = _store_with_mock_response(body)
+    try:
+        with pytest.raises(SparqlStoreError):
+            await store.list_datasets()
+    finally:
+        await store.aclose()
+        await client.aclose()
+
+
+async def test_non_dict_json_body_is_wrapped_in_query_not_returned_as_is() -> None:
+    """M-2: `query` はトップレベルが配列の JSON(`[1, 2]`)を修正前は例外を
+    投げずそのまま返していた(戻り値の型注釈 `dict[str, Any]` は実行時には
+    強制されない)。`routers/sparql.py` の戻り型は `dict[str, Any]` であり、
+    list が返ると FastAPI の応答検証で 502 ではなく 500 になる。
+    `_send_json` の時点で `SparqlStoreError` にすること。
+    """
+    store, client = _store_with_mock_response("[1, 2]")
+    try:
+        with pytest.raises(SparqlStoreError):
+            await store.query("SELECT * WHERE { ?s ?p ?o }", dataset="ds")
+    finally:
+        await store.aclose()
+        await client.aclose()

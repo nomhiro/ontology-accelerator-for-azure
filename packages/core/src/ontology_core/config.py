@@ -87,6 +87,15 @@ class Settings(BaseSettings):
 
     # ---- 正本(Blob: バージョン付き TTL) ----
     azure_storage_account_url: str = Field(default="", alias="AZURE_STORAGE_ACCOUNT_URL")
+    # ローカル専用: Azurite への接続文字列。設定されていれば `from_account_url` +
+    # DefaultAzureCredential より優先する(dependencies.py の blob_store を参照)。
+    # Azurite は HTTP・共有キー認証のみで DefaultAzureCredential を受け付けないため、
+    # これが無いとローカルで Blob 依存の経路(publish / versions / delete)を
+    # 一切動かせない(final-fix-brief.md 修正1 / I-1)。デプロイ環境では設定しないこと
+    # (Bicep はマネージド ID 用に AZURE_STORAGE_ACCOUNT_URL だけを注入する)。
+    azure_storage_connection_string: str = Field(
+        default="", alias="AZURE_STORAGE_CONNECTION_STRING"
+    )
     ontology_blob_container: str = Field(default="ontologies", alias="ONTOLOGY_BLOB_CONTAINER")
     # 名前付きグラフ IRI の接頭辞。containers/fuseki/load-snapshot.sh と
     # infra/modules/fuseki.bicep の graphIriBase と同じ値でなければならない。

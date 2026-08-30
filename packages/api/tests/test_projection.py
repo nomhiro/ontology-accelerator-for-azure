@@ -13,6 +13,7 @@ from ontology_api.services.projection import AutoVersionError, ProjectionService
 from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import Settings
 from ontology_core.db import create_engine_and_factory
+from ontology_core.models import OntologyVersion
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
 
 pytestmark = pytest.mark.integration
@@ -112,6 +113,63 @@ async def test_version_is_incremented_for_new_content(prepared: Prepared) -> Non
 
     assert first.version == "1.0.0"
     assert second.version == "1.1.0"
+
+
+async def test_race_recovery_uses_winners_version_and_graph_iri(
+    prepared: Prepared, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I-2(a): 一意制約レースの回復パスは、勝った側の version と graph_iri を使う。
+
+    修正前は `recorded = conflict` の後 `resolved` / `graph_iri` が負けた側の
+    ローカル変数のままだったため、`mark_projected` が当たらず `NoResultFound`
+    (SparqlStoreError ではないので握り潰されず 500)になり、`put_graph` も
+    負けた側の graph_iri で呼ばれて孤児グラフが生まれていた。
+
+    本物の同時実行(asyncio.gather)によるレースはタイミング依存で決定的に
+    再現しづらいため、`find_by_hash` の事前チェックを1回だけ空振りさせる
+    monkeypatch で「両方が record() まで到達した」状況を再現する
+    (`test_namespaces_repo.py` の `test_create_is_rejected_when_precheck_race_slips_through`
+    と同じ手法)。
+    """
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+
+    # X: 明示バージョンで先に commit まで進む(勝った側)。
+    winner = await svc.publish(namespace="retail-core", turtle=TTL, actor="x", version="2.0.0")
+
+    # Y: 事前の find_by_hash チェックだけ「X が見えない」状態を再現し、
+    # record() まで進ませて (namespace, content_hash) の一意制約に当てる。
+    # except ブランチ内の find_by_hash(conflict の取得)は本物の実装のまま。
+    real_find_by_hash = VersionRepository.find_by_hash
+    calls = {"n": 0}
+
+    async def _miss_once(
+        self: VersionRepository, namespace: str, content_hash: str
+    ) -> OntologyVersion | None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return await real_find_by_hash(self, namespace, content_hash)
+
+    monkeypatch.setattr(VersionRepository, "find_by_hash", _miss_once)
+
+    loser = await svc.publish(namespace="retail-core", turtle=TTL, actor="y")
+
+    # 戻り値は勝った側そのもの。
+    assert loser.version == winner.version == "2.0.0"
+    assert loser.graph_iri == winner.graph_iri
+
+    # put_graph は勝った側の graph_iri に対してだけ呼ばれ、
+    # 負けた側が使おうとした版(auto版、"2.1.0")宛の孤児グラフは無い。
+    assert store.graphs == {("retail-core", winner.graph_iri): TTL}
+
+    # mark_projected が勝った側の行に当たり、500 にならず正常に完了している。
+    rows = await VersionRepository(session).list_for("retail-core")
+    assert len(rows) == 1
+    assert rows[0].projected_at is not None
 
 
 async def test_projection_failure_keeps_source_of_truth(prepared: Prepared) -> None:
@@ -260,6 +318,32 @@ async def test_reconcile_reports_orphan_datasets_without_deleting(prepared: Prep
     assert report.orphan_datasets == ["orphan-ns"]
     # 報告しただけで消していないこと。
     assert "orphan-ns" in await store.list_datasets()
+
+
+async def test_reconcile_reports_orphan_blobs_without_deleting(prepared: Prepared) -> None:
+    """I-2(b): PG に対応する行が無い Blob(孤児 TTL)は orphan_blobs に報告され、
+    削除されない(orphan_datasets と同じ「報告のみ」方針。ADR-0006 の不変リビジョン)。
+
+    一意制約レースの回復パス(I-2(a))で負けた側が書いた Blob や、名前空間削除の
+    TOCTOU ウィンドウ(O-1)で残る Blob がこの経路で検出される想定。
+    """
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    published = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    await session.commit()
+
+    # PG の記録を経由せず Blob に直接置く(孤児 TTL を模す)。
+    orphan_path = await blob.put_version("retail-core", "9.9.9", TTL + "\nex:Z a ex:Class .\n")
+
+    report = await svc.reconcile()
+
+    assert report.orphan_blobs == [orphan_path]
+    # 報告しただけで消していないこと。
+    assert orphan_path in await blob.list_versions("retail-core")
+    # 正本に記録済みの版は孤児として報告されない。
+    assert published.blob_path not in report.orphan_blobs
 
 
 async def test_auto_versioning_after_non_numeric_minor_is_rejected_not_500(

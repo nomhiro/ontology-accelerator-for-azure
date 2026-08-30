@@ -23,8 +23,9 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **結果件数の上限(`SPARQL_MAX_RESULTS`)は Phase 1 では未強制**で、値は保持され
   Bicep が注入しているが LIMIT を後付けする実装が無い(任意の SPARQL に対する
   安価で正しい強制手段が無いため)。強制は Phase 2 で対応する
-- 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 83 件: unit 61 件 + integration 22 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)。削除(`DELETE /namespaces/{name}`)は、公開済みバージョンが Blob に1件でも残っていれば 409 Conflict で拒否する(オントロジーは不変リビジョンであり、レプリカ再作成後に削除済みのはずのデータが Blob から復活することを防ぐため)。
+  **既知の制約**: この判定(Blob 一覧の取得 → PostgreSQL の行削除)の間に別リクエストが同じ名前空間へ同時に publish すると削除自体は通ってしまい、その publish が書いた Blob だけが正本(PostgreSQL)に対応する行を失った状態で残る、ごく狭い競合状態(TOCTOU)がある。完全に閉じるにはロックか二段確認が必要で Phase 2 の「監査付き削除」で対応する予定です。Phase 1 では `POST /admin/reconcile` の `orphan_blobs` でこの状態を検出できます(削除は運用者の手動判断に委ねており、自動削除はしません)
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 105 件: unit 72 件 + integration 33 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 

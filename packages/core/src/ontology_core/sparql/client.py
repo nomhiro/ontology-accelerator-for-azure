@@ -215,7 +215,7 @@ class FusekiStore(SparqlStore):
         *,
         operation: str,
         **kwargs: Any,
-    ) -> Any:
+    ) -> dict[str, Any]:
         """`_send` に加えて JSON 解析までを `SparqlStoreError` の契約に含める。
 
         `_send` は HTTP 層(接続不能・タイムアウト・非 2xx)の失敗しか包まない。
@@ -227,12 +227,27 @@ class FusekiStore(SparqlStore):
         `ProjectionService.reconcile()` では `except (SparqlStoreError,
         BlobStoreError)` をすり抜けて per-item の失敗として記録されずループ全体が
         中断する。
+
+        さらに、JSON としては正しく解析できても **dict でない**(`[]` / `"oops"` /
+        `null` / トップレベル配列)応答は、呼び出し側(`list_datasets` の
+        `payload.get(...)`)で未捕捉の `AttributeError` として漏れる(final-fix-brief.md
+        修正3 / M-2)。`query()` はこの戻り値をそのまま `dict[str, Any]` として返すため、
+        リストが漏れた場合は `routers/sparql.py` の応答型検証(FastAPI)に引っかかって
+        意図した 502 ではなく 500 になる。ここで dict であることまで検証し、
+        そうでなければ `SparqlStoreError` にすることで、呼び出し側は常に
+        「失敗なら `SparqlStoreError`、成功なら dict」という契約だけに依拠できる。
         """
         response = await self._send(method, url, operation=operation, **kwargs)
         try:
-            return response.json()
+            payload = response.json()
         except ValueError as exc:
             raise SparqlStoreError(f"{operation}の応答が JSON として解釈できません: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise SparqlStoreError(
+                f"{operation}の応答形式が不正です: "
+                f"dict ではなく {type(payload).__name__} が返りました"
+            )
+        return payload
 
     @staticmethod
     def _resolve(template: str, dataset: str) -> str:

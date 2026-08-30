@@ -72,9 +72,10 @@ class OntologyBlobStore:
 
     クライアントの所有権(`aclose()` で何を閉じるか)は生成元によって異なる。
 
-      - `from_account_url`: このメソッドが `BlobServiceClient` を新しく作るため、
-        **`OntologyBlobStore` がその所有権を持つ**。`aclose()` はコンテナクライアントに
-        加えてこの `BlobServiceClient` も閉じる。呼び出し側は何も後始末しなくてよい。
+      - `from_account_url` / `from_connection_string`: いずれも `BlobServiceClient` を
+        新しく作るため、**`OntologyBlobStore` がその所有権を持つ**。`aclose()` は
+        コンテナクライアントに加えてこの `BlobServiceClient` も閉じる。呼び出し側は
+        何も後始末しなくてよい。
       - `from_client`: 呼び出し側が渡した既存の `BlobServiceClient` を使うだけで、
         **所有権は呼び出し側に残る**。`aclose()` はコンテナクライアントのみ閉じ、
         渡された `BlobServiceClient` は閉じない。呼び出し側が自分で `close()` すること
@@ -105,6 +106,20 @@ class OntologyBlobStore:
         cls, account_url: str, *, container: str, prefix: str, credential: BlobCredential
     ) -> Self:
         service = BlobServiceClient(account_url=account_url, credential=credential)
+        return cls(service.get_container_client(container), prefix=prefix, owned_service=service)
+
+    @classmethod
+    def from_connection_string(cls, connection_string: str, *, container: str, prefix: str) -> Self:
+        """接続文字列(共有キー認証)から生成する。ローカル開発の Azurite 用。
+
+        `from_account_url` + `DefaultAzureCredential` は Azurite(HTTP・共有キー認証)
+        に認証できないため、ローカルで Blob 依存の経路(publish / versions / delete)を
+        動かすにはこちらが必須になる(`final-fix-brief.md` 修正1 / I-1)。
+        `from_account_url` と同じくこのメソッドが `BlobServiceClient` を新しく作るため、
+        `owned_service` を渡して所有権を持たせる。`from_client` を流用すると
+        (所有権を持たない設計のため)`aclose()` で閉じ漏れる。
+        """
+        service = BlobServiceClient.from_connection_string(connection_string)
         return cls(service.get_container_client(container), prefix=prefix, owned_service=service)
 
     @classmethod

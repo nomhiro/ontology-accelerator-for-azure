@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, StoreDep
 from ontology_api.repositories.namespaces import NamespaceExistsError, NamespaceRepository
-from ontology_core.graphs import NamespaceNameError, dataset_name
+from ontology_core.graphs import NamespaceNameError, dataset_name, validate_namespace_name
 from ontology_core.models import Namespace
 from ontology_core.sparql.client import SparqlStoreError
 
@@ -120,6 +120,16 @@ async def delete_namespace(
     オントロジーを含む名前空間の削除は Phase 2(監査経路)で対応する。
     """
     del principal
+    # `name` はこの後 Blob のプレフィックス・Fuseki のデータセット名の組み立てに
+    # 使われる。DB に存在しない名前空間なら結局 404 になるが、それは「たまたま
+    # 検証されている」だけであり、`publish_version` / `list_versions` /
+    # `run_query` と同じく名前空間名がセキュリティ境界であることの明示的な契約に
+    # するため、パスパラメータの入口で検証する(final-fix-brief.md 修正5 / O-2)。
+    try:
+        validate_namespace_name(name)
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     if await NamespaceRepository(session).get(name) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -145,6 +155,14 @@ async def delete_namespace(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"名前空間 '{name}' が見つかりません",
         )
+
+    # 正本(PostgreSQL)の削除をここで commit してから射影(データセット)を消す。
+    # `SessionDep`(`session_scope`)はリクエスト終了後にしか commit しないため、
+    # ここで確定させないと実行順は「PG(未コミット) → Fuseki(耐久化) → PG commit」
+    # になり、途中で落ちると PG 行が残ったままデータセットだけ消える(publish 側で
+    # `ProjectionService.publish` が確立した「耐久化は正本 → 射影の順」という原則が
+    # 削除側では守られていない状態になる。final-fix-brief.md 修正6 / O-3)。
+    await session.commit()
 
     try:
         await store.delete_dataset(dataset_name(name))

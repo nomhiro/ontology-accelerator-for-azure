@@ -100,6 +100,18 @@ class VersionRepository:
         stmt = select(OntologyVersionRow).where(OntologyVersionRow.projected_at.is_(None))
         return [_to_model(r) for r in (await self._session.execute(stmt)).scalars()]
 
+    async def all_blob_paths(self) -> set[str]:
+        """記録されている全バージョンの Blob パス集合を返す。
+
+        `ProjectionService.reconcile()` が孤児 Blob(PG に対応する行が無い TTL)を
+        検出するために使う。`ontology_versions` は `namespaces` への外部キーが
+        `ON DELETE CASCADE` なので、名前空間の行が削除されればその配下のバージョン
+        行も一緒に消える。つまり名前空間ごとにループする必要はなく、テーブル全体を
+        1回読めば「正本(PG)が知っている Blob パス」の全体が取れる。
+        """
+        stmt = select(OntologyVersionRow.blob_path)
+        return set((await self._session.execute(stmt)).scalars())
+
 
 class AuditRepository:
     """`audit_events` へのアクセス。"""

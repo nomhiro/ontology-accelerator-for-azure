@@ -78,6 +78,18 @@ def test_list_versions_rejects_invalid_namespace(namespace: str) -> None:
     assert response.status_code == 400
 
 
+@pytest.mark.parametrize("namespace", _INVALID_NAMESPACES)
+def test_delete_namespace_rejects_invalid_namespace(namespace: str) -> None:
+    """final-fix-brief.md 修正5 / O-2: `delete_namespace` は他の3経路
+    (`run_query` / `publish_version` / `list_versions`)と同じく入口で
+    `validate_namespace_name` を呼ぶこと。修正前は検証が無く、DB に該当行が
+    無いだけで(たまたま)404 になっていた非対称があった。
+    """
+    response = client.delete(f"/namespaces/{namespace}")
+
+    assert response.status_code == 400
+
+
 def test_path_traversal_style_namespace_does_not_reach_the_store() -> None:
     """`../ds` のようなパストラバーサル的な値を試す。
 
