@@ -56,6 +56,12 @@ check "64 文字以上は長すぎて拒否" \
 # 正常系。
 check "正常なバージョンファイル名"                    validate_version_file "1.0.0.ttl" ok
 check "英字とプラスを含むバージョンも許可"            validate_version_file "1.0.0-beta+build.ttl" ok
+# 1 文字のバージョンも許可(ontology_core.graphs._VERSION_PATTERN は
+# [A-Za-z0-9][A-Za-z0-9.+-]{0,63} で 1 文字から許可している。過去に
+# [A-Za-z0-9][A-Za-z0-9.+-]* という POSIX glob で書いたことで 2 文字以上を
+# 要求してしまい、1 文字のバージョンを静かにスキップするバグがあった)。
+check "数字 1 文字のバージョンも許可"                 validate_version_file "1.ttl" ok
+check "英字 1 文字のバージョンも許可"                 validate_version_file "a.ttl" ok
 # 異常系。修正1(Important)の本題: version_file 自体は Blob のリスト応答から
 # そのまま来るため、ここで拒否できないと STAGING_DIR の外へ書き込める。
 check "拡張子が .ttl でないと拒否"                    validate_version_file "1.0.0" reject
