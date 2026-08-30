@@ -11,6 +11,8 @@ from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import VersionRepository
 from ontology_api.services.projection import AutoVersionError, ProjectionService
 from ontology_core.blob import OntologyBlobStore
+from ontology_core.config import Settings
+from ontology_core.db import create_engine_and_factory
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
 
 pytestmark = pytest.mark.integration
@@ -113,15 +115,7 @@ async def test_version_is_incremented_for_new_content(prepared: Prepared) -> Non
 
 
 async def test_projection_failure_keeps_source_of_truth(prepared: Prepared) -> None:
-    """射影が失敗しても正本は残り、未射影として記録される。
-
-    O-1: `put_graph` の前に正本(PostgreSQL)を commit する。そのため失敗時に
-    呼び出し元へ返す例外(`SparqlStoreError`)は正本の書き込みを巻き戻さない
-    (Blob は元々 commit 概念が無く書いた時点で耐久化、PostgreSQL は明示 commit
-    済み)。この3点セットの検証は
-    `test_put_graph_failure_after_commit_returns_error_and_is_recovered_by_reconcile`
-    でロールバックを挟んで確認する。ここでは publish() 自体の基本挙動のみ見る。
-    """
+    """射影が失敗しても正本は残り、未射影として記録される。"""
     session, blob = prepared
     svc = ProjectionService(
         session=session,
@@ -130,27 +124,27 @@ async def test_projection_failure_keeps_source_of_truth(prepared: Prepared) -> N
         graph_iri_base="urn:ontology:graph",
     )
 
-    with pytest.raises(SparqlStoreError):
-        await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    version = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
 
+    assert await blob.get_version(version.blob_path) == TTL
     rows = await VersionRepository(session).list_for("retail-core")
-    assert len(rows) == 1
-    assert await blob.get_version(rows[0].blob_path) == TTL
     assert rows[0].projected_at is None
     assert len(await VersionRepository(session).unprojected()) == 1
 
 
-async def test_put_graph_failure_after_commit_returns_error_and_is_recovered_by_reconcile(
-    prepared: Prepared,
+async def test_put_graph_failure_is_durably_committed_before_projection(
+    prepared: Prepared, settings: Settings
 ) -> None:
-    """O-1 の必須テスト: `put_graph` が失敗したとき、(a) 呼び出し元に例外
-    (ルーターでは 500)が返り、(b) PG に行が残り `projected_at` が NULL であり、
-    (c) `reconcile()` がその行を拾って射影を完了させることを通しで確認する。
+    """O-1 の必須テスト: `put_graph` の前に正本(PostgreSQL)を commit するため、
+    put_graph が失敗してもその時点で行は既に耐久化されている。
 
-    `put_graph` の前に commit しているため、呼び出し元への例外伝播で
-    `session_scope` がロールバックを呼んでも(耐久化の観点で)行は消えない
-    ことを、実際に rollback を挟んで確認する(commit 前に発生する他の例外
-    ―― 例えば一意制約違反 ―― と違って、ここは巻き戻せないことが O-1 の要点)。
+    `publish()` 自体は例外を投げず成功として返す(`projected_at` が NULL、
+    reconcile が回収する既存の正しい挙動、これは変えない)。ここで確認するのは
+    「その耐久化がいつ起きているか」であり、同一セッション内の `flush()` だけでは
+    「読めるが未コミット」との違いを判定できないため、**独立した新規コネクション**
+    (別セッション)から見えることを確認する。修正前(commit がリクエスト終了時
+    のみ)は `publish()` を直接呼ぶこのテストでは commit が一度も走らないため、
+    別コネクションからは 0 件に見えて失敗する。
     """
     session, blob = prepared
     failing = FakeStore(fail_put=True)
@@ -158,17 +152,19 @@ async def test_put_graph_failure_after_commit_returns_error_and_is_recovered_by_
         session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
     )
 
-    with pytest.raises(SparqlStoreError):
-        await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    version = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    assert version.projected_at is None
 
-    # session_scope の例外パス(`except Exception: await session.rollback(); raise`)
-    # を模す。commit 済みの行は rollback では消えない。
-    await session.rollback()
+    engine2, factory2 = create_engine_and_factory(settings)
+    try:
+        async with factory2() as other_session:
+            rows = await VersionRepository(other_session).list_for("retail-core")
+            assert len(rows) == 1
+            assert rows[0].projected_at is None
+    finally:
+        await engine2.dispose()
 
-    rows = await VersionRepository(session).list_for("retail-core")
-    assert len(rows) == 1
-    assert rows[0].projected_at is None
-
+    # reconcile がこの行を拾って射影を完了させる。
     healthy = FakeStore()
     report = await ProjectionService(
         session=session, blob=blob, store=healthy, graph_iri_base="urn:ontology:graph"
@@ -184,10 +180,9 @@ async def test_reconcile_projects_unprojected_versions(prepared: Prepared) -> No
     """reconcile が未射影のバージョンとデータセットを埋める。"""
     session, blob = prepared
     failing = FakeStore(fail_put=True)
-    with pytest.raises(SparqlStoreError):
-        await ProjectionService(
-            session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
-        ).publish(namespace="retail-core", turtle=TTL, actor="t")
+    await ProjectionService(
+        session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
+    ).publish(namespace="retail-core", turtle=TTL, actor="t")
     await session.commit()
 
     healthy = FakeStore()
@@ -219,17 +214,11 @@ async def test_reconcile_reports_blob_failures_without_aborting(prepared: Prepar
         session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
     )
 
-    # O-1: put_graph の前に commit するため、失敗しても正本(PG 行)は残る。
-    # 呼び出し元には例外が伝播する(必ず catch すること)。
-    with pytest.raises(SparqlStoreError):
-        await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
-    with pytest.raises(SparqlStoreError):
-        await svc.publish(namespace="retail-core", turtle=TTL + "\nex:B a ex:Class .\n", actor="t")
+    ok = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    broken = await svc.publish(
+        namespace="retail-core", turtle=TTL + "\nex:B a ex:Class .\n", actor="t"
+    )
     await session.commit()
-
-    rows = await VersionRepository(session).list_for("retail-core")
-    assert len(rows) == 2
-    ok, broken = rows[0], rows[1]
 
     # broken 版の DB 上の blob_path を、実在しない Blob を指すように壊す。
     row = (

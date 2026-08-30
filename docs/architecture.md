@@ -22,7 +22,7 @@
 
 2. **トリプルストアは「再構築可能な射影」** — 正本(system of record)は **PostgreSQL + Blob 上のバージョン付き TTL** であり、トリプルストアは検索インデックスと同じ「いつでも作り直せる派生物」として扱います。これによりストアの永続化リスクが設計上消えます(詳細は[グラフ永続化設計](#グラフ永続化設計)、[ADR-0002](adr/0002-triple-store-as-rebuildable-projection.md))。
 
-3. **SPARQL 1.1 Protocol をハード境界に** — アプリコードはストア実装に依存しません。`SPARQL_ENDPOINT` を設定で差し替えられ、既存の GraphDB / Stardog / Amazon Neptune 等を「持ち込み」できます。
+3. **SPARQL 1.1 Protocol をハード境界に** — アプリコードはストア実装に依存しません。`SPARQL_QUERY_ENDPOINT` / `SPARQL_UPDATE_ENDPOINT` / `SPARQL_GSP_ENDPOINT` を設定で差し替えられ、既存の GraphDB / Stardog / Amazon Neptune 等を「持ち込み」できます。
 
 4. **Fuseki への書き込み口は Core API のみ** — エージェント・Web・外部クライアントには読み取りのみを提供し、内部エンドポイント経由の SPARQL Update / Graph Store Protocol による書き込みは Core API だけが行います。変更は必ず「正本に書く → ストアへ射影」の順です。データ保全とセキュリティ対策を同時に満たします。
 
@@ -228,7 +228,7 @@ AWS 版 [Context Ontology Accelerator](https://github.com/aws/context-ontology-a
 
 | AWS 版 | Azure minimal | 備考 |
 |---|---|---|
-| Neptune (RDF/SPARQL) | **Apache Jena Fuseki** on ACA(EmptyDir + 起動時再構築、読み取り専用・internal ingress) | 上記[グラフ永続化設計](#グラフ永続化設計)。`SPARQL_ENDPOINT` で外部ストア持ち込みも可 |
+| Neptune (RDF/SPARQL) | **Apache Jena Fuseki** on ACA(EmptyDir + 起動時再構築、読み取り専用・internal ingress) | 上記[グラフ永続化設計](#グラフ永続化設計)。`SPARQL_*_ENDPOINT` で外部ストア持ち込みも可 |
 | OpenSearch Serverless | **Azure AI Search**(Phase 3 で追加。それまで未デプロイでコスト回避) | 統合ベクトル化・ハイブリッド検索 |
 | Bedrock | **Microsoft Foundry**(Azure OpenAI 系、従量) | モデルのリージョン可用性に注意(R4) |
 | API 群 | **Azure Container Apps** Consumption(API/MCP は scale-to-zero) | |

@@ -8,12 +8,15 @@
 3. Fuseki の名前付きグラフへ射影する
 
 3 が失敗しても 1・2 は巻き戻さない(1・2 は既に commit 済みで巻き戻せない)。
-`projected_at` が NULL のまま残り、`reconcile()` が後から埋める。3 の失敗は
-握り潰さず呼び出し元に伝播させる(500 相当)。正本の書き込み自体は成功して
-いるため、リトライ時は同じバージョン番号が再計算されて上書きになる(冪等)。
-逆順(射影 → 正本)にすると「ストアには居るが正本に無い」データが生まれ、
-レプリカ再作成で消えるため許容できない
-(docs/adr/0002-triple-store-as-rebuildable-projection.md)。
+`projected_at` が NULL のまま残り、`reconcile()` が後から埋める。
+
+**トリプルストアは再構築可能な射影であり正本ではない**(設計原則1)。正本
+(Blob + PostgreSQL)が耐久的に書けた時点で publish は成功しており、3 の失敗は
+握り潰して呼び出し元には成功として返す(`projected_at` が NULL であることで
+射影待ちだと分かる)。呼び出し元に失敗を返すと、耐久的に成功した書き込みを
+失敗として伝えることになり、射影を正本と同格に扱ってしまう。逆順(射影 → 正本)
+にすると「ストアには居るが正本に無い」データが生まれ、レプリカ再作成で消える
+ため許容できない(docs/adr/0002-triple-store-as-rebuildable-projection.md)。
 """
 
 from __future__ import annotations
@@ -178,13 +181,21 @@ class ProjectionService:
         # しか commit しないため、ここで明示的に commit しないと実行順は
         # 「Blob(耐久化) → PG(未コミット) → Fuseki(耐久化) → PG commit」になり、
         # 宣言している不変条件「Blob → PostgreSQL → Fuseki」が耐久化の観点で
-        # 守られない(ブランチ全体レビュー O-1)。ここで commit すると、以後
-        # put_graph が失敗して例外が呼び出し元まで伝播しても、
-        # `session_scope` の rollback は既にコミット済みのこの行を巻き戻せない
-        # (rollback で消えるのはコミット後に新たに始まった分だけ)。
+        # 守られない(ブランチ全体レビュー O-1)。ここで commit することで、
+        # 以後 put_graph が失敗しても「コミット済み・射影前」(projected_at IS
+        # NULL)という reconcile が拾える正規の状態が、この時点で既に耐久化
+        # されている(リクエスト終了時の commit を待たない)。
         await self._session.commit()
 
         # ---- 3. 射影 ----
+        # put_graph が失敗しても正本(Blob・PostgreSQL、上で commit 済み)は
+        # 巻き戻さず、呼び出し元には成功として返す。トリプルストアは正本では
+        # なく再構築可能な射影であり(設計原則1)、正本への書き込みが耐久的に
+        # 成功した時点で publish は成功している。ここで呼び出し元に失敗を返すと、
+        # 耐久的に成功した書き込みを失敗として伝えることになり、射影の失敗が
+        # 正本への書き込みを失敗させる(= 射影を正本と同格に扱う)ことになって
+        # 設計の根幹に反する。`projected_at` が NULL のまま残ることで射影待ちだと
+        # 分かり、`reconcile()` が後から回収する。
         try:
             await self._store.put_graph(graph_iri, turtle, dataset=dataset_name(namespace))
             await versions.mark_projected(namespace, resolved)
@@ -192,16 +203,11 @@ class ProjectionService:
         except SparqlStoreError:
             logger.exception(
                 "名前空間 '%s' バージョン '%s' の射影に失敗しました。"
-                "正本(Blob・PostgreSQL)は既にコミット済みです。呼び出し元には"
-                "失敗を返し、reconcile で回復します",
+                "正本は保存済みです。reconcile で回復します",
                 namespace,
                 resolved,
             )
-            # 正本への書き込みは上で commit 済みなので握り潰さず伝播させる。
-            # 「コミット済み・射影前」を projected_at IS NULL として reconcile が
-            # 拾える正規の状態のまま呼び出し元に知らせる(500 を返すのは意図した
-            # 挙動であり、それを避けるために握り潰さない)。
-            raise
+            return recorded
 
         return await versions.find_by_hash(namespace, content_hash) or recorded
 
