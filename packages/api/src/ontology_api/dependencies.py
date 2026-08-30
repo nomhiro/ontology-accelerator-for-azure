@@ -13,11 +13,12 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ontology_core.auth.entra import Principal, TokenVerificationError, TokenVerifier
+from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import AuthMode, Settings, get_settings
 from ontology_core.db import create_engine_and_factory, session_scope
 from ontology_core.sparql.client import FusekiStore, SparqlStore
 
-__all__ = ["CurrentPrincipal", "SessionDep", "SettingsDep", "StoreDep"]
+__all__ = ["BlobDep", "CurrentPrincipal", "SessionDep", "SettingsDep", "StoreDep"]
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
@@ -85,6 +86,32 @@ async def sparql_store(settings: SettingsDep) -> AsyncIterator[SparqlStore]:
 
 
 StoreDep = Annotated[SparqlStore, Depends(sparql_store)]
+
+
+async def blob_store(settings: SettingsDep) -> AsyncIterator[OntologyBlobStore]:
+    """リクエストごとに正本 TTL の Blob クライアントを提供する。
+
+    `OntologyBlobStore.from_account_url` が `BlobServiceClient` を新しく作るため、
+    このクラスが所有権を持つ(`aclose()` で閉じる)。`DefaultAzureCredential` は
+    ここで生成したものなので、こちらも合わせて `close()` する。
+    """
+    from azure.identity.aio import DefaultAzureCredential
+
+    credential = DefaultAzureCredential()
+    store = OntologyBlobStore.from_account_url(
+        settings.azure_storage_account_url,
+        container=settings.ontology_blob_container,
+        prefix=settings.ontology_blob_prefix,
+        credential=credential,
+    )
+    try:
+        yield store
+    finally:
+        await store.aclose()
+        await credential.close()
+
+
+BlobDep = Annotated[OntologyBlobStore, Depends(blob_store)]
 
 
 @lru_cache(maxsize=1)

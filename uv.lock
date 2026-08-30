@@ -1442,6 +1442,7 @@ version = "0.0.1"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "asyncpg" },
+    { name = "azure-core", extra = ["aio"] },
     { name = "azure-identity" },
     { name = "azure-storage-blob", extra = ["aio"] },
     { name = "httpx" },
@@ -1455,6 +1456,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.30" },
+    { name = "azure-core", extras = ["aio"], specifier = ">=1.30" },
     { name = "azure-identity", specifier = ">=1.19" },
     { name = "azure-storage-blob", extras = ["aio"], specifier = ">=12.24" },
     { name = "httpx", specifier = ">=0.28" },

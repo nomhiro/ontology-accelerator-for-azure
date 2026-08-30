@@ -1,0 +1,194 @@
+"""射影ループ。
+
+**書き込み順序は「正本 → 射影」で固定する。**
+1. TTL を Blob に置く(正本)
+2. バージョンと監査イベントを PostgreSQL に記録する(正本)
+3. Fuseki の名前付きグラフへ射影する
+
+3 が失敗しても 1・2 は巻き戻さない。`projected_at` が NULL のまま残り、
+`reconcile()` が後から埋める。逆順にすると「ストアには居るが正本に無い」
+データが生まれ、レプリカ再作成で消えるため許容できない
+(docs/adr/0002-triple-store-as-rebuildable-projection.md)。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+from dataclasses import dataclass, field
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ontology_api.repositories.namespaces import NamespaceRepository
+from ontology_api.repositories.versions import AuditRepository, VersionRepository
+from ontology_core.blob import OntologyBlobStore
+from ontology_core.graphs import dataset_name, version_graph_iri
+from ontology_core.models import OntologyVersion, OntologyVersionStatus
+from ontology_core.sparql.client import SparqlStore, SparqlStoreError
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["ProjectionService", "ReconcileReport", "UnknownNamespaceError"]
+
+
+class UnknownNamespaceError(Exception):
+    """存在しない名前空間を指定したことを表す。"""
+
+
+@dataclass
+class ReconcileReport:
+    """reconcile の結果。"""
+
+    datasets_created: list[str] = field(default_factory=list)
+    versions_projected: list[str] = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
+    # 対応する名前空間が正本に無いデータセット。
+    #
+    # 名前空間の作成は「DB に flush → データセット作成 → コミット」の順に進むため、
+    # 最後のコミットが失敗すると宙に浮いたデータセットが残る。**報告するが自動削除
+    # はしない。** データセットの削除は破壊的で、DB 側の行が別の理由で失われていた
+    # 場合にデータを消してしまうため、運用者の判断に委ねる。
+    orphan_datasets: list[str] = field(default_factory=list)
+
+
+def _next_version(previous: OntologyVersion | None) -> str:
+    """次のバージョンを決める。
+
+    Phase 1 では単純に minor を上げる。意味のあるバージョン付け
+    (破壊的変更の検出による major 上げ)は Phase 2 の差分検出とあわせて行う。
+    """
+    if previous is None:
+        return "1.0.0"
+    major, minor, _patch = [*previous.version.split("."), "0", "0"][:3]
+    return f"{major}.{int(minor) + 1}.0"
+
+
+class ProjectionService:
+    """正本への書き込みとストアへの射影を担う。"""
+
+    def __init__(
+        self,
+        *,
+        session: AsyncSession,
+        blob: OntologyBlobStore,
+        store: SparqlStore,
+        graph_iri_base: str,
+    ) -> None:
+        self._session = session
+        self._blob = blob
+        self._store = store
+        self._base = graph_iri_base
+
+    async def publish(
+        self, *, namespace: str, turtle: str, actor: str, version: str | None = None
+    ) -> OntologyVersion:
+        """オントロジーを新しいバージョンとして公開する。
+
+        同一内容(content_hash が一致)の再投入は既存のバージョンを返す(冪等)。
+        """
+        namespaces = NamespaceRepository(self._session)
+        if await namespaces.get(namespace) is None:
+            raise UnknownNamespaceError(f"名前空間 '{namespace}' が見つかりません")
+
+        versions = VersionRepository(self._session)
+        content_hash = hashlib.sha256(turtle.encode("utf-8")).hexdigest()
+        if (existing := await versions.find_by_hash(namespace, content_hash)) is not None:
+            return existing
+
+        resolved = version or _next_version(await versions.latest_for(namespace))
+        graph_iri = version_graph_iri(self._base, namespace, resolved)
+
+        # ---- 1. 正本(Blob) ----
+        blob_path = await self._blob.put_version(namespace, resolved, turtle)
+
+        # ---- 2. 正本(PostgreSQL) ----
+        # 上の find_by_hash は check-then-insert であり、同一内容の同時投入では
+        # 両方がここまで到達し得る(競合)。record() が (namespace, content_hash) の
+        # 一意制約に当たった場合は SAVEPOINT (begin_nested) の範囲だけを巻き戻し、
+        # このセッションの他の変更(この後書く監査イベントや、呼び出し元がまだ
+        # コミットしていない別の変更)を巻き添えにしない。session.rollback() を
+        # 使うと、この後さらに書き込みがあるにもかかわらずセッション全体が
+        # 巻き戻ってしまう(Task 4 の NamespaceRepository.create は create が
+        # 1 リクエスト内の唯一の DB 操作だったため rollback() で足りたが、
+        # ここは事情が違う)。
+        recorded: OntologyVersion
+        try:
+            async with self._session.begin_nested():
+                recorded = await versions.record(
+                    namespace=namespace,
+                    version=resolved,
+                    content_hash=content_hash,
+                    graph_iri=graph_iri,
+                    blob_path=blob_path,
+                    created_by=actor,
+                    status=OntologyVersionStatus.APPROVED,
+                )
+        except IntegrityError:
+            # 競合に負けた側。勝った側が書いたはずの行を取り直す。
+            conflict = await versions.find_by_hash(namespace, content_hash)
+            if conflict is None:
+                # content_hash ではなく (namespace, version) の一意制約に当たった
+                # 場合(明示的に指定した version が既に別内容で使われている)は
+                # 回復できないので、そのまま呼び出し元に伝える。
+                raise
+            recorded = conflict
+        else:
+            await AuditRepository(self._session).record(
+                namespace=namespace,
+                action="published",
+                actor=actor,
+                subject=f"{namespace}@{resolved}",
+            )
+
+        # ---- 3. 射影 ----
+        try:
+            await self._store.put_graph(graph_iri, turtle, dataset=dataset_name(namespace))
+            await versions.mark_projected(namespace, resolved)
+        except SparqlStoreError:
+            logger.exception(
+                "名前空間 '%s' バージョン '%s' の射影に失敗しました。"
+                "正本は保存済みです。reconcile で回復します",
+                namespace,
+                resolved,
+            )
+            return recorded
+
+        return await versions.find_by_hash(namespace, content_hash) or recorded
+
+    async def reconcile(self) -> ReconcileReport:
+        """正本を基準にストアの状態を揃える。
+
+        レプリカ再作成後や射影失敗後の回復に使う。
+        """
+        report = ReconcileReport()
+        namespaces = await NamespaceRepository(self._session).list_all()
+        existing = set(await self._store.list_datasets())
+
+        for ns in namespaces:
+            dataset = dataset_name(ns.name)
+            if dataset not in existing:
+                try:
+                    await self._store.create_dataset(dataset)
+                    report.datasets_created.append(ns.name)
+                except SparqlStoreError as exc:
+                    report.failures.append(f"{ns.name}: データセット作成に失敗 ({exc})")
+                    continue
+
+        # 正本に無いデータセットを報告する(削除はしない。上記の理由による)。
+        known = {dataset_name(ns.name) for ns in namespaces}
+        report.orphan_datasets = sorted(existing - known - {"ds"})
+
+        versions = VersionRepository(self._session)
+        for version in await versions.unprojected():
+            try:
+                turtle = await self._blob.get_version(version.blob_path)
+                await self._store.put_graph(
+                    version.graph_iri, turtle, dataset=dataset_name(version.namespace)
+                )
+                await versions.mark_projected(version.namespace, version.version)
+                report.versions_projected.append(f"{version.namespace}@{version.version}")
+            except (SparqlStoreError, OSError) as exc:
+                report.failures.append(f"{version.namespace}@{version.version}: {exc}")
+
+        return report
