@@ -8,7 +8,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
 ---
 
-## 現在のステータス: Phase 0(スキャフォールド)
+## 現在のステータス: Phase 1(MVP「器が動く」)
 
 製品として使える状態ではありません。何が動作確認済みで、何が未実装なのかを以下に正確に示します。
 
@@ -19,8 +19,8 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - Fuseki は名前空間ごとに分離したデータセット(例: `retail-core`)の `/retail-core/sparql` が SPARQL 1.1 で応答する。データセット単位の物理分離が名前空間の隔離境界であり(`packages/api/tests/test_isolation.py` で検証)、固定の `ds` は予約された空のデータセットで実データは入らない
 - Core API 経由の読み取りクエリが通り、更新クエリと `SERVICE` 句はガードで HTTP 400 になる
 - Fuseki 側でも `SERVICE` の実行が無効化されている(HTTP 422 / SSRF 対策)。管理 API は無認証で 401
-- 名前空間 CRUD がスタブ実装(メモリ上)で動作する
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 16 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 83 件: unit 61 件 + integration 22 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -28,7 +28,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
 - `azd up` が成功する(プロビジョニング 5 分 6 秒 + デプロイ 2 分 41 秒)。API / MCP / Fuseki / Web の 4 サービスがデプロイされる
 - **Blob(正本)から Fuseki の entrypoint が TDB2 を再構築し、SPARQL を返す** — 「再構築可能な射影」設計が実環境で成立
-  (名前付きグラフ `urn:ontology:graph/approved_retail-core`、60 トリプル、OWL クラス 4 件、SHACL NodeShape 2 件)
+  (名前付きグラフ `urn:ontology:graph/retail-core/1.0.0`、60 トリプル、OWL クラス 4 件、SHACL NodeShape 2 件)
 - Fuseki 側で `SERVICE` 句が HTTP 422 でブロックされる(SSRF 対策)
 - Fuseki は internal ingress のため外部から到達できない
 - API `/healthz` が応答し、トークン無しの `GET /namespaces` は **401**(`AUTH_MODE=entra` が機能)

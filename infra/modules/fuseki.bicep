@@ -1,6 +1,6 @@
 // Apache Jena Fuseki を Container Apps 上に構築するモジュール。設計の核心部分。
-// 「トリプルストアは再構築可能な射影」という原則を実装する: initContainer が Blob 上の
-// 正本スナップショットを TDB2 にロードし、startup probe がロード完了までトラフィックを止める。
+// 「トリプルストアは再構築可能な射影」という原則を実装する: メインコンテナの entrypoint が
+// Blob 上の正本スナップショットを TDB2 にロードし、startup probe がロード完了までトラフィックを止める。
 // ingress は internal のみで、書き込み口 (SPARQL Update / GSP) は Core API からしか届かない。
 
 @description('Fuseki コンテナアプリの名前。')
@@ -205,17 +205,12 @@ resource fuseki 'Microsoft.App/containerApps@2024-03-01' = {
       ]
     }
     template: {
-      // initContainer が Blob から最新スナップショットを取得し tdb2.tdbloader で
-      // EmptyDir (または Azure Files) にロードする。スクリプト本体は containers/fuseki/ 側。
-      // NOTE: azd deploy は initContainer のイメージを更新しない。初回 azd up の直後は
-      // プレースホルダのままなので、続けて azd provision を実行して配線を揃える。
-      // その間もこのコマンドは exit 0 で抜けるためレプリカが起動不能にはならない。
-      // init コンテナは使わない。
-      //
-      // azd は provision → deploy の順に実行し、deploy が差し替えるのは
-      // メインコンテナのイメージだけである。init コンテナのイメージは Bicep 経由で
-      // しか更新されないため、init を使うと `azd up` 一回ではタグが揃わず、
-      // 利用者が `azd provision` をもう一度実行する必要があった。
+      // Blob から最新スナップショットを取得し tdb2.tdbloader で EmptyDir (または
+      // Azure Files) にロードするのは entrypoint.sh(メインコンテナ内)。init
+      // コンテナは使わない。azd は provision → deploy の順に実行し、deploy が
+      // 差し替えるのはメインコンテナのイメージだけである。init コンテナのイメージは
+      // Bicep 経由でしか更新されないため、init を使うと `azd up` 一回ではタグが揃わず、
+      // 利用者が `azd provision` をもう一度実行する必要が生じていた。
       // 正本からの再構築は containers/fuseki/entrypoint.sh がメインコンテナ内で
       // 行うので、コードとイメージタグは構造的に常に一致する。
       // Startup プローブ (下記) が再構築の完了までトラフィックを流さない。
