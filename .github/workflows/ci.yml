@@ -33,6 +33,14 @@ jobs:
               - 'pyproject.toml'
               - 'uv.lock'
               - '.github/workflows/ci.yml'
+              # packages/api/tests/test_isolation.py が実物の Fuseki に対して
+              # containers/fuseki/config.ttl の SERVICE 無効化(arq:httpServiceAllowed)
+              # を検証している。containers/ 側だけの変更(config.ttl から誤って
+              # SERVICE 無効化を外す等)でも python ジョブ(テスト実行)が動くようにする。
+              # `containers` フィルタと同じパスが重複するのは意図した重複で、
+              # python はテスト実行のため、containers はイメージビルドのために
+              # それぞれ別の理由で反応する。
+              - 'containers/**'
             web:
               - 'apps/web/**'
               - 'pnpm-workspace.yaml'

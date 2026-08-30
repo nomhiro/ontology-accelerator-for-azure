@@ -15,8 +15,8 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 ### 動作を確認済み(ローカル)
 
 - `docker compose up` で Fuseki 6.2.0 + PostgreSQL 16 が起動する
-- Fuseki の entrypoint が `samples/retail-core.ttl` から TDB2 を構築し、名前付きグラフ `urn:ontology:graph/retail-core` として読み込む(= 「再構築可能な射影」設計の実装)
-- Fuseki の `/ds/sparql` が SPARQL 1.1 で応答する
+- Fuseki の entrypoint が `samples/retail-core.ttl` から TDB2 を構築し、名前空間ごとのデータセット `retail-core` の名前付きグラフ `urn:ontology:graph/retail-core/1.0.0` として読み込む(= 「再構築可能な射影」設計の実装)
+- Fuseki は名前空間ごとに分離したデータセット(例: `retail-core`)の `/retail-core/sparql` が SPARQL 1.1 で応答する。データセット単位の物理分離が名前空間の隔離境界であり(`packages/api/tests/test_isolation.py` で検証)、固定の `ds` は予約された空のデータセットで実データは入らない
 - Core API 経由の読み取りクエリが通り、更新クエリと `SERVICE` 句はガードで HTTP 400 になる
 - Fuseki 側でも `SERVICE` の実行が無効化されている(HTTP 422 / SSRF 対策)。管理 API は無認証で 401
 - 名前空間 CRUD がスタブ実装(メモリ上)で動作する
@@ -154,10 +154,10 @@ just dev-web    # Web を起動 (別ターミナル)
 just down       # 停止する (データは残る / just clean でデータも消す)
 ```
 
-Fuseki の SPARQL エンドポイントは `http://localhost:3030/ds/sparql` で応答します。動作確認の例:
+Fuseki の SPARQL エンドポイントは名前空間ごとのデータセットに立ちます。`just up` で読み込まれるサンプル(`samples/retail-core.ttl`)は名前空間 `retail-core` として `http://localhost:3030/retail-core/sparql` で応答します(固定の `/ds/sparql` は予約された空のデータセットなので応答はしますが 0 件しか返りません)。動作確認の例:
 
 ```bash
-curl -s -X POST http://localhost:3030/ds/sparql \
+curl -s -X POST http://localhost:3030/retail-core/sparql \
   -H 'Content-Type: application/sparql-query' -H 'Accept: text/csv' \
   --data 'PREFIX owl: <http://www.w3.org/2002/07/owl#> SELECT ?c WHERE { ?c a owl:Class }'
 ```
