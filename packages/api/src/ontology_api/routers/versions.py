@@ -12,7 +12,7 @@ from ontology_api.services.projection import (
     ReconcileReport,
     UnknownNamespaceError,
 )
-from ontology_core.graphs import NamespaceNameError
+from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.models import OntologyVersion
 
 router = APIRouter(tags=["versions"])
@@ -44,6 +44,12 @@ async def publish_version(
         session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
     )
     try:
+        # `namespace` はこの後 Blob パス・グラフ IRI・Fuseki データセット名の
+        # 組み立てに使われる(`ProjectionService.publish` 経由)。DB に存在しない
+        # 名前空間なら結局 UnknownNamespaceError で 404 になるが、それは
+        # 「たまたま検証されている」だけの経路であり、名前空間名がセキュリティ境界
+        # であることの明示的な契約にはならない。パスパラメータの入口で検証する。
+        validate_namespace_name(namespace)
         return await service.publish(
             namespace=namespace,
             turtle=payload.turtle,
@@ -60,7 +66,17 @@ async def publish_version(
 async def list_versions(
     namespace: str, principal: CurrentPrincipal, session: SessionDep
 ) -> list[OntologyVersion]:
+    """名前空間のバージョン一覧を返す。
+
+    不正な `namespace` は該当行が無いだけで空リストが返り実害はないが、
+    名前空間名はセキュリティ境界(`packages/api/tests/test_isolation.py`)
+    なので、パスパラメータの入口では一貫して検証する。
+    """
     del principal
+    try:
+        validate_namespace_name(namespace)
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return await VersionRepository(session).list_for(namespace)
 
 

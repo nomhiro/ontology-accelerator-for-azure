@@ -17,6 +17,13 @@
 # 従って TDB2 と assembler を作る(Task 7)。詳細は build_tdb を参照。
 set -eu
 
+# 名前空間名・バージョン文字列の検証(validate_namespace / validate_version_file)
+# と log() は lib/validate.sh に切り出してある。副作用の無い検証関数だけを
+# 単体テストできるようにするため(lib/validate.test.sh)。
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+. "${script_dir}/lib/validate.sh"
+
 : "${ONTOLOGY_BLOB_CONTAINER:=ontologies}"
 : "${FUSEKI_BASE:=/fuseki}"
 # 何も読み込むものが無いときに空のまま用意する予約データセットの場所。
@@ -55,39 +62,6 @@ set -eu
 # TDB_LOCATION(予約データセット "ds" のみ)ではなく DATABASES_DIR 全体を見て、
 # 名前空間のディレクトリが 1 つでも残っていれば温存する。
 : "${PRESERVE_EXISTING_TDB:=false}"
-
-log() { echo "load-snapshot: $*" >&2; }
-
-# 名前空間名を検証する。Fuseki のデータセット名・ファイルシステムのパスに
-# 使うため、想定外の文字(パストラバーサル等)が混じっていないか確認する。
-# 正本の書き込み時点で ontology_core.graphs.validate_namespace_name が検証済み
-# のはずだが、ここでも確認するのは多層防御であり、Blob の内容を無条件に
-# 信用しないためでもある。
-validate_namespace() {
-    ns="$1"
-    case "${ns}" in
-        [a-z0-9][a-z0-9-]*) ;;
-        *)
-            log "不正な名前空間名をスキップします: ${ns}"
-            return 1
-            ;;
-    esac
-    case "${ns}" in
-        *[!a-z0-9-]*)
-            log "不正な文字を含む名前空間名をスキップします: ${ns}"
-            return 1
-            ;;
-    esac
-    if [ "${#ns}" -lt 2 ] || [ "${#ns}" -gt 63 ]; then
-        log "名前空間名の長さが不正です: ${ns}"
-        return 1
-    fi
-    if [ "${ns}" = "ds" ]; then
-        log "予約された名前空間名をスキップします: ${ns}"
-        return 1
-    fi
-    return 0
-}
 
 # 名前空間ごとの assembler を書き出す。Fuseki は起動時に CONFIGURATION_DIR/*.ttl
 # を読み込むため、これで名前空間ごとのデータセットが立ち上がる。
@@ -188,20 +162,51 @@ prepare_empty_tdb() {
 }
 
 # ---------------------------------------------------------------------------
-# 既存の TDB2 を温存する構成なら何もしない
+# 既存の TDB2 を温存する構成なら TDB2 は再構築せず、CONFIGURATION_DIR だけ復元する
 # ---------------------------------------------------------------------------
+# infra/modules/fuseki.bicep がボリュームマウントするのは DATABASES_DIR
+# (FUSEKI_BASE/databases)だけで、CONFIGURATION_DIR(FUSEKI_BASE/configuration)は
+# コンテナのエフェメラルな書き込み層にある。そのためコンテナが再作成されると
+# TDB2(databases/<namespace>)はボリューム上に残るが、対応する assembler は
+# ゼロから始まる。ここで何もせず exit すると、Fuseki は名前空間データセットの
+# 存在を知らないまま起動し、以後そのレプリカでは予約データセット "ds"(空)
+# しか応答しなくなる — データは物理的に残っているのに完全に見えなくなる。
+# そのため温存モードでも、既存の名前空間ディレクトリごとに assembler だけは
+# 書き直す(TDB2 自体は再構築しない。温存の目的はそこにあるため)。
 if [ "${PRESERVE_EXISTING_TDB}" = "true" ]; then
+    found_existing=0
     for existing in "${DATABASES_DIR}"/*/; do
         [ -d "${existing}" ] || continue
         existing_name="$(basename "${existing}")"
         if [ "${existing_name}" = "ds" ]; then
             continue
         fi
-        if [ -n "$(ls -A "${existing}" 2>/dev/null)" ]; then
-            log "既存の TDB2 を温存します (PRESERVE_EXISTING_TDB=true): ${DATABASES_DIR}"
-            exit 0
+        if [ -z "$(ls -A "${existing}" 2>/dev/null)" ]; then
+            continue
         fi
+        found_existing=1
     done
+
+    if [ "${found_existing}" -eq 1 ]; then
+        log "既存の TDB2 を温存します (PRESERVE_EXISTING_TDB=true): ${DATABASES_DIR}"
+        mkdir -p "${CONFIGURATION_DIR}"
+        for existing in "${DATABASES_DIR}"/*/; do
+            [ -d "${existing}" ] || continue
+            existing_name="$(basename "${existing}")"
+            if [ "${existing_name}" = "ds" ]; then
+                continue
+            fi
+            if [ -z "$(ls -A "${existing}" 2>/dev/null)" ]; then
+                continue
+            fi
+            if ! validate_namespace "${existing_name}"; then
+                continue
+            fi
+            write_assembler "${existing_name}" "${existing%/}"
+            log "assembler を復元しました [${existing_name}]"
+        done
+        exit 0
+    fi
 fi
 
 # CONFIGURATION_DIR は前回までの実行分をすべて捨ててから空で作り直す
@@ -299,7 +304,15 @@ if [ -z "${blob_names}" ]; then
 fi
 
 count=0
-for name in ${blob_names}; do
+# `blob_names` は改行区切りだが、Blob 名自体に空白を含み得る。無引用の
+# `for name in ${blob_names}` は IFS でワード分割するため、空白を含む Blob 名が
+# 2 つの偽名に分かれて存在しないパスへの `curl -f` が失敗し、`set -e` で
+# ローダ全体が落ちてしまう(1 個の Blob 名のせいで全名前空間が読み込めなくなる)。
+# 「Blob 名を信用しない」という同じテーマのため、改行だけを区切りとして扱う
+# `while read` に変える。パイプ(`|`)ではなくヒアドキュメント(`<<`)で渡すことで
+# サブシェルを作らず、ループ内で更新する `count` がループの外でも見える。
+while IFS= read -r name; do
+    [ -n "${name}" ] || continue
     # Blob レイアウトは <prefix><namespace>/<version>.ttl(ontology_core.blob)。
     # BLOB_PREFIX を取り除いた残りを名前空間とバージョンファイルに分解する。
     relative="${name#"${BLOB_PREFIX}"}"
@@ -312,6 +325,13 @@ for name in ${blob_names}; do
     if ! validate_namespace "${namespace}"; then
         continue
     fi
+    # version_file は Blob の一覧応答からそのまま来る値で、namespace と違って
+    # 文字種を検証していなかった。Blob 名を "approved/alpha/../../evil.ttl" の
+    # ように作ると namespace="alpha"(検証通過)、version_file="../../evil.ttl"
+    # となり、curl -o が STAGING_DIR の外へ任意のファイルを書き込めてしまう。
+    if ! validate_version_file "${version_file}"; then
+        continue
+    fi
     mkdir -p "${STAGING_DIR}/${namespace}"
     target="${STAGING_DIR}/${namespace}/${version_file}"
     log "取得: ${name}"
@@ -321,7 +341,9 @@ for name in ${blob_names}; do
         -o "${target}" \
         "${container_url}/${name}"
     count=$((count + 1))
-done
+done <<BLOB_NAMES
+${blob_names}
+BLOB_NAMES
 log "${count} 件の TTL を取得しました"
 
 build_tdb

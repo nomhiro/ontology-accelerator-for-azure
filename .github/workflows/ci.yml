@@ -200,4 +200,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: シェルスクリプトを検査する
-        run: shellcheck containers/fuseki/*.sh
+        run: shellcheck containers/fuseki/*.sh containers/fuseki/lib/*.sh
+      # 名前空間名・バージョン文字列の検証関数(validate_namespace /
+      # validate_version_file)に対するテスト。load-snapshot.sh 本体は Blob 一覧
+      # の取得や TDB2 の構築など副作用のあるコードを含むため source してテスト
+      # できない。検証関数だけを lib/validate.sh に切り出してあるので、ここでは
+      # それだけを直接 sh で実行してテストする(Task 7 レビュー修正1)。
+      - name: 検証関数のテストを実行する
+        run: sh containers/fuseki/lib/validate.test.sh

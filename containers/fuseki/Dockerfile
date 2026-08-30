@@ -53,6 +53,9 @@ COPY --from=dist /dist/jena /opt/jena
 COPY config.ttl /etc/fuseki/config.ttl
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY load-snapshot.sh /opt/fuseki-init/load-snapshot.sh
+# 名前空間名・バージョン文字列の検証関数(load-snapshot.sh が source する)。
+# lib/validate.test.sh は単体テスト用なのでイメージには入れない。
+COPY lib/validate.sh /opt/fuseki-init/lib/validate.sh
 # admin API ($/datasets への dbName+dbType のフォーム POST)が使う雛形。
 # config.ttl のデータセットレベル設定(arq:queryTimeout, tdb2:unionDefaultGraph)を
 # 動的に作ったデータセットにも継承させるため、配布物の既定テンプレートを
