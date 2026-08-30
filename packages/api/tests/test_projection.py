@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import VersionRepository
-from ontology_api.services.projection import ProjectionService
+from ontology_api.services.projection import AutoVersionError, ProjectionService
 from ontology_core.blob import OntologyBlobStore
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
 
@@ -113,7 +113,15 @@ async def test_version_is_incremented_for_new_content(prepared: Prepared) -> Non
 
 
 async def test_projection_failure_keeps_source_of_truth(prepared: Prepared) -> None:
-    """射影が失敗しても正本は残り、未射影として記録される。"""
+    """射影が失敗しても正本は残り、未射影として記録される。
+
+    O-1: `put_graph` の前に正本(PostgreSQL)を commit する。そのため失敗時に
+    呼び出し元へ返す例外(`SparqlStoreError`)は正本の書き込みを巻き戻さない
+    (Blob は元々 commit 概念が無く書いた時点で耐久化、PostgreSQL は明示 commit
+    済み)。この3点セットの検証は
+    `test_put_graph_failure_after_commit_returns_error_and_is_recovered_by_reconcile`
+    でロールバックを挟んで確認する。ここでは publish() 自体の基本挙動のみ見る。
+    """
     session, blob = prepared
     svc = ProjectionService(
         session=session,
@@ -122,21 +130,64 @@ async def test_projection_failure_keeps_source_of_truth(prepared: Prepared) -> N
         graph_iri_base="urn:ontology:graph",
     )
 
-    version = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    with pytest.raises(SparqlStoreError):
+        await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
 
-    assert await blob.get_version(version.blob_path) == TTL
     rows = await VersionRepository(session).list_for("retail-core")
+    assert len(rows) == 1
+    assert await blob.get_version(rows[0].blob_path) == TTL
     assert rows[0].projected_at is None
     assert len(await VersionRepository(session).unprojected()) == 1
+
+
+async def test_put_graph_failure_after_commit_returns_error_and_is_recovered_by_reconcile(
+    prepared: Prepared,
+) -> None:
+    """O-1 の必須テスト: `put_graph` が失敗したとき、(a) 呼び出し元に例外
+    (ルーターでは 500)が返り、(b) PG に行が残り `projected_at` が NULL であり、
+    (c) `reconcile()` がその行を拾って射影を完了させることを通しで確認する。
+
+    `put_graph` の前に commit しているため、呼び出し元への例外伝播で
+    `session_scope` がロールバックを呼んでも(耐久化の観点で)行は消えない
+    ことを、実際に rollback を挟んで確認する(commit 前に発生する他の例外
+    ―― 例えば一意制約違反 ―― と違って、ここは巻き戻せないことが O-1 の要点)。
+    """
+    session, blob = prepared
+    failing = FakeStore(fail_put=True)
+    svc = ProjectionService(
+        session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
+    )
+
+    with pytest.raises(SparqlStoreError):
+        await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+
+    # session_scope の例外パス(`except Exception: await session.rollback(); raise`)
+    # を模す。commit 済みの行は rollback では消えない。
+    await session.rollback()
+
+    rows = await VersionRepository(session).list_for("retail-core")
+    assert len(rows) == 1
+    assert rows[0].projected_at is None
+
+    healthy = FakeStore()
+    report = await ProjectionService(
+        session=session, blob=blob, store=healthy, graph_iri_base="urn:ontology:graph"
+    ).reconcile()
+
+    assert len(report.versions_projected) == 1
+    assert not report.failures
+    rows = await VersionRepository(session).list_for("retail-core")
+    assert rows[0].projected_at is not None
 
 
 async def test_reconcile_projects_unprojected_versions(prepared: Prepared) -> None:
     """reconcile が未射影のバージョンとデータセットを埋める。"""
     session, blob = prepared
     failing = FakeStore(fail_put=True)
-    await ProjectionService(
-        session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
-    ).publish(namespace="retail-core", turtle=TTL, actor="t")
+    with pytest.raises(SparqlStoreError):
+        await ProjectionService(
+            session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
+        ).publish(namespace="retail-core", turtle=TTL, actor="t")
     await session.commit()
 
     healthy = FakeStore()
@@ -168,11 +219,17 @@ async def test_reconcile_reports_blob_failures_without_aborting(prepared: Prepar
         session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
     )
 
-    ok = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
-    broken = await svc.publish(
-        namespace="retail-core", turtle=TTL + "\nex:B a ex:Class .\n", actor="t"
-    )
+    # O-1: put_graph の前に commit するため、失敗しても正本(PG 行)は残る。
+    # 呼び出し元には例外が伝播する(必ず catch すること)。
+    with pytest.raises(SparqlStoreError):
+        await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    with pytest.raises(SparqlStoreError):
+        await svc.publish(namespace="retail-core", turtle=TTL + "\nex:B a ex:Class .\n", actor="t")
     await session.commit()
+
+    rows = await VersionRepository(session).list_for("retail-core")
+    assert len(rows) == 2
+    ok, broken = rows[0], rows[1]
 
     # broken 版の DB 上の blob_path を、実在しない Blob を指すように壊す。
     row = (
@@ -214,6 +271,45 @@ async def test_reconcile_reports_orphan_datasets_without_deleting(prepared: Prep
     assert report.orphan_datasets == ["orphan-ns"]
     # 報告しただけで消していないこと。
     assert "orphan-ns" in await store.list_datasets()
+
+
+async def test_auto_versioning_after_non_numeric_minor_is_rejected_not_500(
+    prepared: Prepared,
+) -> None:
+    """M-1: 英字を含む明示バージョン(validate_version は許可する)の後、
+    version 省略の publish は 500(未捕捉の ValueError)ではなく
+    `AutoVersionError` になり、自動採番を諦めて明示バージョンを促すこと。
+    """
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+
+    # 明示バージョンでの publish 自体は成功する(validate_version は英字を許可)。
+    explicit = await svc.publish(namespace="retail-core", turtle=TTL, actor="t", version="1.beta.0")
+    assert explicit.version == "1.beta.0"
+
+    with pytest.raises(AutoVersionError, match=r"1\.beta\.0"):
+        await svc.publish(namespace="retail-core", turtle=TTL + "\nex:B a ex:Class .\n", actor="t")
+
+    # 例外は Blob 書き込みより前(_next_version は正本に触る前)なので、
+    # 失敗した publish の分の版は増えていない。
+    assert len(await VersionRepository(session).list_for("retail-core")) == 1
+
+
+async def test_auto_versioning_rejects_date_like_result(prepared: Prepared) -> None:
+    """ドットを含まない版(例: 日付形式)は split(".") で major 側に丸ごと入り、
+    "2026-08-30.1.0" のような無意味な結果になる経路も併せて塞がれること。
+    """
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+
+    await svc.publish(namespace="retail-core", turtle=TTL, actor="t", version="2026-08-30")
+
+    with pytest.raises(AutoVersionError, match="2026-08-30"):
+        await svc.publish(namespace="retail-core", turtle=TTL + "\nex:B a ex:Class .\n", actor="t")
 
 
 async def test_audit_event_is_recorded(prepared: Prepared) -> None:

@@ -19,6 +19,10 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - Fuseki は名前空間ごとに分離したデータセット(例: `retail-core`)の `/retail-core/sparql` が SPARQL 1.1 で応答する。データセット単位の物理分離が名前空間の隔離境界であり(`packages/api/tests/test_isolation.py` で検証)、固定の `ds` は予約された空のデータセットで実データは入らない
 - Core API 経由の読み取りクエリが通り、更新クエリと `SERVICE` 句はガードで HTTP 400 になる
 - Fuseki 側でも `SERVICE` の実行が無効化されている(HTTP 422 / SSRF 対策)。管理 API は無認証で 401
+- クエリの**時間**の上限(`SPARQL_QUERY_TIMEOUT_SECONDS`、既定 30 秒)は効く。一方
+  **結果件数の上限(`SPARQL_MAX_RESULTS`)は Phase 1 では未強制**で、値は保持され
+  Bicep が注入しているが LIMIT を後付けする実装が無い(任意の SPARQL に対する
+  安価で正しい強制手段が無いため)。強制は Phase 2 で対応する
 - 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)
 - lint (ruff) / 型検査 (mypy strict) / テスト (pytest 83 件: unit 61 件 + integration 22 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
@@ -145,14 +149,20 @@ Windows 環境では、リポジトリ同梱の [Dev Container](.devcontainer/) 
 
 タスクは `just` にまとめてあります(Windows / Linux / macOS で同じコマンドが使えます)。`just` だけを実行すると一覧が出ます。
 
+`just dev-api` は uvicorn を直接起動するだけで、コンテナ用の `docker-entrypoint.sh` を経由しません。そのため Azure 実行時に注入される環境変数(`AUTH_MODE=entra` の既定値、Entra 経由の PostgreSQL 接続など)がここでは設定されず、そのままでは `just up` で立てたローカルの PostgreSQL に接続できません。**先に `.env` を用意してください。**
+
 ```bash
+cp .env.example .env   # AUTH_MODE=disabled / POSTGRES_PASSWORD=localdev などローカル専用の値
 just setup      # 依存関係を入れる (uv sync --all-packages + pnpm install)
-just up         # Fuseki + PostgreSQL を起動 (docker compose up -d --build)
+just up         # Fuseki + PostgreSQL + Azurite を起動 (docker compose up -d --build)
+just migrate    # PostgreSQL にテーブルを作る (alembic upgrade head)
 just dev-api    # Core API を起動 (http://localhost:8000)
 just dev-mcp    # MCP サーバーを起動 (別ターミナル)
 just dev-web    # Web を起動 (別ターミナル)
 just down       # 停止する (データは残る / just clean でデータも消す)
 ```
+
+`.env` を用意せずに `just dev-api` を起動すると、`GET /namespaces` は次のいずれかで失敗します。`.env` が無ければまず 401(`AUTH_MODE` の既定 `entra` でトークン必須)、`AUTH_MODE=disabled` だけを指定しても `POSTGRES_PASSWORD` が空だと Entra 経由の接続に切り替わり 500、`just migrate` を実行していなければ `relation "namespaces" does not exist` で 500 になります。`.env.example` の 3 行と `just migrate` はこれらすべてに対応します。
 
 Fuseki の SPARQL エンドポイントは名前空間ごとのデータセットに立ちます。`just up` で読み込まれるサンプル(`samples/retail-core.ttl`)は名前空間 `retail-core` として `http://localhost:3030/retail-core/sparql` で応答します(固定の `/ds/sparql` は予約された空のデータセットなので応答はしますが 0 件しか返りません)。動作確認の例:
 
@@ -164,7 +174,7 @@ curl -s -X POST http://localhost:3030/retail-core/sparql \
 
 3030 番や 5432 番を別のプロジェクトで使っている場合は、環境変数 `FUSEKI_PORT` / `POSTGRES_PORT` でホスト側のポートを変更できます。
 
-ローカル開発では `AUTH_MODE=disabled` を指定することで Entra ID 認証をバイパスできます(後述)。
+ローカル開発では `AUTH_MODE=disabled` を指定することで Entra ID 認証をバイパスできます。指定方法は前述の `.env`(`.env.example` をコピーしたもの)です。
 
 ### Azure へのデプロイ
 
@@ -185,6 +195,18 @@ azd up          # just deploy でも同じ
 - **CI からサービスプリンシパルでデプロイする場合**は `principalType=ServicePrincipal` を指定してください。`principalId` が空だと Key Vault Secrets Officer の割り当てが作られないため、シークレット書き込み権限を別途付与する必要があります
 - `graphPersistence: azureFiles` を選ぶ場合、Azure Files は **SMB (Premium)** でマウントします。NFS はカスタム VNet が必須で `minimal` ティアと両立しないためです。この構成は**単一レプリカ前提**である点に注意してください(詳細は [ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md))
 - Static Web Apps は japaneast に対応していないため、Web だけ `webLocation`(既定 `eastasia`)で別リージョンに配置されます
+
+### 自分のオントロジーを追加する
+
+**本来の経路は Core API の publish(`POST /namespaces/{namespace}/versions`)です。** 名前空間の作成(`POST /namespaces`)→ publish の順で、正本(Blob + PostgreSQL)への記録と Fuseki への射影が一貫して行われます。
+
+以下の Blob 直接投入は、Entra ID の App 登録が未完了などで Core API をまだ呼べない場合の **Phase 1 の暫定手段**です(`postprovision` フックが同梱サンプルをこの方法で置いているのもこの理由による)。PostgreSQL には行が作られないため、`GET /namespaces` や MCP の `list_namespaces` からは見えません。
+
+- **Blob のレイアウト**: `<接頭辞><namespace>/<version>.ttl`。接頭辞の既定値は `approved/`(`BLOB_PREFIX` 環境変数、`ontology_core.config.Settings.ontology_blob_prefix`)。例: `approved/retail-core/1.0.0.ttl`
+- **名前空間名**: 小文字英数字とハイフンのみ、2〜63 文字、先頭は英数字(`ontology_core.graphs.validate_namespace_name`)。予約名 `ds` は使えません(Fuseki の固定・空データセット用に予約されています)
+- **バージョン文字列**: 英数字と `. + -` のみ、1〜64 文字、先頭は英数字(`ontology_core.graphs.validate_version`)。ファイル名としては `<version>.ttl` になります
+- 階層が無い Blob(名前空間のディレクトリが無いもの。例: `approved/retail-core.ttl`)は`load-snapshot.sh` が**黙ってスキップ**します。エラーにはならないので、投入したはずのファイルが見えない場合はまずパス形式を確認してください
+- 反映には **Fuseki のリビジョン再起動**が必要です(`azd deploy` や ACA のスケールイベント等)。entrypoint が起動時に Blob から TDB2 を再構築する設計のため、Blob に置くだけでは既存レプリカには反映されません
 
 ### 削除
 

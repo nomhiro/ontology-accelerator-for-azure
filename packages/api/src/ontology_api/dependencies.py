@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from functools import lru_cache
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,6 +17,9 @@ from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import AuthMode, Settings, get_settings
 from ontology_core.db import create_engine_and_factory, session_scope
 from ontology_core.sparql.client import FusekiStore, SparqlStore
+
+if TYPE_CHECKING:
+    from azure.identity.aio import DefaultAzureCredential
 
 __all__ = ["BlobDep", "CurrentPrincipal", "SessionDep", "SettingsDep", "StoreDep"]
 
@@ -88,27 +91,44 @@ async def sparql_store(settings: SettingsDep) -> AsyncIterator[SparqlStore]:
 StoreDep = Annotated[SparqlStore, Depends(sparql_store)]
 
 
+# モジュールレベルで1個だけ生成し、以降のリクエストすべてで再利用する(遅延生成)。
+# `db/engine.py` の `_get_credential()` と同じ方針。`DefaultAzureCredential` の
+# 生成自体が環境変数・IMDS・Azure CLI 等を順にプローブするブロッキング処理であり、
+# 毎リクエスト生成するとプロセス内のトークンキャッシュも毎回捨てられコストが積む
+# (ブランチ全体レビュー O-2)。`azure.identity.aio`(非同期版)なので
+# `db/engine.py` 側(同期版 `azure.identity.DefaultAzureCredential`)とは型が違い
+# 実装は共有できないが、同じ「モジュールレベルで1個・遅延生成」のパターンを踏襲する。
+_blob_credential: DefaultAzureCredential | None = None
+
+
+def _get_blob_credential() -> DefaultAzureCredential:
+    """Blob 用の `DefaultAzureCredential`(非同期版)をプロセス内で1個だけ生成して返す。"""
+    global _blob_credential
+    if _blob_credential is None:
+        from azure.identity.aio import DefaultAzureCredential
+
+        _blob_credential = DefaultAzureCredential()
+    return _blob_credential
+
+
 async def blob_store(settings: SettingsDep) -> AsyncIterator[OntologyBlobStore]:
     """リクエストごとに正本 TTL の Blob クライアントを提供する。
 
     `OntologyBlobStore.from_account_url` が `BlobServiceClient` を新しく作るため、
     このクラスが所有権を持つ(`aclose()` で閉じる)。`DefaultAzureCredential` は
-    ここで生成したものなので、こちらも合わせて `close()` する。
+    `_get_blob_credential()` がプロセス内で共有するものであり、このリクエストが
+    生成したものではないため、ここでは閉じない(プロセスの生存期間中は保持する)。
     """
-    from azure.identity.aio import DefaultAzureCredential
-
-    credential = DefaultAzureCredential()
     store = OntologyBlobStore.from_account_url(
         settings.azure_storage_account_url,
         container=settings.ontology_blob_container,
         prefix=settings.ontology_blob_prefix,
-        credential=credential,
+        credential=_get_blob_credential(),
     )
     try:
         yield store
     finally:
         await store.aclose()
-        await credential.close()
 
 
 BlobDep = Annotated[OntologyBlobStore, Depends(blob_store)]

@@ -36,6 +36,26 @@ check() {
     fi
 }
 
+# 引数: 説明, 関数名, 入力, 期待する出力文字列
+#
+# normalize_graph_iri_base / normalize_blob_prefix は ok/reject ではなく
+# 正規化した文字列を返す関数なので、check() とは別の比較が要る。
+check_eq() {
+    description="$1"
+    fn="$2"
+    input="$3"
+    expected="$4"
+
+    actual="$("${fn}" "${input}")"
+
+    if [ "${actual}" = "${expected}" ]; then
+        echo "ok - ${description}"
+    else
+        echo "NG - ${description}(期待: '${expected}', 実際: '${actual}', 入力: '${input}')"
+        failures=$((failures + 1))
+    fi
+}
+
 # ---- validate_namespace ----
 # 正常系。
 check "小文字とハイフンの通常の名前空間名"     validate_namespace "retail-core" ok
@@ -71,6 +91,24 @@ check "パストラバーサル(../../evil.ttl)は拒否" \
 check "空のバージョンは拒否"                          validate_version_file ".ttl" reject
 check "先頭がドットだけのバージョンは拒否"            validate_version_file "..ttl" reject
 check "絶対パスは拒否"                                validate_version_file "/etc/passwd.ttl" reject
+
+# ---- normalize_graph_iri_base ----
+# I-4 追加分: Python 側(graphs.py の base.rstrip('/'))とシェル側を一致させる。
+check_eq "末尾スラッシュ無しはそのまま" \
+    normalize_graph_iri_base "urn:ontology:graph" "urn:ontology:graph"
+check_eq "末尾スラッシュ 1 個を除去" \
+    normalize_graph_iri_base "urn:ontology:graph/" "urn:ontology:graph"
+check_eq "末尾スラッシュ複数も全部除去(rstrip('/') と同じ)" \
+    normalize_graph_iri_base "urn:ontology:graph///" "urn:ontology:graph"
+
+# ---- normalize_blob_prefix ----
+# I-4 追加分: Python 側(blob.py の prefix.rstrip('/') + '/')とシェル側を一致させる。
+check_eq "末尾スラッシュ無しには 1 個付与" \
+    normalize_blob_prefix "approved" "approved/"
+check_eq "末尾スラッシュ 1 個はそのまま" \
+    normalize_blob_prefix "approved/" "approved/"
+check_eq "末尾スラッシュ複数は 1 個に正規化" \
+    normalize_blob_prefix "approved///" "approved/"
 
 if [ "${failures}" -gt 0 ]; then
     echo "失敗: ${failures} 件" >&2

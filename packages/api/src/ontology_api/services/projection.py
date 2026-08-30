@@ -1,13 +1,18 @@
 """射影ループ。
 
 **書き込み順序は「正本 → 射影」で固定する。**
-1. TTL を Blob に置く(正本)
-2. バージョンと監査イベントを PostgreSQL に記録する(正本)
+1. TTL を Blob に置く(正本、書いた時点で耐久化)
+2. バージョンと監査イベントを PostgreSQL に記録して commit する(正本、
+   ここで耐久化を確定させる。`SessionDep` のリクエスト終了時 commit に
+   任せない。詳細は `ProjectionService.publish` のコメントを参照)
 3. Fuseki の名前付きグラフへ射影する
 
-3 が失敗しても 1・2 は巻き戻さない。`projected_at` が NULL のまま残り、
-`reconcile()` が後から埋める。逆順にすると「ストアには居るが正本に無い」
-データが生まれ、レプリカ再作成で消えるため許容できない
+3 が失敗しても 1・2 は巻き戻さない(1・2 は既に commit 済みで巻き戻せない)。
+`projected_at` が NULL のまま残り、`reconcile()` が後から埋める。3 の失敗は
+握り潰さず呼び出し元に伝播させる(500 相当)。正本の書き込み自体は成功して
+いるため、リトライ時は同じバージョン番号が再計算されて上書きになる(冪等)。
+逆順(射影 → 正本)にすると「ストアには居るが正本に無い」データが生まれ、
+レプリカ再作成で消えるため許容できない
 (docs/adr/0002-triple-store-as-rebuildable-projection.md)。
 """
 
@@ -29,11 +34,27 @@ from ontology_core.sparql.client import SparqlStore, SparqlStoreError
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ProjectionService", "ReconcileReport", "UnknownNamespaceError"]
+__all__ = [
+    "AutoVersionError",
+    "ProjectionService",
+    "ReconcileReport",
+    "UnknownNamespaceError",
+]
 
 
 class UnknownNamespaceError(Exception):
     """存在しない名前空間を指定したことを表す。"""
+
+
+class AutoVersionError(Exception):
+    """自動採番できないバージョン形式が名前空間の最新版だったことを表す。
+
+    `validate_version`(`ontology_core.graphs`)は英字・記号を含む版を広く許可するが、
+    `_next_version` の自動採番はマイナー部を整数として扱う。両者の前提が食い違うため、
+    明示バージョン(例: "1.beta.0")で publish した名前空間は、以後 version 省略の
+    publish がここで検出されるまで(修正前は未捕捉の `ValueError` で)恒久的に
+    500 になっていた。呼び出し側は 422 に変換し、明示バージョンの指定を促す。
+    """
 
 
 @dataclass
@@ -57,10 +78,21 @@ def _next_version(previous: OntologyVersion | None) -> str:
 
     Phase 1 では単純に minor を上げる。意味のあるバージョン付け
     (破壊的変更の検出による major 上げ)は Phase 2 の差分検出とあわせて行う。
+
+    Raises:
+        AutoVersionError: 最新版の major・minor が数字でなく自動採番できないとき
+            (例: "1.beta.0")。`str.split(".")` で日付形式("2026-08-30")のように
+            ドットを含まない版を渡すと major 側にそのまま丸ごと入り、これも
+            数字判定で弾かれる("2026-08-30.1.0" のような無意味な結果を防ぐ)。
     """
     if previous is None:
         return "1.0.0"
     major, minor, _patch = [*previous.version.split("."), "0", "0"][:3]
+    if not major.isdigit() or not minor.isdigit():
+        raise AutoVersionError(
+            f"名前空間の最新バージョン '{previous.version}' は自動採番できない形式です。"
+            "version を明示的に指定して publish してください。"
+        )
     return f"{major}.{int(minor) + 1}.0"
 
 
@@ -141,18 +173,35 @@ class ProjectionService:
                 subject=f"{namespace}@{resolved}",
             )
 
+        # ---- 正本(Blob・PostgreSQL)の耐久化をここで確定させる ----
+        # `SessionDep`(`db/engine.py` の `session_scope`)はリクエスト終了後に
+        # しか commit しないため、ここで明示的に commit しないと実行順は
+        # 「Blob(耐久化) → PG(未コミット) → Fuseki(耐久化) → PG commit」になり、
+        # 宣言している不変条件「Blob → PostgreSQL → Fuseki」が耐久化の観点で
+        # 守られない(ブランチ全体レビュー O-1)。ここで commit すると、以後
+        # put_graph が失敗して例外が呼び出し元まで伝播しても、
+        # `session_scope` の rollback は既にコミット済みのこの行を巻き戻せない
+        # (rollback で消えるのはコミット後に新たに始まった分だけ)。
+        await self._session.commit()
+
         # ---- 3. 射影 ----
         try:
             await self._store.put_graph(graph_iri, turtle, dataset=dataset_name(namespace))
             await versions.mark_projected(namespace, resolved)
+            await self._session.commit()
         except SparqlStoreError:
             logger.exception(
                 "名前空間 '%s' バージョン '%s' の射影に失敗しました。"
-                "正本は保存済みです。reconcile で回復します",
+                "正本(Blob・PostgreSQL)は既にコミット済みです。呼び出し元には"
+                "失敗を返し、reconcile で回復します",
                 namespace,
                 resolved,
             )
-            return recorded
+            # 正本への書き込みは上で commit 済みなので握り潰さず伝播させる。
+            # 「コミット済み・射影前」を projected_at IS NULL として reconcile が
+            # 拾える正規の状態のまま呼び出し元に知らせる(500 を返すのは意図した
+            # 挙動であり、それを避けるために握り潰さない)。
+            raise
 
         return await versions.find_by_hash(namespace, content_hash) or recorded
 

@@ -90,3 +90,38 @@ validate_version_file() {
     fi
     return 0
 }
+
+# GRAPH_IRI_BASE の末尾スラッシュをすべて除去して返す。
+#
+# ontology_core.graphs.version_graph_iri は `base.rstrip('/')` してから
+# namespace/version を連結する。load-snapshot.sh の build_namespace_tdb は
+# 従来正規化せずに連結していたため、末尾スラッシュ付きの値(例:
+# "urn:ontology:graph/")を渡すと射影(Python 側)は
+# ".../graph/ns/1.0.0"、再構築(シェル側)は ".../graph//ns/1.0.0" になり、
+# レプリカ再作成後に GRAPH で名指ししたバージョン固定クエリが静かに 0 件になる
+# (ブランチ全体レビュー I-4 追加分)。POSIX の `${var%/}` は 1 個しか
+# 除去しないため、Python の rstrip('/') に合わせてループで全部除去する。
+normalize_graph_iri_base() {
+    value="$1"
+    while [ "${value%/}" != "${value}" ]; do
+        value="${value%/}"
+    done
+    printf '%s' "${value}"
+}
+
+# BLOB_PREFIX の末尾スラッシュをすべて除去したうえで、必ず 1 個だけ付けて返す。
+#
+# ontology_core.blob.blob_path_for は `f"{prefix.rstrip('/')}/{namespace}/..."`
+# で常に区切りのスラッシュを 1 個保証する。load-snapshot.sh の Blob 一覧処理は
+# `"${name#"${BLOB_PREFIX}"}"` で前方一致除去するだけだったため、末尾スラッシュ
+# 無しの値(例: "approved")を渡すと Blob 名 "approved/ns/1.0.0.ttl" から
+# 除去されるのは "approved" だけになり、残り "/ns/1.0.0.ttl" の先頭が
+# namespace の外(スラッシュ)に来て namespace="" と誤認識され、
+# 名前空間の階層が無い Blob として全件スキップされる(同上 I-4 追加分)。
+normalize_blob_prefix() {
+    value="$1"
+    while [ "${value%/}" != "${value}" ]; do
+        value="${value%/}"
+    done
+    printf '%s/' "${value}"
+}

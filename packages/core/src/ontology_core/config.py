@@ -66,7 +66,14 @@ class Settings(BaseSettings):
     # SERVICE 句は任意の URL へ HTTP リクエストを飛ばせるため、既定で禁止する
     # (Azure IMDS 169.254.169.254 等への SSRF を防ぐ)。
     sparql_allow_service: bool = Field(default=False, alias="SPARQL_ALLOW_SERVICE")
+    # 時間の上限。Fuseki 側の arq:queryTimeout(config.ttl 等)と揃えて多層防御にする。
+    # こちらは**実際に効いている**(guards.py がクエリ実行前にチェックする)。
     sparql_query_timeout_seconds: int = Field(default=30, alias="SPARQL_QUERY_TIMEOUT_SECONDS")
+    # 件数の上限。**Phase 1 では未強制。** ここで値を保持し Bicep が注入しているため
+    # 「効いている」と誤誘導しやすいが、`guards.py` を含めどこにも LIMIT を注入する
+    # 実装が無い(ブランチ全体レビュー M-2)。任意の SPARQL に LIMIT を後付けするのは
+    # 副問い合わせや CONSTRUCT で壊れるため安価な強制手段が無く、Phase 2 で対応する。
+    # README.md の「動作を確認済み(ローカル)」節にも同じ注記がある。
     sparql_max_results: int = Field(default=10_000, alias="SPARQL_MAX_RESULTS")
 
     # ---- 正本(PostgreSQL) ----

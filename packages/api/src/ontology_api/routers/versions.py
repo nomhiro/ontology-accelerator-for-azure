@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, SettingsDep, StoreDep
 from ontology_api.repositories.versions import VersionRepository
 from ontology_api.services.projection import (
+    AutoVersionError,
     ProjectionService,
     ReconcileReport,
     UnknownNamespaceError,
@@ -60,6 +61,10 @@ async def publish_version(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except AutoVersionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
 
 
 @router.get("/namespaces/{namespace}/versions", summary="バージョンの一覧を取得する")

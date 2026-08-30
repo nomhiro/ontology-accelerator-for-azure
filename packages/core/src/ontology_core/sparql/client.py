@@ -116,7 +116,7 @@ class FusekiStore(SparqlStore):
     # ---- SPARQL 1.1 Protocol ----
 
     async def query(self, sparql: str, *, dataset: str) -> dict[str, Any]:
-        response = await self._send(
+        result: dict[str, Any] = await self._send_json(
             "POST",
             self._resolve(self._query_endpoint, dataset),
             operation="クエリ",
@@ -126,7 +126,6 @@ class FusekiStore(SparqlStore):
                 "Accept": "application/sparql-results+json",
             },
         )
-        result: dict[str, Any] = response.json()
         return result
 
     async def update(self, sparql: str, *, dataset: str) -> None:
@@ -151,14 +150,19 @@ class FusekiStore(SparqlStore):
     # ---- 管理操作(Fuseki 固有) ----
 
     async def list_datasets(self) -> list[str]:
-        response = await self._send(
+        operation = "データセット一覧の取得"
+        payload: dict[str, Any] = await self._send_json(
             "GET",
             f"{self._admin_endpoint}datasets",
-            operation="データセット一覧の取得",
+            operation=operation,
             auth=self._admin_auth or httpx.USE_CLIENT_DEFAULT,
         )
-        payload: dict[str, Any] = response.json()
-        return [str(entry["ds.name"]).lstrip("/") for entry in payload.get("datasets", [])]
+        try:
+            return [str(entry["ds.name"]).lstrip("/") for entry in payload.get("datasets", [])]
+        except (KeyError, TypeError) as exc:
+            # JSON としては正しくても `entry["ds.name"]` が無い、あるいは
+            # `entry` が辞書でない等、応答の形が想定と違うケース。
+            raise SparqlStoreError(f"{operation}の応答形式が不正です: {exc}") from exc
 
     async def create_dataset(self, dataset: str) -> None:
         await self._send(
@@ -203,6 +207,32 @@ class FusekiStore(SparqlStore):
             raise SparqlStoreError(f"{operation}に失敗しました: {exc}") from exc
         self._raise_for_status(response, operation)
         return response
+
+    async def _send_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        operation: str,
+        **kwargs: Any,
+    ) -> Any:
+        """`_send` に加えて JSON 解析までを `SparqlStoreError` の契約に含める。
+
+        `_send` は HTTP 層(接続不能・タイムアウト・非 2xx)の失敗しか包まない。
+        HTTP 200 で JSON でない本文が返るケース(internal ingress やサイドカーの
+        異常、Fuseki 互換実装への差し替えによる応答形式差異)では
+        `response.json()` が `json.JSONDecodeError`(`ValueError` のサブクラス)
+        を投げ、これが `_send` の外で素通しになっていた。契約が破れると
+        `routers/sparql.py` の `except SparqlStoreError` をすり抜けて 500 になり、
+        `ProjectionService.reconcile()` では `except (SparqlStoreError,
+        BlobStoreError)` をすり抜けて per-item の失敗として記録されずループ全体が
+        中断する。
+        """
+        response = await self._send(method, url, operation=operation, **kwargs)
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise SparqlStoreError(f"{operation}の応答が JSON として解釈できません: {exc}") from exc
 
     @staticmethod
     def _resolve(template: str, dataset: str) -> str:

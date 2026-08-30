@@ -52,6 +52,14 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 # この値を上書きする。ここの既定値を変えるときは Bicep 側も合わせること
 # (グラフ IRI の体系はバージョン管理の中心的な値なので、IaC 側で明示している)。
 : "${GRAPH_IRI_BASE:=urn:ontology:graph}"
+# BLOB_PREFIX と GRAPH_IRI_BASE は、末尾スラッシュの有無で Python 側
+# (ontology_core.blob.blob_path_for / ontology_core.graphs.version_graph_iri)
+# と食い違うと、publish 時は成功し reconcile も検出せず、再構築(このスクリプト)
+# が走ったときだけ静かに壊れる(ブランチ全体レビュー I-4 追加分)。
+# 利用者が Bicep パラメータで既定値以外を渡す場合に備えて、ここで正規化して
+# Python 側の rstrip('/') 系の処理と揃える(lib/validate.sh を参照)。
+GRAPH_IRI_BASE="$(normalize_graph_iri_base "${GRAPH_IRI_BASE}")"
+BLOB_PREFIX="$(normalize_blob_prefix "${BLOB_PREFIX}")"
 # 既存の TDB2 があるとき再構築せずそのまま使うか。
 #
 # graphPersistence=azureFiles は「ストア自体を正本にしたい」利用者向けの構成で、

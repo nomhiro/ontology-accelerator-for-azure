@@ -12,7 +12,7 @@ import logging
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ontology_api.dependencies import CurrentPrincipal, SessionDep, StoreDep
+from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, StoreDep
 from ontology_api.repositories.namespaces import NamespaceExistsError, NamespaceRepository
 from ontology_core.graphs import NamespaceNameError, dataset_name
 from ontology_core.models import Namespace
@@ -101,12 +101,44 @@ async def delete_namespace(
     principal: CurrentPrincipal,
     session: SessionDep,
     store: StoreDep,
+    blob: BlobDep,
 ) -> None:
     """名前空間を削除する。
 
     順序は作成と対にして「正本(DB)から消す → 射影先(データセット)を消す」にする。
+
+    ただし Blob の当該名前空間プレフィックス配下に公開済み TTL が 1 件でも残って
+    いれば 409 Conflict で拒否し、PG 行・データセットのどちらも変更しない。
+    `containers/fuseki/load-snapshot.sh` は PostgreSQL を一切見ず Blob だけを見て
+    名前空間ごとの TDB2 を再構築するため、Blob を消さずに PG 行だけ消すと
+    レプリカ再作成(デプロイ・スケールイベント等)で削除済みのオントロジーが
+    復活し、認証済みの呼び出し元に返ってしまう(ブランチ全体レビュー C-1)。
+    判定を PostgreSQL の版数に依拠すると、publish 失敗で残った孤児 TTL
+    (PG に記録される前に Blob 書き込みだけ成功した場合)を見逃すため、
+    **復活源そのものである Blob 本体**を見る。オントロジーは不変リビジョン
+    (ADR-0006)なので、この削除経路で Blob を消す実装にはしない。公開済み
+    オントロジーを含む名前空間の削除は Phase 2(監査経路)で対応する。
     """
     del principal
+    if await NamespaceRepository(session).get(name) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"名前空間 '{name}' が見つかりません",
+        )
+
+    remaining = await blob.list_versions(namespace=name)
+    if remaining:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"名前空間 '{name}' には公開済みオントロジーの Blob が "
+                f"{len(remaining)} 件残っているため削除できません: "
+                f"{', '.join(remaining)}. "
+                "公開済みオントロジーを含む名前空間の削除は Phase 2(監査経路)で"
+                "対応します。"
+            ),
+        )
+
     deleted = await NamespaceRepository(session).delete(name)
     if not deleted:
         raise HTTPException(
