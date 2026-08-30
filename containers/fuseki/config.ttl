@@ -4,6 +4,21 @@
 ## 書き込みは Core API からのみ行う。TDB2 のデータは正本ではなく、
 ## Blob 上のバージョン付き TTL から init コンテナが作り直す射影である。
 ## docs/adr/0002-triple-store-as-rebuildable-projection.md を参照。
+##
+## この設定ファイルが定義するのは fuseki:Server(サーバー全体の設定)と
+## 予約データセット "ds" だけである。実際のオントロジーは名前空間ごとに
+## 別のデータセットへ分離する(docs/adr/0001-rdf-store-selection.md の
+## 「データセット単位の物理分離」)。名前空間ごとのデータセットは
+## containers/fuseki/load-snapshot.sh が Blob の内容から
+## FUSEKI_BASE/configuration/<namespace>.ttl として生成し、Fuseki が
+## 起動時にそこを読み込む(Jena 公式のディレクトリ規約)。"ds" という名前は
+## この予約データセットのために ontology_core.graphs.RESERVED_DATASET_NAMES
+## で名前空間名として使えないようにしてある。
+##
+## ここで定義する arq:httpServiceAllowed はサーバー全体に効くため、
+## configuration/*.ttl から読み込む名前空間ごとのデータセット、および
+## admin API で動的に作ったデータセットのどちらでも SERVICE は無効になる
+## (packages/api/tests/test_isolation.py で実物の Fuseki に対して検証済み)。
 
 @prefix :        <#> .
 @prefix fuseki:  <http://jena.apache.org/fuseki#> .

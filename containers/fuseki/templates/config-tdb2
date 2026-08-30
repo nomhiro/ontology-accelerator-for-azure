@@ -1,0 +1,46 @@
+# Licensed under the terms of http://www.apache.org/licenses/LICENSE-2.0
+#
+# Apache Jena Fuseki 配布物の同名テンプレートをベースに、コメントアウトされていた
+# arq:queryTimeout と tdb2:unionDefaultGraph を有効化したもの。
+#
+# admin API ($/datasets への dbName+dbType のフォーム POST)でデータセットを
+# 動的に作成すると、このテンプレートを雛形にして assembler が生成される。
+# 元のテンプレートのままでは config.ttl のデータセットレベル設定
+# (arq:queryTimeout, tdb2:unionDefaultGraph)が動的に作ったデータセットへ
+# 継承されず、既定グラフへのクエリが 0 件になってしまう
+# (containers/fuseki/load-snapshot.sh が名前空間ごとに生成する assembler には
+# 別途同じ値を設定している。config.ttl の :dataset と値を揃えること)。
+#
+# 元のテンプレートは実行中のコンテナから取り出せる。
+#   docker compose exec -T fuseki cat /fuseki/templates/config-tdb2
+
+PREFIX :        <#>
+PREFIX fuseki:  <http://jena.apache.org/fuseki#>
+PREFIX rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs:    <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX tdb2:    <http://jena.apache.org/2016/tdb#>
+PREFIX ja:      <http://jena.hpl.hp.com/2005/11/Assembler#>
+
+## ---------------------------------------------------------------
+## Updatable TDB dataset with all services enabled.
+
+<#service_tdb_all> rdf:type fuseki:Service ;
+    rdfs:label                         "TDB2 {NAME}" ;
+    fuseki:name                        "{NAME}" ;
+    fuseki:serviceQuery                "" ;
+    fuseki:serviceQuery                "sparql" ;
+    fuseki:serviceQuery                "query" ;
+    fuseki:serviceUpdate               "" ;
+    fuseki:serviceUpdate               "update" ;
+    fuseki:serviceUpload               "upload" ;
+    fuseki:serviceReadWriteGraphStore  "data" ;
+    fuseki:serviceReadGraphStore       "get" ;
+    fuseki:dataset                     <#tdb_dataset_readwrite> ;
+
+    .
+
+<#tdb_dataset_readwrite> rdf:type      tdb2:DatasetTDB2 ;
+    tdb2:location "{FUSEKI_BASE}/databases/{NAME}" ;
+    ja:context [ ja:cxtName "arq:queryTimeout" ;  ja:cxtValue "10000,30000" ] ;
+    tdb2:unionDefaultGraph true ;
+    .

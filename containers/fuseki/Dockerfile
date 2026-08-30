@@ -53,6 +53,11 @@ COPY --from=dist /dist/jena /opt/jena
 COPY config.ttl /etc/fuseki/config.ttl
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY load-snapshot.sh /opt/fuseki-init/load-snapshot.sh
+# admin API ($/datasets への dbName+dbType のフォーム POST)が使う雛形。
+# config.ttl のデータセットレベル設定(arq:queryTimeout, tdb2:unionDefaultGraph)を
+# 動的に作ったデータセットにも継承させるため、配布物の既定テンプレートを
+# 上書きする。詳細は templates/config-tdb2 のコメントを参照。
+COPY templates/config-tdb2 /fuseki/templates/config-tdb2
 
 RUN chmod +x /usr/local/bin/entrypoint.sh /opt/fuseki-init/load-snapshot.sh \
     && mkdir -p /fuseki/databases /fuseki/staging \
