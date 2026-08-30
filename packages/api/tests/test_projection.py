@@ -150,6 +150,52 @@ async def test_reconcile_projects_unprojected_versions(prepared: Prepared) -> No
     assert len(await VersionRepository(session).unprojected()) == 0
 
 
+async def test_reconcile_reports_blob_failures_without_aborting(prepared: Prepared) -> None:
+    """Blob 側の失敗(実際の Azure SDK 例外)も reconcile を止めず、他の件は続行する。
+
+    OntologyBlobStore が azure の例外を BlobStoreError で包んでいなければ、
+    reconcile はここで未処理の例外のまま落ち、正常な方の版も failures に記録
+    されないまま処理が中断する。モックで BlobStoreError を投げるのではなく、
+    実在しない Blob を読ませて本物の azure.core.exceptions を発生させる。
+    """
+    from sqlalchemy import select
+
+    from ontology_core.db import OntologyVersionRow
+
+    session, blob = prepared
+    failing = FakeStore(fail_put=True)
+    svc = ProjectionService(
+        session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
+    )
+
+    ok = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    broken = await svc.publish(
+        namespace="retail-core", turtle=TTL + "\nex:B a ex:Class .\n", actor="t"
+    )
+    await session.commit()
+
+    # broken 版の DB 上の blob_path を、実在しない Blob を指すように壊す。
+    row = (
+        await session.execute(
+            select(OntologyVersionRow).where(
+                OntologyVersionRow.namespace == "retail-core",
+                OntologyVersionRow.version == broken.version,
+            )
+        )
+    ).scalar_one()
+    row.blob_path = "approved/retail-core/does-not-exist.ttl"
+    await session.flush()
+
+    healthy = FakeStore()
+    report = await ProjectionService(
+        session=session, blob=blob, store=healthy, graph_iri_base="urn:ontology:graph"
+    ).reconcile()
+
+    assert f"retail-core@{ok.version}" in report.versions_projected
+    assert f"retail-core@{broken.version}" not in report.versions_projected
+    assert any(broken.version in failure for failure in report.failures)
+
+
 async def test_reconcile_reports_orphan_datasets_without_deleting(prepared: Prepared) -> None:
     """正本に無いデータセットは報告されるが削除されない。
 

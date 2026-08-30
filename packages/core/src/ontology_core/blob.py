@@ -7,15 +7,45 @@ Fuseki のローダ(containers/fuseki/load-snapshot.sh)がこのレイアウト�
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Self
 
 from azure.core.credentials import AzureNamedKeyCredential, AzureSasCredential
 from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.exceptions import AzureError
 from azure.storage.blob.aio import BlobServiceClient, ContainerClient
 
 from ontology_core.graphs import validate_namespace_name, validate_version
 
-__all__ = ["OntologyBlobStore", "blob_path_for"]
+__all__ = ["BlobStoreError", "OntologyBlobStore", "blob_path_for"]
+
+
+class BlobStoreError(RuntimeError):
+    """Blob とのやり取りに失敗したことを表す。
+
+    `ontology_core.sparql.client.SparqlStoreError` と対になる存在。呼び出し側
+    (`ProjectionService.reconcile` 等)は「Blob の問題は必ず `BlobStoreError` で
+    来る」契約に依拠して、per-item の失敗として記録して続行するか、正本への
+    書き込みをロールバックするかといったトランザクションの境界を判断する。
+    `azure.core.exceptions.AzureError`(接続不能・404 等)が生のまま漏れると、
+    その判断が壊れて想定していない例外が外側の処理を誤発動させる。
+    """
+
+
+@asynccontextmanager
+async def _wrap_errors(operation: str) -> AsyncIterator[None]:
+    """`AzureError` を `BlobStoreError` に包む。
+
+    `FusekiStore._send` が httpx の例外を `SparqlStoreError` に包むのと同じ考え方。
+    Blob 操作(upload / download / list)ごとに個別の try/except を書くと重複するため
+    ここに集約する。
+    """
+    try:
+        yield
+    except AzureError as exc:
+        raise BlobStoreError(f"{operation}に失敗しました: {exc}") from exc
+
 
 # `BlobServiceClient.__init__` の `credential` 引数の型そのまま。
 # マネージド ID(`DefaultAzureCredential` 等)は `AsyncTokenCredential`、
@@ -85,13 +115,15 @@ class OntologyBlobStore:
         """TTL を置いて Blob パスを返す。"""
         path = blob_path_for(self._prefix, namespace, version)
         blob = self._container.get_blob_client(path)
-        await blob.upload_blob(turtle.encode("utf-8"), overwrite=True)
+        async with _wrap_errors("Blob の書き込み"):
+            await blob.upload_blob(turtle.encode("utf-8"), overwrite=True)
         return path
 
     async def get_version(self, blob_path: str) -> str:
         blob = self._container.get_blob_client(blob_path)
-        stream = await blob.download_blob()
-        return (await stream.readall()).decode("utf-8")
+        async with _wrap_errors("Blob の読み取り"):
+            stream = await blob.download_blob()
+            return (await stream.readall()).decode("utf-8")
 
     async def list_versions(self, namespace: str | None = None) -> list[str]:
         """TTL の Blob パスを列挙する。"""
@@ -101,9 +133,10 @@ class OntologyBlobStore:
         else:
             name_prefix = self._prefix
         names: list[str] = []
-        async for blob in self._container.list_blobs(name_starts_with=name_prefix):
-            if blob.name.endswith(".ttl"):
-                names.append(blob.name)
+        async with _wrap_errors("Blob 一覧の取得"):
+            async for blob in self._container.list_blobs(name_starts_with=name_prefix):
+                if blob.name.endswith(".ttl"):
+                    names.append(blob.name)
         return sorted(names)
 
     async def aclose(self) -> None:

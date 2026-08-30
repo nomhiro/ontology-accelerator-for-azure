@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
-from ontology_core.blob import OntologyBlobStore
+from ontology_core.blob import BlobStoreError, OntologyBlobStore
 from ontology_core.graphs import dataset_name, version_graph_iri
 from ontology_core.models import OntologyVersion, OntologyVersionStatus
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
@@ -188,7 +188,9 @@ class ProjectionService:
                 )
                 await versions.mark_projected(version.namespace, version.version)
                 report.versions_projected.append(f"{version.namespace}@{version.version}")
-            except (SparqlStoreError, OSError) as exc:
+            except (SparqlStoreError, BlobStoreError) as exc:
+                # Blob(get_version)・ストア(put_graph)いずれの失敗も専用の例外で
+                # 来る契約になっているため、OSError 等を広く構える必要はない。
                 report.failures.append(f"{version.namespace}@{version.version}: {exc}")
 
         return report
