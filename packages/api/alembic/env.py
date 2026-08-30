@@ -13,8 +13,13 @@ config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
+#
+# disable_existing_loggers=False にする理由: 既定 (True) だと、このモジュールを
+# import する前に作られたロガー(例: ontology_api.migrate が起動時に作るロガー)を
+# 無効化してしまい、マイグレーション前後のログ("ロックを取得しました" 等)が
+# 出力されなくなる(migrate.py からの呼び出しで実際に観測した)。
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # add your model's MetaData object here
 # for 'autogenerate' support

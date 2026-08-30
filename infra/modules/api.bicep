@@ -81,6 +81,12 @@ param storageAccountUrl string
 @description('オントロジー正本の Blob コンテナ名。')
 param ontologyBlobContainer string
 
+@description('名前付きグラフ IRI の接頭辞。infra/modules/fuseki.bicep の graphIriBase と同じ値を main.bicep から渡すこと(値がずれると射影したグラフを ProjectionService が見つけられなくなる)。')
+param graphIriBase string = 'urn:ontology:graph'
+
+@description('正本 TTL を置く Blob のプレフィックス。containers/fuseki/load-snapshot.sh の BLOB_PREFIX と揃える。')
+param blobPrefix string = 'approved/'
+
 @description('Application Insights の接続文字列。')
 param applicationInsightsConnectionString string
 
@@ -240,6 +246,14 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'ONTOLOGY_BLOB_CONTAINER'
               value: ontologyBlobContainer
+            }
+            {
+              name: 'GRAPH_IRI_BASE'
+              value: graphIriBase
+            }
+            {
+              name: 'BLOB_PREFIX'
+              value: blobPrefix
             }
             {
               name: 'AZURE_CLIENT_ID'

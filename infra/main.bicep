@@ -123,6 +123,11 @@ var tags = {
   'azd-env-name': environmentName
 }
 var ontologyBlobContainer = 'ontologies'
+// ADR-0006 のバージョン付き名前付きグラフの接頭辞と、正本 TTL を置く Blob の
+// プレフィックス。fuseki.bicep (ローダ) と api.bicep (ProjectionService) の
+// 両方が同じ値を見る必要があるため、main.bicep を単一の正本にして両モジュールへ渡す。
+var graphIriBase = 'urn:ontology:graph'
+var ontologyBlobPrefix = 'approved/'
 
 // modelLocation は Phase 2 で Microsoft Foundry を追加する際に使う。
 // いま参照先がないため、値の解決だけ済ませて output で環境へ渡す。
@@ -217,6 +222,7 @@ module fuseki './modules/fuseki.bicep' = {
     fusekiPasswordSecretUri: shared.outputs.fusekiPasswordSecretUri
     applicationInsightsConnectionString: shared.outputs.applicationInsightsConnectionString
     logLevel: logLevel
+    graphIriBase: graphIriBase
   }
 }
 
@@ -251,6 +257,8 @@ module api './modules/api.bicep' = {
     ontologyBlobContainer: shared.outputs.ontologyBlobContainerName
     applicationInsightsConnectionString: shared.outputs.applicationInsightsConnectionString
     logLevel: logLevel
+    graphIriBase: graphIriBase
+    blobPrefix: ontologyBlobPrefix
   }
 }
 
