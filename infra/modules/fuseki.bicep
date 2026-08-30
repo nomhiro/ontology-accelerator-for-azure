@@ -283,7 +283,13 @@ resource fuseki 'Microsoft.App/containerApps@2024-03-01' = {
 output name string = fuseki.name
 output internalFqdn string = fuseki.properties.configuration.ingress.fqdn
 output dataset string = fusekiDataset
-output queryEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/${fusekiDataset}/sparql'
-output updateEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/${fusekiDataset}/update'
-output gspEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/${fusekiDataset}/data'
+// `{dataset}` はリテラルのプレースホルダとして残す(Bicep の文字列補間は `${}` なので
+// 素の `{dataset}` は展開されずそのまま出力される)。ontology_core.config.Settings の
+// SPARQL_QUERY_ENDPOINT 等の既定値と同じ形式で、`FusekiStore._resolve` がリクエストごとに
+// 名前空間名へ置換する。ここを `${fusekiDataset}`(固定の "ds")にすると、Task 7 以降
+// "ds" は空の予約データセットのため、すべてのクエリが常に 0 件を返し、名前空間の
+// 隔離も機能しなくなる。
+output queryEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/{dataset}/sparql'
+output updateEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/{dataset}/update'
+output gspEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/{dataset}/data'
 output adminEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/$/'

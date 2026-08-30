@@ -103,9 +103,21 @@ jobs:
           docker logs azurite
           exit 1
 
+      # test_isolation.py が実物の Fuseki を使う(Task 7)。Fuseki は Azurite と違って
+      # 公開イメージが無く、このリポジトリの containers/fuseki/Dockerfile からビルドする
+      # 必要があるため、Azurite のように `docker run <公開イメージ>` では済まない。
+      # `docker-compose.yml` にビルド・ヘルスチェックの定義が既にあるので、ここで
+      # 二重管理せずそのまま使う。`fuseki` を明示するので postgres(jobs.*.services で
+      # 別途起動済み)や azurite(前のステップで起動済み)は起動されず、ポートも
+      # 衝突しない。`--wait` で `docker-compose.yml` のヘルスチェック
+      # (`$/ping` が 200 を返すまで)を待つ。
+      - name: Fuseki を起動する
+        run: docker compose up -d --build --wait fuseki
+
       - name: テスト(単体 + integration)
         env:
           POSTGRES_PASSWORD: localdev
+          FUSEKI_ADMIN_PASSWORD: localdev
         run: uv run pytest
 
   web:

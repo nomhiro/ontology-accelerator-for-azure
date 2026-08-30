@@ -41,14 +41,20 @@ class Settings(BaseSettings):
 
     # ---- SPARQL ストア(SPARQL 1.1 Protocol が境界) ----
     # 既存の GraphDB / Stardog / Neptune 等を使う場合はここを差し替えるだけでよい。
+    #
+    # `{dataset}` はリテラルのプレースホルダで、`FusekiStore._resolve` がリクエストごとに
+    # 名前空間名へ置換する。名前空間ごとにデータセットを分けて物理的に隔離する設計
+    # (docs/adr/0001-rdf-store-selection.md)の帰結であり、"ds" などの固定値に戻すと
+    # 名前空間の隔離が機能しなくなる(すべてのクエリが同じ 1 つのデータセットに向いてしまい、
+    # Task 7 以降 "ds" は空の予約データセットなので常に 0 件になる)。
     sparql_query_endpoint: str = Field(
-        default="http://localhost:3030/ds/sparql", alias="SPARQL_QUERY_ENDPOINT"
+        default="http://localhost:3030/{dataset}/sparql", alias="SPARQL_QUERY_ENDPOINT"
     )
     sparql_update_endpoint: str = Field(
-        default="http://localhost:3030/ds/update", alias="SPARQL_UPDATE_ENDPOINT"
+        default="http://localhost:3030/{dataset}/update", alias="SPARQL_UPDATE_ENDPOINT"
     )
     sparql_gsp_endpoint: str = Field(
-        default="http://localhost:3030/ds/data", alias="SPARQL_GSP_ENDPOINT"
+        default="http://localhost:3030/{dataset}/data", alias="SPARQL_GSP_ENDPOINT"
     )
     fuseki_admin_endpoint: str = Field(
         default="http://localhost:3030/$/", alias="FUSEKI_ADMIN_ENDPOINT"
