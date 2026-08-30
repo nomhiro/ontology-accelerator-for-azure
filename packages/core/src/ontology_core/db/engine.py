@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -19,18 +19,40 @@ from sqlalchemy.ext.asyncio import (
 
 from ontology_core.config import Settings
 
+if TYPE_CHECKING:
+    from azure.identity import DefaultAzureCredential
+
 __all__ = ["create_engine_and_factory", "session_scope"]
 
 # Azure Database for PostgreSQL のトークン対象スコープ。
 _POSTGRES_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
 
+# モジュールレベルで1個だけ生成し、以降の接続すべてで再利用する(遅延生成)。
+# `DefaultAzureCredential` の生成自体が(環境変数・IMDS・Azure CLI 等を順に
+# プローブする)ブロッキング処理であり、接続ごとに新規生成すると
+# `pool_size=5, max_overflow=5` で最大10回分のコストが積む。
+_credential: DefaultAzureCredential | None = None
+
+
+def _get_credential() -> DefaultAzureCredential:
+    """`DefaultAzureCredential` をモジュールレベルで1個だけ生成して返す。"""
+    global _credential
+    if _credential is None:
+        from azure.identity import DefaultAzureCredential
+
+        _credential = DefaultAzureCredential()
+    return _credential
+
 
 def _entra_password_provider() -> str:
-    """Entra ID のアクセストークンを取得してパスワードとして返す。"""
-    from azure.identity import DefaultAzureCredential
+    """Entra ID のアクセストークンを取得してパスワードとして返す。
 
-    credential = DefaultAzureCredential()
-    return credential.get_token(_POSTGRES_SCOPE).token
+    資格情報オブジェクト自体はモジュールレベルで1個を再利用するが、
+    `get_token()` は接続のたびに呼ぶ(トークンの有効期限に対応するため)。
+    `DefaultAzureCredential` は内部でトークンをキャッシュし、有効期限が近づくと
+    自動的に再取得するので、生成を1回に抑えてもここを都度呼ぶことに問題は無い。
+    """
+    return _get_credential().get_token(_POSTGRES_SCOPE).token
 
 
 def create_engine_and_factory(

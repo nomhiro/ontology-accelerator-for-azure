@@ -223,6 +223,7 @@ module fuseki './modules/fuseki.bicep' = {
     applicationInsightsConnectionString: shared.outputs.applicationInsightsConnectionString
     logLevel: logLevel
     graphIriBase: graphIriBase
+    blobPrefix: ontologyBlobPrefix
   }
 }
 

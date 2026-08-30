@@ -55,6 +55,9 @@ param fusekiDataset string = 'ds'
 @description('load-snapshot.sh が各 TTL を読み込む名前付きグラフ IRI の接頭辞。config.ttl が unionDefaultGraph を有効にしているため、既定グラフではなく名前付きグラフへ読み込む必要がある。')
 param graphIriBase string = 'urn:ontology:graph'
 
+@description('正本 TTL を置く Blob のプレフィックス。infra/modules/api.bicep の blobPrefix と同じ値を main.bicep から渡すこと(値がずれると、API が書き込んだ場所を load-snapshot.sh が読みに行けなくなる)。')
+param blobPrefix string = 'approved/'
+
 @description('オントロジー正本を格納する Blob エンドポイント URL。')
 param storageAccountUrl string
 
@@ -139,6 +142,13 @@ var sharedEnv = [
     // あるが、グラフ IRI の体系はインフラ側で明示しておく。
     name: 'GRAPH_IRI_BASE'
     value: graphIriBase
+  }
+  {
+    // containers/fuseki/load-snapshot.sh が読み込み対象を絞り込む接頭辞。
+    // api.bicep の BLOB_PREFIX(API の書き込み先)と一致していないと、
+    // API が publish したバージョンをローダが永久に見つけられなくなる。
+    name: 'BLOB_PREFIX'
+    value: blobPrefix
   }
   {
     name: 'AZURE_CLIENT_ID'

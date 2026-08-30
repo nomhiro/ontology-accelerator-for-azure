@@ -177,22 +177,10 @@ azd up          # just deploy でも同じ
 
 #### 初回デプロイ時の注意
 
-- **サンプルオントロジーの投入は現時点では手動です。** postprovision フックは Phase 1 で実装予定のため、`azd up` 後に以下を実行してください。Blob に置いたうえで Fuseki のリビジョンを再起動すると、entrypoint が TDB2 を作り直してグラフが見えるようになります
-
-  ```bash
-  # 1. 正本となる TTL を Blob へ置く (パスの approved/ 配下が読み込み対象)
-  az storage blob upload \
-    --account-name $(azd env get-value AZURE_STORAGE_ACCOUNT_NAME) \
-    --container-name ontologies \
-    --name approved/retail-core.ttl \
-    --file samples/retail-core.ttl \
-    --auth-mode login --overwrite
-
-  # 2. Fuseki を再起動して Blob から射影を作り直す
-  REV=$(az containerapp revision list -g <resource-group> -n <fuseki-app> \
-    --query "[?properties.active].name | [0]" -o tsv)
-  az containerapp revision restart -g <resource-group> -n <fuseki-app> --revision "$REV"
-  ```
+- **サンプルオントロジーの投入は `postprovision` フックが自動で行います**(`scripts/postprovision.sh` / `scripts/postprovision.ps1`)。手動で Blob にアップロードする必要はありません
+  - `postprovision` は `azd provision` の後・`azd deploy` の前に走るため、**`azd provision` を単体で実行した直後はまだサンプルが見えません**。`azd up`(= provision → deploy)であれば、続く deploy で Fuseki の新しいリビジョンが立ち、entrypoint が Blob から TDB2 を再構築してサンプルが読み込まれます
+  - `postprovision` は `az storage blob upload --auth-mode login` で Azure CLI にログインしているユーザー自身の権限を使います。この権限(Storage Blob Data Contributor)の割り当ても他の RBAC ロールと同様に**伝播待ちで初回だけ失敗することがあります**。`azure.yaml` は `continueOnError: true` を指定しているため失敗しても `azd up` 全体は成功扱いになりますが、失敗した場合は数分待ってから `azd provision` を再実行してください
+  - **既知の制約**: `postprovision` は正本(Blob)に TTL を置くだけで、PostgreSQL の `namespaces` / `ontology_versions` には行を作りません(設計上の書き込み順序である Blob → PostgreSQL → Fuseki の2段目を経由していません)。そのため同梱サンプルは SPARQL では見えますが、`GET /namespaces` は空配列を返し、`POST /admin/reconcile` は `retail-core` を `orphan_datasets` として恒久的に報告し続け、MCP の `list_namespaces` からも見えません(**AI エージェント経路からは発見できません**)。Task 9 で Entra アプリ登録が完了した後、`postprovision` を Core API 経由の投入に置き換えて解消する予定です
 - **Key Vault のロール割り当ては RBAC の伝播待ちで初回に失敗しうる**ため、失敗した場合は数分待って再実行してください
 - **CI からサービスプリンシパルでデプロイする場合**は `principalType=ServicePrincipal` を指定してください。`principalId` が空だと Key Vault Secrets Officer の割り当てが作られないため、シークレット書き込み権限を別途付与する必要があります
 - `graphPersistence: azureFiles` を選ぶ場合、Azure Files は **SMB (Premium)** でマウントします。NFS はカスタム VNet が必須で `minimal` ティアと両立しないためです。この構成は**単一レプリカ前提**である点に注意してください(詳細は [ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md))
@@ -213,6 +201,7 @@ azd down --purge   # just destroy でも同じ
 - **サブスクリプションに対する権限**: リソースグループの作成とロール割り当てを行うため、`Contributor` に加えて `User Access Administrator`(または `Owner`)相当が必要です。Managed Identity へのロール割り当てを IaC が行います
 - **Entra ID App 登録**: 人間の認可コードフロー、およびエージェントの client credentials フローのために App 登録が必要です。テナントで App 登録が禁止されている場合、テナント管理者への依頼が必要になります
 - **App 登録権限がない場合**: `AUTH_MODE=disabled` の **ローカル専用 dev モード**を用意しています。認証を完全に無効化するため、**ローカル開発以外では絶対に使用しないでください**。Azure へデプロイした環境でこのモードを有効にしてはいけません
+- **既知の制約: 実行時 ID が PostgreSQL の管理者権限を持ちます。** API / MCP / Fuseki が共有する UAMI を PostgreSQL Flexible Server の Entra 管理者として登録しています(`infra/modules/postgres.bicep` の `entraAdministrator` リソース)。これはパスワードレス接続(Entra トークンでの接続)を最短で実現するための構成ですが、最小権限の観点では課題が残ります。**API の実行時 ID が侵害されると、`azure_pg_admin` 権限で DB ごと削除できてしまいます。** Phase 1 の残りタスクとして、API 専用の非管理者ロールを別途作成し、管理者権限から切り離すことを予定しています
 
 ## Microsoft Foundry モデルのリージョン可用性
 

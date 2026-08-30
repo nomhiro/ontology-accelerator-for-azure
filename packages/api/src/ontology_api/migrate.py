@@ -40,6 +40,17 @@ logger.setLevel(logging.INFO)
 # 使う。値そのものに業務的な意味は無く、他プロジェクトのロック ID と衝突しなければよい。
 _MIGRATION_LOCK_ID = 918273645
 
+# ロック待ちの上限(秒)。`infra/modules/api.bicep` の startupProbe は
+# initialDelaySeconds(10) + periodSeconds(10) * failureThreshold(30) = 310秒を
+# 予算として持つ(fuseki.bicep の Startup probe と同等)。この予算を超えて
+# Container Apps に kill されると、実行中の transactional DDL がロールバックし、
+# 再起動して同じ場所で再び kill される = そのマイグレーションが永久に適用できない
+# 状態に陥る。ロック待ちをこの予算より十分短く区切っておけば、待ちきれない場合は
+# probe に kill される前に自分から非ゼロ終了でき、実際のマイグレーション実行(通常は
+# 数秒〜数十秒)にも probe 予算の残りを残せる。310秒の予算に対し余白を70秒ほど
+# 残す 240秒(4分)とする。
+_LOCK_TIMEOUT_SECONDS = 240
+
 # packages/api/alembic.ini への絶対パス。uvicorn の起動時カレントディレクトリに
 # 依存させないため、このファイルの位置から相対的に組み立てる。
 # __file__ = packages/api/src/ontology_api/migrate.py なので、
@@ -75,12 +86,32 @@ async def _upgrade_with_lock() -> None:
     engine, _factory = create_engine_and_factory(settings)
     try:
         async with engine.connect() as conn:
+            # PostgreSQL の SET はプリペアドステートメントのパラメータバインドを
+            # 受け付けない(値はリテラルでなければならない)。ここは定数
+            # `_LOCK_TIMEOUT_SECONDS` を埋め込むだけでユーザー入力は関与しないため、
+            # f-string での組み立てはインジェクションのリスクにならない。
+            await conn.execute(text(f"SET lock_timeout = '{_LOCK_TIMEOUT_SECONDS}s'"))
             logger.info(
-                "マイグレーション用アドバイザリロック(id=%s)を取得します", _MIGRATION_LOCK_ID
+                "マイグレーション用アドバイザリロック(id=%s, lock_timeout=%s秒)を取得します",
+                _MIGRATION_LOCK_ID,
+                _LOCK_TIMEOUT_SECONDS,
             )
             await conn.execute(
                 text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": _MIGRATION_LOCK_ID}
             )
+            # `pg_advisory_lock` はセッションスコープのロックであり、`COMMIT` しても
+            # 解放されない(トランザクションスコープのロックが欲しい場合は
+            # `pg_advisory_xact_lock` を使う)。したがってここで commit してもロックは
+            # 維持されたまま、接続の状態だけが `idle in transaction` から `idle` に変わる。
+            # `idle_in_transaction_session_timeout` はコネクションが `idle in transaction`
+            # のときにしか発火しないため、commit しておくことでこの設定の対象から外れる。
+            # Azure Database for PostgreSQL の既定値は 0(無効)だが、運用者が設定すると、
+            # `alembic upgrade head` の実行中(ロックを保持したままの接続は何も
+            # クエリを発行していないので `idle in transaction` に見える)にこの接続が
+            # タイムアウトで強制切断され、ロックが失われて直列化が破れる
+            # (実測: `ALTER DATABASE ontology SET idle_in_transaction_session_timeout = '2s'`
+            # の下で、5秒後にロックが消え、別レプリカが同じロックを取得できることを確認済み)。
+            await conn.commit()
             try:
                 logger.info("alembic upgrade head を実行します")
                 await asyncio.to_thread(_run_alembic_upgrade)

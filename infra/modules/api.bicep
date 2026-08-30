@@ -284,6 +284,30 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
           // 依存先の一時的な不調でレプリカが落ちないようにする意図。
           probes: [
             {
+              // 起動時に packages/api/src/ontology_api/migrate.py が
+              // `alembic upgrade head` を実行し、完了するまで uvicorn (= /healthz) が
+              // 応答しない。Startup probe が成功するまで Readiness / Liveness は
+              // 評価されないため、この間はマイグレーションの所要時間を probe に
+              // kill されずに確保できる。予算は fuseki.bicep の Startup probe
+              // (initialDelaySeconds(10) + periodSeconds(10) * failureThreshold(30)
+              // = 310秒、最大5分)と同等以上を取る。この予算を切ると、
+              // マイグレーション中の transactional DDL が kill でロールバックし、
+              // 再起動して同じ場所で再び kill される = そのマイグレーションが
+              // 永久に適用できない状態に陥る(migrate.py の lock_timeout(240秒)は
+              // この予算内に収まるよう設定してある)。
+              type: 'Startup'
+              httpGet: {
+                path: '/healthz'
+                port: 8000
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 30
+              successThreshold: 1
+            }
+            {
               type: 'Readiness'
               httpGet: {
                 path: '/healthz'
