@@ -11,7 +11,19 @@ dependencies = [
     "httpx>=0.28",
     "rdflib>=7.1",
     "azure-identity>=1.19",
+    # azure.identity.aio.DefaultAzureCredential(dependencies.py の blob_store で使用)
+    # は aiohttp ベースの非同期トランスポートを要求する。現状は
+    # azure-storage-blob[aio] が推移的に azure-core[aio](→ aiohttp)を引き込んで
+    # いるためたまたま動いているが、将来 Blob 依存を切り離すと Entra 認証が
+    # 実行時に ImportError で壊れる。両者は独立した機能なので、必要な extra は
+    # ここで明示する。
+    "azure-core[aio]>=1.30",
     "pyjwt[crypto]>=2.10",
+    "sqlalchemy>=2.0",
+    "asyncpg>=0.30",
+    # [aio] extra が azure-core[aio](→ aiohttp)を引き込む。extra なしだと
+    # azure.storage.blob.aio の非同期トランスポート生成時に ImportError で落ちる。
+    "azure-storage-blob[aio]>=12.24",
 ]
 
 [build-system]

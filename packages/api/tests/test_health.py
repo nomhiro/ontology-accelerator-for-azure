@@ -36,25 +36,6 @@ def test_openapi_schema_is_generated() -> None:
     assert "/namespaces/{namespace}/sparql" in paths
 
 
-def test_namespace_roundtrip_on_stub() -> None:
-    created = client.post(
-        "/namespaces",
-        json={
-            "name": "retail-core",
-            "display_name": "小売ドメイン",
-            "base_iri": "https://example.com/ontology/retail#",
-        },
-    )
-    assert created.status_code == 201
-
-    listed = client.get("/namespaces")
-    assert listed.status_code == 200
-    assert [item["name"] for item in listed.json()] == ["retail-core"]
-
-    assert client.delete("/namespaces/retail-core").status_code == 204
-    assert client.get("/namespaces/retail-core").status_code == 404
-
-
 def test_update_query_is_rejected() -> None:
     response = client.post(
         "/namespaces/retail-core/sparql",

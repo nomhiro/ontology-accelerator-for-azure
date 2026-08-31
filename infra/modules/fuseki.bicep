@@ -1,6 +1,6 @@
 // Apache Jena Fuseki を Container Apps 上に構築するモジュール。設計の核心部分。
-// 「トリプルストアは再構築可能な射影」という原則を実装する: initContainer が Blob 上の
-// 正本スナップショットを TDB2 にロードし、startup probe がロード完了までトラフィックを止める。
+// 「トリプルストアは再構築可能な射影」という原則を実装する: メインコンテナの entrypoint が
+// Blob 上の正本スナップショットを TDB2 にロードし、startup probe がロード完了までトラフィックを止める。
 // ingress は internal のみで、書き込み口 (SPARQL Update / GSP) は Core API からしか届かない。
 
 @description('Fuseki コンテナアプリの名前。')
@@ -54,6 +54,9 @@ param fusekiDataset string = 'ds'
 
 @description('load-snapshot.sh が各 TTL を読み込む名前付きグラフ IRI の接頭辞。config.ttl が unionDefaultGraph を有効にしているため、既定グラフではなく名前付きグラフへ読み込む必要がある。')
 param graphIriBase string = 'urn:ontology:graph'
+
+@description('正本 TTL を置く Blob のプレフィックス。infra/modules/api.bicep の blobPrefix と同じ値を main.bicep から渡すこと(値がずれると、API が書き込んだ場所を load-snapshot.sh が読みに行けなくなる)。')
+param blobPrefix string = 'approved/'
 
 @description('オントロジー正本を格納する Blob エンドポイント URL。')
 param storageAccountUrl string
@@ -141,6 +144,13 @@ var sharedEnv = [
     value: graphIriBase
   }
   {
+    // containers/fuseki/load-snapshot.sh が読み込み対象を絞り込む接頭辞。
+    // api.bicep の BLOB_PREFIX(API の書き込み先)と一致していないと、
+    // API が publish したバージョンをローダが永久に見つけられなくなる。
+    name: 'BLOB_PREFIX'
+    value: blobPrefix
+  }
+  {
     name: 'AZURE_CLIENT_ID'
     value: identityClientId
   }
@@ -195,17 +205,12 @@ resource fuseki 'Microsoft.App/containerApps@2024-03-01' = {
       ]
     }
     template: {
-      // initContainer が Blob から最新スナップショットを取得し tdb2.tdbloader で
-      // EmptyDir (または Azure Files) にロードする。スクリプト本体は containers/fuseki/ 側。
-      // NOTE: azd deploy は initContainer のイメージを更新しない。初回 azd up の直後は
-      // プレースホルダのままなので、続けて azd provision を実行して配線を揃える。
-      // その間もこのコマンドは exit 0 で抜けるためレプリカが起動不能にはならない。
-      // init コンテナは使わない。
-      //
-      // azd は provision → deploy の順に実行し、deploy が差し替えるのは
-      // メインコンテナのイメージだけである。init コンテナのイメージは Bicep 経由で
-      // しか更新されないため、init を使うと `azd up` 一回ではタグが揃わず、
-      // 利用者が `azd provision` をもう一度実行する必要があった。
+      // Blob から最新スナップショットを取得し tdb2.tdbloader で EmptyDir (または
+      // Azure Files) にロードするのは entrypoint.sh(メインコンテナ内)。init
+      // コンテナは使わない。azd は provision → deploy の順に実行し、deploy が
+      // 差し替えるのはメインコンテナのイメージだけである。init コンテナのイメージは
+      // Bicep 経由でしか更新されないため、init を使うと `azd up` 一回ではタグが揃わず、
+      // 利用者が `azd provision` をもう一度実行する必要が生じていた。
       // 正本からの再構築は containers/fuseki/entrypoint.sh がメインコンテナ内で
       // 行うので、コードとイメージタグは構造的に常に一致する。
       // Startup プローブ (下記) が再構築の完了までトラフィックを流さない。
@@ -283,7 +288,13 @@ resource fuseki 'Microsoft.App/containerApps@2024-03-01' = {
 output name string = fuseki.name
 output internalFqdn string = fuseki.properties.configuration.ingress.fqdn
 output dataset string = fusekiDataset
-output queryEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/${fusekiDataset}/sparql'
-output updateEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/${fusekiDataset}/update'
-output gspEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/${fusekiDataset}/data'
+// `{dataset}` はリテラルのプレースホルダとして残す(Bicep の文字列補間は `${}` なので
+// 素の `{dataset}` は展開されずそのまま出力される)。ontology_core.config.Settings の
+// SPARQL_QUERY_ENDPOINT 等の既定値と同じ形式で、`FusekiStore._resolve` がリクエストごとに
+// 名前空間名へ置換する。ここを `${fusekiDataset}`(固定の "ds")にすると、Task 7 以降
+// "ds" は空の予約データセットのため、すべてのクエリが常に 0 件を返し、名前空間の
+// 隔離も機能しなくなる。
+output queryEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/{dataset}/sparql'
+output updateEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/{dataset}/update'
+output gspEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/{dataset}/data'
 output adminEndpoint string = 'http://${fuseki.properties.configuration.ingress.fqdn}/$/'

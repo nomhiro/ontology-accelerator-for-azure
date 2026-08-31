@@ -32,6 +32,8 @@ WORKDIR /app
 
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 COPY --from=builder --chown=appuser:appuser /app/packages /app/packages
+COPY --chown=appuser:appuser packages/api/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
@@ -40,4 +42,6 @@ ENV PATH="/app/.venv/bin:$PATH" \
 USER appuser
 EXPOSE 8000
 
-CMD ["uvicorn", "ontology_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 起動ラッパー経由にする。マイグレーション適用 (アドバイザリロックで直列化) を
+# 済ませてから uvicorn を起動する (packages/api/docker-entrypoint.sh)。
+CMD ["/app/docker-entrypoint.sh"]

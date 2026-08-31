@@ -59,6 +59,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S", "N"]
+# Alembic の自動生成マイグレーションのみを対象外にする。isort の並びや行長など
+# 生成物の書式まで手直しする必要はないため。`env.py` は手書きで認証情報
+# (パスワード・Entra トークン) を扱うため、bandit (S) 等の対象に含める。
+"packages/api/alembic/versions/**" = ["ALL"]
 
 # ---------------------------------------------------------------------------
 # 型検査
@@ -69,6 +73,9 @@ strict = true
 warn_unreachable = true
 mypy_path = "packages/core/src:packages/api/src:packages/mcp-server/src"
 explicit_package_bases = true
+# Alembic の自動生成マイグレーション。型注釈が古い書式(Union等)のままで
+# 生成されるため、手で直さず対象外にする。env.py は手書きなので対象に含める。
+exclude = "packages/api/alembic/versions/"
 # サードパーティに型が無いものは個別に無視する
 [[tool.mypy.overrides]]
 module = ["mcp.*"]
@@ -81,3 +88,6 @@ ignore_missing_imports = true
 testpaths = ["packages/core/tests", "packages/api/tests", "packages/mcp-server/tests"]
 asyncio_mode = "auto"
 addopts = "-q"
+markers = [
+    "integration: 実際の PostgreSQL を必要とするテスト",
+]

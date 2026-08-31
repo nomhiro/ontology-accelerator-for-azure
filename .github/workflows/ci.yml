@@ -33,6 +33,14 @@ jobs:
               - 'pyproject.toml'
               - 'uv.lock'
               - '.github/workflows/ci.yml'
+              # packages/api/tests/test_isolation.py が実物の Fuseki に対して
+              # containers/fuseki/config.ttl の SERVICE 無効化(arq:httpServiceAllowed)
+              # を検証している。containers/ 側だけの変更(config.ttl から誤って
+              # SERVICE 無効化を外す等)でも python ジョブ(テスト実行)が動くようにする。
+              # `containers` フィルタと同じパスが重複するのは意図した重複で、
+              # python はテスト実行のため、containers はイメージビルドのために
+              # それぞれ別の理由で反応する。
+              - 'containers/**'
             web:
               - 'apps/web/**'
               - 'pnpm-workspace.yaml'
@@ -50,6 +58,18 @@ jobs:
     needs: changes
     if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ontology
+          POSTGRES_USER: ontology
+          POSTGRES_PASSWORD: localdev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -68,7 +88,44 @@ jobs:
       - name: 型検査
         run: uv run mypy packages
 
-      - name: テスト
+      # test_blob.py が使う Azurite(Blob エミュレータ)。`jobs.*.services` は
+      # postgres と違って起動コマンドを上書きできない(`command`/`args` に相当する
+      # フィールドが無く、`options` は `docker create` の OPTIONS 部分にしか差し込めない)。
+      # 既定コマンドのままだと `--blobHost 0.0.0.0` は効くが `--skipApiVersionCheck` が
+      # 無いため、SDK が送る x-ms-version を Azurite が拒否して
+      # `HttpResponseError: The API version ... is not supported by Azurite` になる
+      # (ローカルで実測確認済み)。そのためステップとして直接 `docker run` し、
+      # `docker-compose.yml` の azurite サービスと同じ起動コマンドを渡す。
+      - name: Azurite(Blob エミュレータ)を起動する
+        run: |
+          docker run -d --name azurite -p 10000:10000 \
+            mcr.microsoft.com/azure-storage/azurite:latest \
+            azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+          for i in $(seq 1 30); do
+            if docker logs azurite 2>&1 | grep -q "successfully listen"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Azurite が起動しませんでした" >&2
+          docker logs azurite
+          exit 1
+
+      # test_isolation.py が実物の Fuseki を使う(Task 7)。Fuseki は Azurite と違って
+      # 公開イメージが無く、このリポジトリの containers/fuseki/Dockerfile からビルドする
+      # 必要があるため、Azurite のように `docker run <公開イメージ>` では済まない。
+      # `docker-compose.yml` にビルド・ヘルスチェックの定義が既にあるので、ここで
+      # 二重管理せずそのまま使う。`fuseki` を明示するので postgres(jobs.*.services で
+      # 別途起動済み)や azurite(前のステップで起動済み)は起動されず、ポートも
+      # 衝突しない。`--wait` で `docker-compose.yml` のヘルスチェック
+      # (`$/ping` が 200 を返すまで)を待つ。
+      - name: Fuseki を起動する
+        run: docker compose up -d --build --wait fuseki
+
+      - name: テスト(単体 + integration)
+        env:
+          POSTGRES_PASSWORD: localdev
+          FUSEKI_ADMIN_PASSWORD: localdev
         run: uv run pytest
 
   web:
@@ -143,4 +200,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: シェルスクリプトを検査する
-        run: shellcheck containers/fuseki/*.sh
+        run: shellcheck containers/fuseki/*.sh containers/fuseki/lib/*.sh
+      # 名前空間名・バージョン文字列の検証関数(validate_namespace /
+      # validate_version_file)に対するテスト。load-snapshot.sh 本体は Blob 一覧
+      # の取得や TDB2 の構築など副作用のあるコードを含むため source してテスト
+      # できない。検証関数だけを lib/validate.sh に切り出してあるので、ここでは
+      # それだけを直接 sh で実行してテストする(Task 7 レビュー修正1)。
+      - name: 検証関数のテストを実行する
+        run: sh containers/fuseki/lib/validate.test.sh

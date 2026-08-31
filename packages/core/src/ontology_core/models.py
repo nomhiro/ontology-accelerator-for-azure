@@ -80,6 +80,8 @@ class OntologyVersion(BaseModel):
     created_by: str
     approved_at: datetime | None = None
     approved_by: str | None = None
+    # 射影(Fuseki への反映)が完了した時刻。NULL なら未射影で reconcile の対象。
+    projected_at: datetime | None = None
 
 
 class AuditEvent(BaseModel):

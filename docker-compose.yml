@@ -53,6 +53,14 @@ services:
       timeout: 5s
       retries: 6
 
+  # 正本 TTL の Blob エミュレータ。integration テスト(test_blob.py)が使う。
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--skipApiVersionCheck"]
+    ports:
+      # 別のプロジェクトで 10000 を使っている場合は AZURITE_PORT で変更できる。
+      - "${AZURITE_PORT:-10000}:10000"
+
 volumes:
   fuseki-data:
   postgres-data:

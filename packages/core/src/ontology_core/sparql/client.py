@@ -116,61 +116,138 @@ class FusekiStore(SparqlStore):
     # ---- SPARQL 1.1 Protocol ----
 
     async def query(self, sparql: str, *, dataset: str) -> dict[str, Any]:
-        response = await self._client.post(
+        result: dict[str, Any] = await self._send_json(
+            "POST",
             self._resolve(self._query_endpoint, dataset),
+            operation="クエリ",
             content=sparql.encode("utf-8"),
             headers={
                 "Content-Type": "application/sparql-query; charset=utf-8",
                 "Accept": "application/sparql-results+json",
             },
         )
-        self._raise_for_status(response, "クエリ")
-        result: dict[str, Any] = response.json()
         return result
 
     async def update(self, sparql: str, *, dataset: str) -> None:
-        response = await self._client.post(
+        await self._send(
+            "POST",
             self._resolve(self._update_endpoint, dataset),
+            operation="更新",
             content=sparql.encode("utf-8"),
             headers={"Content-Type": "application/sparql-update; charset=utf-8"},
         )
-        self._raise_for_status(response, "更新")
 
     async def put_graph(self, graph_iri: str, turtle: str, *, dataset: str) -> None:
-        response = await self._client.put(
+        await self._send(
+            "PUT",
             self._resolve(self._gsp_endpoint, dataset),
+            operation="グラフの置き換え",
             params={"graph": graph_iri},
             content=turtle.encode("utf-8"),
             headers={"Content-Type": "text/turtle; charset=utf-8"},
         )
-        self._raise_for_status(response, "グラフの置き換え")
 
     # ---- 管理操作(Fuseki 固有) ----
 
     async def list_datasets(self) -> list[str]:
-        response = await self._client.get(
-            f"{self._admin_endpoint}datasets", auth=self._admin_auth or httpx.USE_CLIENT_DEFAULT
+        operation = "データセット一覧の取得"
+        payload: dict[str, Any] = await self._send_json(
+            "GET",
+            f"{self._admin_endpoint}datasets",
+            operation=operation,
+            auth=self._admin_auth or httpx.USE_CLIENT_DEFAULT,
         )
-        self._raise_for_status(response, "データセット一覧の取得")
-        payload: dict[str, Any] = response.json()
-        return [str(entry["ds.name"]).lstrip("/") for entry in payload.get("datasets", [])]
+        try:
+            return [str(entry["ds.name"]).lstrip("/") for entry in payload.get("datasets", [])]
+        except (KeyError, TypeError) as exc:
+            # JSON としては正しくても `entry["ds.name"]` が無い、あるいは
+            # `entry` が辞書でない等、応答の形が想定と違うケース。
+            raise SparqlStoreError(f"{operation}の応答形式が不正です: {exc}") from exc
 
     async def create_dataset(self, dataset: str) -> None:
-        response = await self._client.post(
+        await self._send(
+            "POST",
             f"{self._admin_endpoint}datasets",
+            operation="データセットの作成",
             data={"dbName": dataset, "dbType": "tdb2"},
             auth=self._admin_auth or httpx.USE_CLIENT_DEFAULT,
         )
-        self._raise_for_status(response, "データセットの作成")
 
     async def delete_dataset(self, dataset: str) -> None:
-        response = await self._client.delete(
+        await self._send(
+            "DELETE",
             f"{self._admin_endpoint}datasets/{dataset}",
+            operation="データセットの削除",
             auth=self._admin_auth or httpx.USE_CLIENT_DEFAULT,
         )
-        self._raise_for_status(response, "データセットの削除")
 
     # ---- 内部 ----
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        operation: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """HTTP リクエストを送り、失敗を必ず `SparqlStoreError` に包んで返す。
+
+        `SparqlStore` は「ストアとのやり取りに失敗したら `SparqlStoreError` が来る」
+        ことを契約として抽象化している。呼び出し側(Core API)はこの契約に基づいて
+        トランザクションの境界(正本への書き込みをロールバックするかどうか)を
+        判断するため、接続不能やタイムアウトなどの `httpx` の例外を生のまま
+        漏らしてはならない。素通しすると、想定していない例外型が
+        `except SparqlStoreError` をすり抜けて外側の例外処理(DB ロールバック等)を
+        誤発動させ、正本と射影の分裂を招く。
+        """
+        try:
+            response = await self._client.request(method, url, **kwargs)
+        except httpx.HTTPError as exc:
+            raise SparqlStoreError(f"{operation}に失敗しました: {exc}") from exc
+        self._raise_for_status(response, operation)
+        return response
+
+    async def _send_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        operation: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """`_send` に加えて JSON 解析までを `SparqlStoreError` の契約に含める。
+
+        `_send` は HTTP 層(接続不能・タイムアウト・非 2xx)の失敗しか包まない。
+        HTTP 200 で JSON でない本文が返るケース(internal ingress やサイドカーの
+        異常、Fuseki 互換実装への差し替えによる応答形式差異)では
+        `response.json()` が `json.JSONDecodeError`(`ValueError` のサブクラス)
+        を投げ、これが `_send` の外で素通しになっていた。契約が破れると
+        `routers/sparql.py` の `except SparqlStoreError` をすり抜けて 500 になり、
+        `ProjectionService.reconcile()` では `except (SparqlStoreError,
+        BlobStoreError)` をすり抜けて per-item の失敗として記録されずループ全体が
+        中断する。
+
+        さらに、JSON としては正しく解析できても **dict でない**(`[]` / `"oops"` /
+        `null` / トップレベル配列)応答は、呼び出し側(`list_datasets` の
+        `payload.get(...)`)で未捕捉の `AttributeError` として漏れる(final-fix-brief.md
+        修正3 / M-2)。`query()` はこの戻り値をそのまま `dict[str, Any]` として返すため、
+        リストが漏れた場合は `routers/sparql.py` の応答型検証(FastAPI)に引っかかって
+        意図した 502 ではなく 500 になる。ここで dict であることまで検証し、
+        そうでなければ `SparqlStoreError` にすることで、呼び出し側は常に
+        「失敗なら `SparqlStoreError`、成功なら dict」という契約だけに依拠できる。
+        """
+        response = await self._send(method, url, operation=operation, **kwargs)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise SparqlStoreError(f"{operation}の応答が JSON として解釈できません: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise SparqlStoreError(
+                f"{operation}の応答形式が不正です: "
+                f"dict ではなく {type(payload).__name__} が返りました"
+            )
+        return payload
 
     @staticmethod
     def _resolve(template: str, dataset: str) -> str:

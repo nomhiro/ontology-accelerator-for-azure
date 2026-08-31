@@ -28,8 +28,11 @@ setup-web:
 # 検査
 # ---------------------------------------------------------------------------
 
-# lint・型検査・テストをまとめて実行する(CI と同じ内容)
+# lint・型検査・テストをまとめて実行する(integration は含まない)
 check: lint typecheck test
+
+# lint・型検査・テスト・integrationテストをすべて実行する(CI と同じ内容)
+check-all: lint typecheck test test-integration
 
 lint:
     uv run ruff check .
@@ -46,8 +49,13 @@ typecheck:
 typecheck-web:
     pnpm --filter @ontology-accelerator/web typecheck
 
+# 単体テスト(DB不要)
 test:
-    uv run pytest
+    uv run pytest -m "not integration"
+
+# integrationテスト(要: just up)
+test-integration:
+    uv run pytest -m integration
 
 # Bicep をビルドして構文を検証する
 lint-infra:
@@ -68,6 +76,26 @@ down:
 # 停止してデータも消す
 clean:
     docker compose down -v
+
+# DBマイグレーションを適用する(要: just up、.env を用意しておくこと)
+#
+# `cd packages/api && ...` は使わない。Windows PowerShell 5.1 (powershell.exe)
+# は `&&` をステートメント区切りとして解釈できずに壊れる
+# (fix(justfile): gen-api がPowerShellで壊れるのを修正 と同種の罠)。
+# `uv run --directory` でシェルをまたいで安全に作業ディレクトリを切り替える。
+#
+# `--directory` は `.env` の探索(pydantic-settings が cwd 相対で読む)も
+# `packages/api` 基準に変えてしまい、リポジトリルートの `.env` が無視されて
+# 既定値(AUTH_MODE=entra・POSTGRES_PASSWORD 空)にフォールバックする
+# (実測: `.env` があるのに Entra 経路に切り替わりローカル PostgreSQL の
+# 認証に失敗する)。`--env-file` で明示的にルートの `.env` を渡し、
+# `--directory` より前に環境変数として展開させることで回避する。
+migrate:
+    uv run --env-file {{justfile_directory()}}/.env --directory packages/api alembic upgrade head
+
+# 新しいマイグレーションを生成する
+migrate-new message:
+    uv run --env-file {{justfile_directory()}}/.env --directory packages/api alembic revision --autogenerate -m "{{message}}"
 
 # Core API を起動する(要: just up)
 dev-api:

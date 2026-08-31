@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ontology_api import __version__
-from ontology_api.routers import namespaces, sparql
+from ontology_api.routers import namespaces, sparql, versions
 from ontology_core.config import AuthMode, get_settings
 
 _settings = get_settings()
@@ -41,6 +41,7 @@ app.add_middleware(
 
 app.include_router(namespaces.router)
 app.include_router(sparql.router)
+app.include_router(versions.router)
 
 if _settings.auth_mode is AuthMode.DISABLED:
     logger.warning(
