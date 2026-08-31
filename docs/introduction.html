@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="オントロジーとナレッジグラフを、専門知識のない方に向けて説明する資料。何が嬉しいのか、どういう仕組みなのかを、同じ質問を表とグラフで比べる対話図つきで解説します。">
+<meta name="color-scheme" content="light dark">
+<title>意味の設計図</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Old+Mincho:wght@400;600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+
+<style>
+  /* ---- 光のパレット(既定)。ノード=ティール、辺=葡萄という主題由来の2色体系 ---- */
+  :root {
+    --paper:        #F5F6F8;
+    --surface:      #FFFFFF;
+    --surface-sunk: #ECEFF3;
+    --ink:          #16202B;
+    --ink-soft:     #3C4A58;
+    --muted:        #5E6B78;
+    --rule:         #D3D9E0;
+    --rule-soft:    #E4E8ED;
+
+    --entity:       #2F6F7E;   /* もの */
+    --entity-bg:    #E4EEF0;
+    --relation:     #7A3B52;   /* つながり */
+    --relation-bg:  #F2E5EA;
+    --caution:      #8A5A12;
+    --caution-bg:   #F6EDDD;
+
+    --shadow: 0 1px 2px rgba(22,32,43,.06), 0 8px 24px -12px rgba(22,32,43,.18);
+
+    --serif: "Zen Old Mincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+    --sans: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+
+    --measure: 34rem;
+    --wide: 62rem;
+  }
+
+  /* システム設定が dark のとき。明示的な light 指定には負ける */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:        #10161D;
+      --surface:      #171F28;
+      --surface-sunk: #1C2530;
+      --ink:          #E4E9EE;
+      --ink-soft:     #B7C1CC;
+      --muted:        #8B98A6;
+      --rule:         #2C3742;
+      --rule-soft:    #232C36;
+
+      --entity:       #6FB3C0;
+      --entity-bg:    #1A2E34;
+      --relation:     #C98BA4;
+      --relation-bg:  #2E1F26;
+      --caution:      #D6A759;
+      --caution-bg:   #2B2314;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+    }
+  }
+
+  /* 明示的な dark 指定。OS が light でも勝つ */
+  :root[data-theme="dark"] {
+    --paper:        #10161D;
+    --surface:      #171F28;
+    --surface-sunk: #1C2530;
+    --ink:          #E4E9EE;
+    --ink-soft:     #B7C1CC;
+    --muted:        #8B98A6;
+    --rule:         #2C3742;
+    --rule-soft:    #232C36;
+
+    --entity:       #6FB3C0;
+    --entity-bg:    #1A2E34;
+    --relation:     #C98BA4;
+    --relation-bg:  #2E1F26;
+    --caution:      #D6A759;
+    --caution-bg:   #2B2314;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.85;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "palt" 1;
+  }
+
+  .wrap {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding: 0 1.5rem 6rem;
+  }
+
+  /* 本文は読み幅を保つ。図版だけがこれを破って外へ出る */
+  .col { max-width: var(--measure); margin-inline: auto; }
+
+  /* ---------- 見出しと構造 ---------- */
+
+  h1, h2, h3 { font-family: var(--serif); font-weight: 700; text-wrap: balance; line-height: 1.4; margin: 0; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .68rem;
+    font-weight: 600;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: .7rem;
+    margin-bottom: .9rem;
+  }
+  .eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+
+  section { padding-top: 4.5rem; }
+  section > .col > h2 { font-size: clamp(1.45rem, 3.4vw, 1.95rem); margin-bottom: 1.1rem; }
+  h3 { font-size: 1.1rem; margin-bottom: .4rem; }
+
+  p { margin: 0 0 1.15rem; color: var(--ink-soft); }
+  p.lead { font-size: 1.08rem; color: var(--ink); }
+  strong { color: var(--ink); font-weight: 700; }
+
+  a { color: var(--entity); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--entity);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  /* ---------- 表題 ---------- */
+
+  header.hero { padding: clamp(4rem, 11vw, 7.5rem) 0 1rem; }
+  header.hero .col { max-width: 40rem; }
+  .hero-kicker {
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 1.6rem;
+  }
+  header.hero h1 {
+    font-size: clamp(2.3rem, 7vw, 3.9rem);
+    letter-spacing: -.01em;
+    line-height: 1.25;
+    margin-bottom: 1.4rem;
+  }
+  header.hero h1 .q { color: var(--relation); }
+  .hero-sub { font-size: 1.12rem; color: var(--ink-soft); margin-bottom: 2.2rem; }
+
+  /* 主語-述語-目的語。この頁の反復記号 */
+  .triple {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .38rem;
+    font-family: var(--mono);
+    font-size: .82rem;
+    line-height: 1.7;
+  }
+  .triple .s, .triple .o {
+    background: var(--entity-bg);
+    color: var(--entity);
+    padding: .16rem .5rem;
+    border-radius: 2px;
+    font-weight: 600;
+  }
+  .triple .p {
+    color: var(--relation);
+    font-weight: 600;
+    position: relative;
+    padding: 0 1.15rem 0 .3rem;
+  }
+  .triple .p::after {
+    content: "→";
+    position: absolute;
+    right: 0;
+    color: var(--relation);
+  }
+
+  /* ---------- 図版(読み幅を破る) ---------- */
+
+  figure {
+    margin: 2.2rem auto;
+    max-width: var(--wide);
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  figure .fig-body { padding: 1.6rem; }
+  figcaption {
+    border-top: 1px solid var(--rule-soft);
+    padding: .9rem 1.6rem;
+    font-size: .84rem;
+    color: var(--muted);
+    background: var(--surface-sunk);
+  }
+
+  /* ---------- 表とグラフの対比 ---------- */
+
+  .compare { display: grid; gap: 1.2rem; }
+  @media (min-width: 62rem) { .compare { grid-template-columns: 1.35fr 1fr; align-items: start; } }
+
+  .qbar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.3rem; }
+  .qbar button {
+    font-family: var(--sans);
+    font-size: .87rem;
+    font-weight: 500;
+    text-align: left;
+    color: var(--ink-soft);
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .5rem .8rem;
+    cursor: pointer;
+    transition: background .18s, color .18s, border-color .18s;
+  }
+  .qbar button:hover { border-color: var(--entity); color: var(--ink); }
+  .qbar button[aria-pressed="true"] {
+    background: var(--entity);
+    border-color: var(--entity);
+    color: var(--surface);
+  }
+  :root[data-theme="dark"] .qbar button[aria-pressed="true"],
+  :root:not([data-theme="light"]) .qbar button[aria-pressed="true"] { color: var(--paper); }
+
+  .graph-holder { overflow-x: auto; }
+  svg.graph { display: block; width: 100%; min-width: 560px; height: auto; }
+
+  svg.graph .edge { stroke: var(--rule); stroke-width: 1.5; fill: none; transition: stroke .3s, stroke-width .3s; }
+  svg.graph .edge.on { stroke: var(--relation); stroke-width: 2.6; }
+  svg.graph .elabel { font-family: var(--mono); font-size: 9.5px; fill: var(--muted); transition: fill .3s; }
+  svg.graph .elabel.on { fill: var(--relation); font-weight: 600; }
+  svg.graph .node rect { fill: var(--surface); stroke: var(--rule); stroke-width: 1.5; transition: stroke .3s, fill .3s; }
+  svg.graph .node.on rect { stroke: var(--entity); stroke-width: 2.4; fill: var(--entity-bg); }
+  svg.graph .node text { font-family: var(--sans); font-size: 11px; font-weight: 500; fill: var(--ink-soft); transition: fill .3s; }
+  svg.graph .node.on text { fill: var(--entity); font-weight: 700; }
+  svg.graph .node .kind { font-family: var(--mono); font-size: 8px; fill: var(--muted); letter-spacing: .06em; }
+
+  .verdict { display: grid; gap: .9rem; }
+  .verdict-card { border: 1px solid var(--rule); border-radius: 3px; padding: .95rem 1.05rem; background: var(--surface); }
+  .verdict-card .tag {
+    font-family: var(--mono); font-size: .66rem; font-weight: 600;
+    letter-spacing: .14em; text-transform: uppercase; display: block; margin-bottom: .35rem;
+  }
+  .verdict-card.tbl .tag { color: var(--caution); }
+  .verdict-card.gph .tag { color: var(--entity); }
+  .verdict-card p { margin: 0; font-size: .9rem; line-height: 1.75; }
+  .hops {
+    font-family: var(--mono); font-size: .78rem; color: var(--muted);
+    margin-top: .55rem; display: block; font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- 嬉しさ ---------- */
+
+  .gains { display: grid; gap: 1px; background: var(--rule-soft); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; margin: 2rem auto; max-width: var(--wide); }
+  @media (min-width: 48rem) { .gains { grid-template-columns: 1fr 1fr; } }
+  .gain { background: var(--surface); padding: 1.5rem 1.6rem; }
+  .gain h3 { color: var(--ink); }
+  .gain p { font-size: .93rem; margin: 0; }
+  .gain .before {
+    display: block; font-size: .84rem; color: var(--muted);
+    margin-top: .8rem; padding-top: .8rem; border-top: 1px dashed var(--rule);
+  }
+
+  /* ---------- 誤解 ---------- */
+
+  .myth { border-left: 3px solid var(--caution); background: var(--caution-bg); padding: 1.1rem 1.3rem; border-radius: 0 3px 3px 0; margin-bottom: 1rem; }
+  .myth h3 { font-family: var(--sans); font-size: .96rem; font-weight: 700; color: var(--caution); margin-bottom: .3rem; }
+  .myth p { margin: 0; font-size: .93rem; }
+
+  /* ---------- 段取り(順序に意味があるので番号を振る) ---------- */
+
+  ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 2rem 0 0; }
+  ol.steps li {
+    counter-increment: s;
+    display: grid;
+    grid-template-columns: 2.6rem 1fr;
+    gap: 1rem;
+    padding-bottom: 1.6rem;
+    position: relative;
+  }
+  ol.steps li::before {
+    content: counter(s);
+    font-family: var(--mono); font-weight: 600; font-size: .85rem;
+    color: var(--relation);
+    background: var(--relation-bg);
+    width: 2.1rem; height: 2.1rem;
+    display: grid; place-items: center;
+    border-radius: 50%;
+  }
+  ol.steps li:not(:last-child)::after {
+    content: ""; position: absolute; left: 1.05rem; top: 2.4rem; bottom: .3rem;
+    width: 1px; background: var(--rule);
+  }
+  ol.steps h3 { font-family: var(--sans); font-size: 1rem; }
+  ol.steps p { margin: 0; font-size: .93rem; }
+
+  /* ---------- 用語 ---------- */
+
+  dl.terms { margin: 1.6rem 0 0; }
+  dl.terms div { padding: .95rem 0; border-top: 1px solid var(--rule-soft); }
+  dl.terms dt { font-family: var(--serif); font-weight: 600; font-size: 1rem; margin-bottom: .2rem; }
+  dl.terms dd { margin: 0; font-size: .92rem; color: var(--ink-soft); }
+  dl.terms code { font-family: var(--mono); font-size: .85em; color: var(--relation); }
+
+  /* ---------- 裏付け ---------- */
+
+  .facts { display: grid; gap: 1px; background: var(--rule-soft); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; margin-top: 1.8rem; }
+  @media (min-width: 40rem) { .facts { grid-template-columns: 1fr 1fr; } }
+  .fact { background: var(--surface); padding: 1.15rem 1.3rem; }
+  .fact dt { font-family: var(--mono); font-size: .68rem; letter-spacing: .13em; text-transform: uppercase; color: var(--muted); margin-bottom: .3rem; }
+  .fact dd { margin: 0; font-size: .93rem; color: var(--ink-soft); }
+  .fact dd b { color: var(--ink); }
+
+  footer {
+    margin-top: 5rem; padding-top: 1.6rem;
+    border-top: 1px solid var(--rule);
+    font-size: .84rem; color: var(--muted);
+  }
+  footer p { color: var(--muted); font-size: .84rem; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition-duration: 0s !important; animation-duration: 0s !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="col">
+      <div class="hero-kicker">オントロジー / ナレッジグラフ 入門</div>
+      <h1>「うちの<span class="q">優良顧客</span>」を、<br>AI は知らない。</h1>
+      <p class="hero-sub">
+        生成 AI は日本語の一般的な意味を知っています。しかし<strong>あなたの会社での意味</strong>は知りません。
+        オントロジーは、その差を埋めるための仕組みです。この資料では、何が嬉しいのか、どういう仕組みなのかを、
+        専門用語をできるだけ使わずに説明します。
+      </p>
+      <div class="triple">
+        <span class="s">この資料</span><span class="p">説明するもの</span><span class="o">意味の設計図</span>
+      </div>
+    </div>
+  </header>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">問題</div>
+      <h2>同じ言葉が、部門ごとに違う意味を持っている</h2>
+      <p>
+        「解約しそうな優良顧客を教えて」と AI に聞けば、答えは返ってきます。問題は、その答えが
+        <strong>誰の定義の「優良顧客」なのか分からない</strong>ことです。
+      </p>
+      <p>
+        営業は「年間取引額が上位 20%」と考えているかもしれません。カスタマーサポートは「契約年数が
+        3 年以上」かもしれません。経理は「入金遅延がゼロ」かもしれません。どれも間違いではありません。
+        ただ、AI にはどれを使うべきか分かりません。
+      </p>
+      <p>
+        「稼働中」「出荷済み」「アクティブユーザー」——どの会社にも、部門ごとに意味がずれた言葉が
+        いくつもあります。人間同士なら会話で埋められますが、AI は聞き返しません。もっともらしい答えを返します。
+      </p>
+      <p>
+        <strong>AI に正しく答えさせるには、会社の言葉の定義を、機械が読める形で渡す必要があります。</strong>
+        そのために書くものが、オントロジーです。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">定義</div>
+      <h2>オントロジーとは、地図の凡例である</h2>
+      <p>
+        地図に線が引いてあっても、それが道路なのか川なのか県境なのかは、線を見ただけでは分かりません。
+        分かるのは<strong>凡例があるから</strong>です。
+      </p>
+      <p>
+        会社のデータも同じです。「顧客」テーブルと「取引先」テーブルが別にあるとき、それが同じものなのか
+        違うものなのかは、データだけを見ても分かりません。オントロジーは、その凡例に当たります。
+      </p>
+      <p>
+        中身は、<strong>言葉の定義</strong>（優良顧客とは何か）と、<strong>言葉どうしの関係</strong>
+        （注文には必ず顧客がいる、店舗は地域に属する）を書いたものです。人間向けの用語集と違うのは、
+        機械がそのまま読んで使える形式で書く点だけです。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">仕組み</div>
+      <h2>表で持つのをやめて、文で持つ</h2>
+      <p>
+        普通のデータベースは、データを<strong>行と列の表</strong>で持ちます。ナレッジグラフは、
+        <strong>短い文</strong>で持ちます。
+      </p>
+      <p>文はいつも、主語・述語・目的語の 3 つ組です。</p>
+    </div>
+
+    <figure>
+      <div class="fig-body" style="display:grid; gap:.85rem;">
+        <div class="triple"><span class="s">注文 1024</span><span class="p">発注した顧客は</span><span class="o">山田太郎</span></div>
+        <div class="triple"><span class="s">注文 1024</span><span class="p">購入した店舗は</span><span class="o">渋谷店</span></div>
+        <div class="triple"><span class="s">渋谷店</span><span class="p">所在する地域は</span><span class="o">関東</span></div>
+        <div class="triple"><span class="s">優良顧客</span><span class="p">定義した部門は</span><span class="o">営業企画</span></div>
+      </div>
+      <figcaption>3 つ組を「トリプル」と呼びます。ナレッジグラフの最小単位です。</figcaption>
+    </figure>
+
+    <div class="col">
+      <p>
+        文が増えると、同じ言葉が何度も現れます。「注文 1024」は 2 つの文に出てきます。この重なりを
+        たどれるようにすると、点（もの）と線（関係）のつながった網になります。<strong>これがグラフです。</strong>
+      </p>
+      <h3>なぜ表より文がよいのか</h3>
+      <p>
+        表では、関係は「列」として押し込まれます。<code style="font-family:var(--mono);font-size:.85em">顧客ID</code>
+        という列があるだけで、それが「発注した人」なのか「請求先」なのか「担当営業」なのかは、
+        列名から人間が推測するしかありません。
+      </p>
+      <p>
+        文では、<strong>関係そのものに名前が付きます</strong>。だから後から関係を追加できます。
+        そして何より、<strong>関係を次々に辿れます</strong>。この「辿れる」ことが、次の章の要点です。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">対比</div>
+      <h2>同じ質問を、表とグラフで比べる</h2>
+      <p>
+        グラフの価値がはっきり出るのは、<strong>いくつもの関係を辿らないと答えられない質問</strong>です。
+        下のボタンで質問を選ぶと、グラフ上で辿る道筋が光ります。
+      </p>
+    </div>
+
+    <figure>
+      <div class="fig-body">
+        <div class="qbar" id="qbar" role="group" aria-label="質問を選ぶ"></div>
+        <div class="compare">
+          <div class="graph-holder">
+            <svg class="graph" id="graph" viewBox="0 0 720 400" role="img" aria-labelledby="graph-title">
+              <title id="graph-title">製品・ロット・出荷・注文・顧客・店舗・地域・分類・承認記録のつながり</title>
+              <g id="edges"></g>
+              <g id="elabels"></g>
+              <g id="nodes"></g>
+            </svg>
+          </div>
+          <div class="verdict">
+            <div class="verdict-card tbl">
+              <span class="tag">表で答える場合</span>
+              <p id="v-table"></p>
+              <span class="hops" id="v-table-hops"></span>
+            </div>
+            <div class="verdict-card gph">
+              <span class="tag">グラフで答える場合</span>
+              <p id="v-graph"></p>
+              <span class="hops" id="v-graph-hops"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <figcaption id="fig-note"></figcaption>
+    </figure>
+
+    <div class="col">
+      <p>
+        表でも書けなくはありません。ただし<strong>質問の形が毎回変わります</strong>。辿る段数が増えれば
+        JOIN が増え、対象システムが増えれば、そもそも 1 つのクエリでは書けなくなります。
+      </p>
+      <p>
+        グラフでは、質問の形は変わりません。<strong>「どの関係を、何本辿るか」を書くだけ</strong>です。
+        関係に名前が付いているので、後から新しい関係を足しても、既存の質問は壊れません。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">価値</div>
+      <h2>導入して何が変わるか</h2>
+      <p>効果は 4 つに整理できます。いずれも「AI が賢くなる」話ではなく、<strong>AI に渡す前提が整う</strong>話です。</p>
+    </div>
+
+    <div class="gains">
+      <div class="gain">
+        <h3>AI が社内の言葉で答える</h3>
+        <p>定義を一箇所に置き、すべての AI がそれを参照します。アプリごとにプロンプトへ社内知識を書き写す運用が要らなくなります。</p>
+        <span class="before">これまで：担当者がプロンプトに定義を貼り、更新のたびに全アプリを直す</span>
+      </div>
+      <div class="gain">
+        <h3>システムをまたいでつながる</h3>
+        <p>CRM の「顧客」と請求システムの「取引先」を、同じものとして扱えます。データを 1 か所に集める必要はありません。</p>
+        <span class="before">これまで：突合表を Excel で管理し、片方が変わると壊れる</span>
+      </div>
+      <div class="gain">
+        <h3>答えの根拠が辿れる</h3>
+        <p>どの定義の、どのバージョンに基づく答えかが記録に残ります。「なぜその判断か」を後から説明できます。</p>
+        <span class="before">これまで：AI の答えの根拠を、人が改めて調べ直す</span>
+      </div>
+      <div class="gain">
+        <h3>作り直しに強い</h3>
+        <p>W3C の国際標準で書くため、製品やクラウドを変えても定義そのものは資産として残ります。</p>
+        <span class="before">これまで：ツールを変えると、蓄積した定義を作り直す</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">誤解</div>
+      <h2>これは何ではないか</h2>
+      <p>提案の前提を揃えるため、よくある誤解を先に書いておきます。</p>
+
+      <div class="myth">
+        <h3>AI が賢くなる仕組みではありません</h3>
+        <p>モデルの性能は変わりません。変わるのは、AI が参照する<strong>前提の正確さ</strong>です。前提が曖昧なままモデルを大きくしても、答えは曖昧なままです。</p>
+      </div>
+      <div class="myth">
+        <h3>今のデータベースを捨てる話ではありません</h3>
+        <p>既存システムはそのまま使います。オントロジーはその上に載る<strong>意味の層</strong>です。データを全部移す必要はありません。</p>
+      </div>
+      <div class="myth">
+        <h3>一度作れば終わりではありません</h3>
+        <p>組織が変われば言葉も変わります。だから<strong>バージョン管理と承認の流れ</strong>が必要です。作る仕組みより、更新し続ける仕組みのほうが重要です。</p>
+      </div>
+      <div class="myth">
+        <h3>全社を一度にやる必要はありません</h3>
+        <p>ひとつの業務領域から始めます。領域ごとに区切って持てるので、<strong>小さく作って育てられます</strong>。全社の合意を待つ必要はありません。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">段取り</div>
+      <h2>3 つの段階で進める</h2>
+      <p>順番に意味があります。棚卸しをせずに定義を書くと、既存システムと合わない定義ができます。</p>
+
+      <ol class="steps">
+        <li>
+          <div>
+            <h3>棚卸しする</h3>
+            <p>既存システムのテーブル定義、項目名、社内文書を集めます。「どんな言葉が、どこで、どう使われているか」を洗い出す段階です。AI で下書きを作り、作業量を圧縮できます。</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>定義して承認する</h3>
+            <p>用語と関係の候補を作り、<strong>業務の専門家が承認します</strong>。ここは自動化しません。誰が承認したかが、後で答えの根拠になるからです。承認済みの定義だけが公開されます。</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>提供する</h3>
+            <p>承認済みの定義を、AI エージェントと業務システムに提供します。AI 側には<strong>読み取り専用</strong>で渡すため、エージェントが定義やデータを書き換えることはありません。</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">裏付け</div>
+      <h2>技術的な前提</h2>
+      <p>提案時に技術部門から出る質問に、先に答えておきます。</p>
+
+      <dl class="facts">
+        <div class="fact">
+          <dt>標準</dt>
+          <dd><b>W3C の国際標準</b>（RDF / OWL / SPARQL）を使います。特定ベンダーの独自形式ではありません。</dd>
+        </div>
+        <div class="fact">
+          <dt>ロックイン</dt>
+          <dd>グラフの保管先は<b>差し替え可能</b>です。既に別のグラフ製品をお持ちなら、それを使えます。</dd>
+        </div>
+        <div class="fact">
+          <dt>構築</dt>
+          <dd>Azure 上で動く<b>OSS の実装</b>があり、コマンド 1 つで構築・完全削除できます。中身を検証できます。</dd>
+        </div>
+        <div class="fact">
+          <dt>可用性</dt>
+          <dd>グラフは<b>いつでも作り直せる派生物</b>として設計します。正本は通常のデータベースとストレージです。</dd>
+        </div>
+        <div class="fact">
+          <dt>安全性</dt>
+          <dd>AI への提供は<b>読み取り専用</b>。書き込み経路は業務システム側に限定します。</dd>
+        </div>
+        <div class="fact">
+          <dt>費用</dt>
+          <dd>評価用の最小構成なら<b>月あたり数十ドル規模</b>から始められます。使わないときは削除できます。</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">用語</div>
+      <h2>この資料に出てきた言葉</h2>
+      <dl class="terms">
+        <div>
+          <dt>オントロジー</dt>
+          <dd>会社の言葉の定義と、言葉どうしの関係を、機械が読める形で書いたもの。地図の凡例に当たります。</dd>
+        </div>
+        <div>
+          <dt>ナレッジグラフ</dt>
+          <dd>オントロジーに従って実際のデータをつないだ網。点が「もの」、線が「関係」です。</dd>
+        </div>
+        <div>
+          <dt>トリプル</dt>
+          <dd>主語・述語・目的語の 3 つ組。ナレッジグラフの最小単位です。</dd>
+        </div>
+        <div>
+          <dt>SPARQL</dt>
+          <dd>グラフに質問するための言葉。表に対する SQL に相当します。<code>スパークル</code> と読みます。</dd>
+        </div>
+        <div>
+          <dt>MCP</dt>
+          <dd>AI エージェントが外部の道具やデータにつながるための共通の作法。これ経由で AI に定義を渡します。</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <footer>
+    <div class="col">
+      <p>
+        非技術者向けの説明資料です。図中の製品・顧客・店舗はすべて架空の例です。
+        Azure、Microsoft、AWS、Amazon は各社の商標であり、本資料はこれらの企業と提携・承認関係にありません。
+      </p>
+    </div>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // 点(もの)。x,y は viewBox 座標の中心
+  var NODES = {
+    cat:   { x:  95, y:  56, w: 112, label: "飲料",        kind: "分類" },
+    prod:  { x:  95, y: 158, w: 112, label: "製品 P-9",    kind: "製品" },
+    lot:   { x:  95, y: 262, w: 112, label: "ロット L-77", kind: "ロット" },
+    ship:  { x: 258, y: 330, w: 118, label: "出荷 S-31",   kind: "出荷" },
+    order: { x: 420, y: 240, w: 118, label: "注文 1024",   kind: "注文" },
+    cust:  { x: 605, y: 158, w: 108, label: "山田太郎",    kind: "顧客" },
+    store: { x: 605, y: 300, w: 108, label: "渋谷店",      kind: "店舗" },
+    region:{ x: 605, y: 380, w: 108, label: "関東",        kind: "地域" },
+    appr:  { x: 300, y:  56, w: 148, label: "承認 v1.2",   kind: "定義の記録" }
+  };
+
+  // 線(関係)
+  var EDGES = [
+    { id: "e1", from: "prod",  to: "cat",    label: "属する分類は" },
+    { id: "e2", from: "cat",   to: "appr",   label: "定義の版は" },
+    { id: "e3", from: "prod",  to: "lot",    label: "製造ロットは" },
+    { id: "e4", from: "lot",   to: "ship",   label: "出荷記録は" },
+    { id: "e5", from: "ship",  to: "order",  label: "対応する注文は" },
+    { id: "e6", from: "order", to: "cust",   label: "発注した顧客は" },
+    { id: "e7", from: "order", to: "store",  label: "購入した店舗は" },
+    { id: "e8", from: "store", to: "region", label: "所在する地域は" }
+  ];
+
+  var QUESTIONS = [
+    {
+      q: "このロットのリコールで影響を受ける顧客は誰か",
+      path: ["e3", "e4", "e5", "e6"],
+      graph: "製品からロット、出荷、注文、顧客へと関係を 4 本辿るだけです。段数が増えても質問の書き方は変わりません。",
+      graphHops: "辿る関係 4 本 / 質問 1 つ",
+      table: "製品・ロット・出荷・注文・顧客の 5 表を 4 回 JOIN します。出荷が別システムにあると、1 つのクエリでは書けません。",
+      tableHops: "JOIN 4 回 / 対象システム 2 つ",
+      note: "多段の関係を辿る質問。グラフとの差がもっとも大きく出る形です。"
+    },
+    {
+      q: "関東の店舗で買った顧客は誰か",
+      path: ["e8", "e7", "e6"],
+      graph: "地域から店舗、注文、顧客へ 3 本。地域の粒度を「関東」から「渋谷区」に変えても、質問の形は同じです。",
+      graphHops: "辿る関係 3 本 / 質問 1 つ",
+      table: "3 回の JOIN で書けます。ただし店舗マスタの地域コードが POS と CRM で違う場合、突合表が別に必要です。",
+      tableHops: "JOIN 3 回 / 突合表 1 つ",
+      note: "比較的単純な質問。表でも書けますが、コード体系の不一致が手作業として残ります。"
+    },
+    {
+      q: "この分類の定義は誰がいつ承認したか",
+      path: ["e2"],
+      graph: "分類から承認記録へ 1 本。定義そのものがグラフの一部なので、データと同じ方法で辿れます。",
+      graphHops: "辿る関係 1 本 / 質問 1 つ",
+      table: "定義の変更履歴を保存する表を、あらかじめ自分で作っていなければ答えられません。",
+      tableHops: "専用の履歴表が前提",
+      note: "「答えの根拠を辿る」質問。監査や規制対応で必要になります。"
+    }
+  ];
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var NODE_H = 34;
+
+  function el(name, attrs) {
+    var n = document.createElementNS(SVG_NS, name);
+    for (var k in attrs) { if (Object.prototype.hasOwnProperty.call(attrs, k)) n.setAttribute(k, attrs[k]); }
+    return n;
+  }
+
+  // 矩形の中心から相手方向へ、枠の縁まで縮めた点を返す
+  function anchor(a, b) {
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var hw = a.w / 2 + 4, hh = NODE_H / 2 + 4;
+    if (dx === 0 && dy === 0) return { x: a.x, y: a.y };
+    var sx = dx === 0 ? Infinity : hw / Math.abs(dx);
+    var sy = dy === 0 ? Infinity : hh / Math.abs(dy);
+    var s = Math.min(sx, sy);
+    return { x: a.x + dx * s, y: a.y + dy * s };
+  }
+
+  var gEdges = document.getElementById("edges");
+  var gLabels = document.getElementById("elabels");
+  var gNodes = document.getElementById("nodes");
+  var edgeEls = {}, labelEls = {}, nodeEls = {};
+
+  EDGES.forEach(function (e) {
+    var a = NODES[e.from], b = NODES[e.to];
+    var p1 = anchor(a, b), p2 = anchor(b, a);
+    var line = el("line", { class: "edge", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
+    gEdges.appendChild(line);
+    edgeEls[e.id] = line;
+
+    var mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+    var t = el("text", { class: "elabel", x: mx, y: my - 5, "text-anchor": "middle" });
+    t.textContent = e.label;
+    gLabels.appendChild(t);
+    labelEls[e.id] = t;
+  });
+
+  Object.keys(NODES).forEach(function (key) {
+    var n = NODES[key];
+    var g = el("g", { class: "node" });
+    g.appendChild(el("rect", {
+      x: n.x - n.w / 2, y: n.y - NODE_H / 2, width: n.w, height: NODE_H, rx: 3
+    }));
+    var kind = el("text", { class: "kind", x: n.x, y: n.y - 3, "text-anchor": "middle" });
+    kind.textContent = n.kind;
+    g.appendChild(kind);
+    var label = el("text", { x: n.x, y: n.y + 11, "text-anchor": "middle" });
+    label.textContent = n.label;
+    g.appendChild(label);
+    gNodes.appendChild(g);
+    nodeEls[key] = g;
+  });
+
+  var byId = {};
+  EDGES.forEach(function (e) { byId[e.id] = e; });
+
+  function show(i) {
+    var item = QUESTIONS[i];
+
+    Object.keys(edgeEls).forEach(function (id) { edgeEls[id].classList.remove("on"); });
+    Object.keys(labelEls).forEach(function (id) { labelEls[id].classList.remove("on"); });
+    Object.keys(nodeEls).forEach(function (k) { nodeEls[k].classList.remove("on"); });
+
+    item.path.forEach(function (id) {
+      edgeEls[id].classList.add("on");
+      labelEls[id].classList.add("on");
+      nodeEls[byId[id].from].classList.add("on");
+      nodeEls[byId[id].to].classList.add("on");
+    });
+
+    document.getElementById("v-graph").textContent = item.graph;
+    document.getElementById("v-graph-hops").textContent = item.graphHops;
+    document.getElementById("v-table").textContent = item.table;
+    document.getElementById("v-table-hops").textContent = item.tableHops;
+    document.getElementById("fig-note").textContent = item.note;
+
+    Array.prototype.forEach.call(bar.children, function (b, j) {
+      b.setAttribute("aria-pressed", j === i ? "true" : "false");
+    });
+  }
+
+  var bar = document.getElementById("qbar");
+  QUESTIONS.forEach(function (item, i) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = item.q;
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", function () { show(i); });
+    bar.appendChild(b);
+  });
+
+  show(0);
+})();
+</script>
+</body>
+</html>
