@@ -65,9 +65,15 @@ lint-infra:
 # ローカル実行
 # ---------------------------------------------------------------------------
 
-# Fuseki と PostgreSQL を起動する
+# Fuseki / PostgreSQL / Azurite を起動し、正本 Blob のコンテナを作る
+#
+# Azurite にはコンテナを自動作成する仕組みが無い(本番は
+# infra/modules/shared.bicep の ontologyContainer が作る)。コンテナが無いと
+# publish と DELETE /namespaces/{name} が ContainerNotFound で 500 になるため、
+# ここで作る。冪等なので何度実行してもよい。
 up:
     docker compose up -d --build
+    uv run --directory {{justfile_directory()}} python scripts/init-local-storage.py
 
 # 停止する(データは残る)
 down:

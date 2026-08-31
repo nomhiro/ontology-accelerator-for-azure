@@ -157,7 +157,7 @@ Windows 環境では、リポジトリ同梱の [Dev Container](.devcontainer/) 
 ```bash
 cp .env.example .env   # AUTH_MODE=disabled / POSTGRES_PASSWORD=localdev などローカル専用の値
 just setup      # 依存関係を入れる (uv sync --all-packages + pnpm install)
-just up         # Fuseki + PostgreSQL + Azurite を起動 (docker compose up -d --build)
+just up         # Fuseki + PostgreSQL + Azurite を起動し、正本 Blob のコンテナを作る
 just migrate    # PostgreSQL にテーブルを作る (alembic upgrade head)
 just dev-api    # Core API を起動 (http://localhost:8000)
 just dev-mcp    # MCP サーバーを起動 (別ターミナル)
@@ -165,7 +165,9 @@ just dev-web    # Web を起動 (別ターミナル)
 just down       # 停止する (データは残る / just clean でデータも消す)
 ```
 
-`.env` を用意せずに `just dev-api` を起動すると、`GET /namespaces` は次のいずれかで失敗します。`.env` が無ければまず 401(`AUTH_MODE` の既定 `entra` でトークン必須)、`AUTH_MODE=disabled` だけを指定しても `POSTGRES_PASSWORD` が空だと Entra 経由の接続に切り替わり 500、`just migrate` を実行していなければ `relation "namespaces" does not exist` で 500 になります。`.env.example` の 3 行と `just migrate` はこれらすべてに対応します。
+`.env` を用意せずに `just dev-api` を起動すると、`GET /namespaces` は次のいずれかで失敗します。`.env` が無ければまず 401(`AUTH_MODE` の既定 `entra` でトークン必須)、`AUTH_MODE=disabled` だけを指定しても `POSTGRES_PASSWORD` が空だと Entra 経由の接続に切り替わり 500、`just migrate` を実行していなければ `relation "namespaces" does not exist` で 500 になります。`.env.example` と `just migrate` はこれらすべてに対応します。
+
+**`docker compose up` を直接使う場合は、続けて `uv run python scripts/init-local-storage.py` を実行してください。** Azurite には Blob コンテナを自動作成する仕組みがなく(本番は `infra/modules/shared.bicep` の `ontologyContainer` が作ります)、コンテナが無いと**オントロジーの公開(publish)と名前空間の削除が `ContainerNotFound` で失敗します**。名前空間の作成と SPARQL 参照は Blob を触らないため動いてしまい、原因が分かりにくい点に注意してください。`just up` はこの手順を含みます(冪等です)。
 
 Fuseki の SPARQL エンドポイントは名前空間ごとのデータセットに立ちます。`just up` で読み込まれるサンプル(`samples/retail-core.ttl`)は名前空間 `retail-core` として `http://localhost:3030/retail-core/sparql` で応答します(固定の `/ds/sparql` は予約された空のデータセットなので応答はしますが 0 件しか返りません)。動作確認の例:
 

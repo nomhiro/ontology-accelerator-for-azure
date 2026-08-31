@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, StoreDep
 from ontology_api.repositories.namespaces import NamespaceExistsError, NamespaceRepository
+from ontology_core.blob import BlobStoreError
 from ontology_core.graphs import NamespaceNameError, dataset_name, validate_namespace_name
 from ontology_core.models import Namespace
 from ontology_core.sparql.client import SparqlStoreError
@@ -136,7 +137,23 @@ async def delete_namespace(
             detail=f"名前空間 '{name}' が見つかりません",
         )
 
-    remaining = await blob.list_versions(namespace=name)
+    # Blob 一覧が取れないときは**削除を進めない**(fail-closed)。Blob は
+    # ローダが再構築の入力に使う「復活源」であり、中身を確認できないまま
+    # 名前空間を消すと、消えたように見えて後から復活する状態を作る
+    # (review-branch-report.md の C-1)。生の BlobStoreError を漏らすと
+    # 原因の分からない 500 になるので、意図した拒否として 503 で返す。
+    try:
+        remaining = await blob.list_versions(namespace=name)
+    except BlobStoreError as exc:
+        logger.exception("名前空間 '%s' の Blob 一覧を取得できませんでした", name)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "正本の Blob ストレージに到達できないため、削除を中止しました。"
+                "削除済みデータが射影の再構築で復活するのを防ぐため、Blob の"
+                f"中身を確認できない状態では削除しません: {exc}"
+            ),
+        ) from exc
     if remaining:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
