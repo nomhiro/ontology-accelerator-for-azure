@@ -160,3 +160,16 @@ owlready2 は Python から OWL を扱う優れたライブラリだが、**改�
 - [ADR-0001](0001-rdf-store-selection.md) — Jena エコシステム(Java)を採用したことで、ELK との接続が容易になっている
 - [`../third-party-licenses.md`](../third-party-licenses.md) — HermiT と owlready2 の扱いは本 ADR の決定を反映している
 - [NOTICE](../../NOTICE) — HermiT を同梱しない方針を明記する
+
+## 補記: 推論器の導入時期を Phase 2 へ前倒し (2026-09-01)
+
+本 ADR は「SHACL 検証は pyshacl で完結するため Java 依存は Phase 4 まで発生しない」としていた。
+**この判断を変更する。** OWL 推論器 (ELK, Apache-2.0) の導入を **Phase 4 → Phase 2** に前倒しする。
+
+理由は [ADR-0009](0009-ontology-operations.md) に記録した「決定可能性による分業」である。
+論理的整合性は形式的に決定可能であり、推論器は健全かつ完全に判定する。これを CI に置けば
+人がレビューする対象が「形式的には正しいが業務的な妥当性が不明なもの」だけに絞られる。
+**最も安い正しさの担保**であり、承認フローを実装する Phase 2 と同時に入れるのが筋が通る。
+
+SHACL を pyshacl で扱う判断（純 Python で完結する範囲は Java を持ち込まない）は変更しない。
+HermiT (LGPL-3.0) を同梱せず、ELK を既定とする判断も変更しない。
