@@ -13,7 +13,7 @@ from ontology_api.services.projection import AutoVersionError, ProjectionService
 from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import Settings
 from ontology_core.db import create_engine_and_factory
-from ontology_core.models import OntologyVersion
+from ontology_core.models import OntologyVersion, OntologyVersionStatus
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
 
 pytestmark = pytest.mark.integration
@@ -85,6 +85,35 @@ async def test_publish_writes_source_of_truth_then_projects(prepared: Prepared) 
     # 射影済みが記録される
     rows = await VersionRepository(session).list_for("retail-core")
     assert rows[0].projected_at is not None
+
+
+async def test_publish_records_draft_not_approved(prepared: Prepared) -> None:
+    """publish は承認済みを主張しない。
+
+    承認フローは Phase 2 (ADR-0010 で設計) であり、Phase 1 には承認の段階が
+    存在しない。それにもかかわらず `status` を `APPROVED` にすると、
+    **誰も承認していないのに「承認済み」と記録される**。この製品の中核価値は
+    「誰が承認した定義に基づく答えかを説明できること」(ADR-0006)なので、
+    偽の主張がデータに残るのは機能の欠落より害が大きい。
+
+    したがって publish は `DRAFT` を記録し、`approved_by` / `approved_at` は
+    未設定のままにする。承認 API が実装されるまで `APPROVED` には到達しない。
+    """
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+
+    version = await svc.publish(namespace="retail-core", turtle=TTL, actor="tester")
+
+    assert version.status is OntologyVersionStatus.DRAFT
+    assert version.approved_by is None
+    assert version.approved_at is None
+
+    # 取り直しても同じ(DB に DRAFT として入っている)
+    rows = await VersionRepository(session).list_for("retail-core")
+    assert rows[0].status is OntologyVersionStatus.DRAFT
+    assert rows[0].approved_by is None
 
 
 async def test_publish_is_idempotent_for_same_content(prepared: Prepared) -> None:

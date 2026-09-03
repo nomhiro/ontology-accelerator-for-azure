@@ -165,7 +165,14 @@ class ProjectionService:
                     graph_iri=graph_iri,
                     blob_path=blob_path,
                     created_by=actor,
-                    status=OntologyVersionStatus.APPROVED,
+                    # **承認済みを主張しない。** 承認フローは Phase 2(ADR-0010 で設計)で、
+                    # Phase 1 には承認の段階が存在しない。それにもかかわらず APPROVED を
+                    # 記録すると「誰も承認していないのに承認済み」というデータになる。
+                    # この製品の中核価値は「誰が承認した定義に基づく答えかを説明できること」
+                    # (ADR-0006)なので、偽の主張がデータに残るのは機能の欠落より害が大きい。
+                    # `approved_by` / `approved_at` も未設定のままにする(既定が None)。
+                    # 承認 API を実装するまで APPROVED には到達しない。
+                    status=OntologyVersionStatus.DRAFT,
                 )
         except IntegrityError:
             # 競合に負けた側。勝った側が書いたはずの行を取り直す。

@@ -28,6 +28,13 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   安価で正しい強制手段が無いため)。強制は Phase 2 で対応する
 - 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)。削除(`DELETE /namespaces/{name}`)は、公開済みバージョンが Blob に1件でも残っていれば 409 Conflict で拒否する(オントロジーは不変リビジョンであり、レプリカ再作成後に削除済みのはずのデータが Blob から復活することを防ぐため)。
   **既知の制約**: この判定(Blob 一覧の取得 → PostgreSQL の行削除)の間に別リクエストが同じ名前空間へ同時に publish すると削除自体は通ってしまい、その publish が書いた Blob だけが正本(PostgreSQL)に対応する行を失った状態で残る、ごく狭い競合状態(TOCTOU)がある。完全に閉じるにはロックか二段確認が必要で Phase 2 の「監査付き削除」で対応する予定です。Phase 1 では `POST /admin/reconcile` の `orphan_blobs` でこの状態を検出できます(削除は運用者の手動判断に委ねており、自動削除はしません)
+- **承認フローは未実装です。** `POST /namespaces/{ns}/versions` は版を `draft` として
+  記録し、`approved_by` / `approved_at` は未設定のままにします。Phase 1 には承認の段階が
+  存在しないため、`approved` を記録すると「誰も承認していないのに承認済み」というデータに
+  なるためです（[ADR-0006](docs/adr/0006-ontology-versioning-and-audit.md) の中核価値に反する）。
+  **その帰結として、Phase 1 では未承認の版がそのまま射影され、エージェントが未承認の定義を
+  受け取りえます。** 承認 API と、未承認の版を射影するか否かの判断は Phase 2 で扱います
+  （[`docs/backlog.md`](docs/backlog.md) の `P1-15` / `P2B-13`）
 - lint (ruff) / 型検査 (mypy strict) / テスト (pytest 105 件: unit 72 件 + integration 33 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
