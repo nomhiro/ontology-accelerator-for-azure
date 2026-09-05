@@ -139,6 +139,7 @@ reconcile                      -> 孤児ゼロ
 **完了条件**: 本番環境に置ける品質で、第三者が OSS として採用できる。
 
 - production プロファイル（VNet / Private Endpoint / AKS 昇格ガイド）
+- **VNet 内で実行されるマイグレーション経路**（[ADR-0011](adr/0011-database-privilege-separation.md) 決定6）。`publicNetworkAccess: Disabled` では運用者のマシンから届かないため、Phase 1 の`postdeploy` 経路が成立しない。Container Apps Job かパイプラインの実行環境を選ぶ
 - 可観測性・負荷試験
 - ライセンス自動スキャンの CI 化
 - GitHub Actions の依存更新（現在 Node.js 20 対象のアクションが強制的に 24 で動いている）
