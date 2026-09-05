@@ -57,20 +57,34 @@ UAMI を Entra 管理者から外し、**`azd up` を実行するユーザー**�
 ブートストラップで**ログインしないロール `ontology_owner`** を作り、これがテーブルを所有する。アプリのロール（UAMI 名）には**所有権を与えず DML のみ**を与える。
 
 ```sql
+-- 【postgres データベースに接続して実行する】
+-- pgaadauth 拡張は Azure Database for PostgreSQL のメンテナンス用データベース
+-- (postgres) にしか存在しない。アプリの DB から呼ぶと
+-- `function pgaadauth_create_principal does not exist` になる。
+-- ロールはクラスタ全体で共有されるため、ここで作れば ontology DB から GRANT できる。
+SELECT * FROM pgaadauth_create_principal('<UAMI 名>', false, false);
+
+-- 【ontology データベースに接続して実行する】
 -- ログインしない所有者ロール。マイグレーションを実行する者に GRANT する。
 CREATE ROLE ontology_owner NOLOGIN;
 GRANT ontology_owner TO "<Entra 管理者>";
 
--- UAMI を PostgreSQL のロールとして登録する（pgaadauth 拡張）。
-SELECT * FROM pgaadauth_create_principal('<UAMI 名>', false, false);
+-- **所有者に public スキーマの CREATE を与える。** PostgreSQL 15 以降、
+-- public スキーマの CREATE は PUBLIC から剥奪されている(PG 16 で実測確認)。
+-- これを忘れると `SET ROLE ontology_owner` 下の CREATE TABLE が
+-- `permission denied for schema public` で失敗し、マイグレーションが通らない。
+GRANT USAGE, CREATE ON SCHEMA public TO ontology_owner;
 
 -- アプリには DML のみ。所有権も DDL も与えない。
 GRANT USAGE ON SCHEMA public TO "<UAMI 名>";
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "<UAMI 名>";
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "<UAMI 名>";
 ALTER DEFAULT PRIVILEGES FOR ROLE ontology_owner IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "<UAMI 名>";
+ALTER DEFAULT PRIVILEGES FOR ROLE ontology_owner IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO "<UAMI 名>";
 ```
+
+`ALTER DEFAULT PRIVILEGES` は**マイグレーションより前**に実行する。既存テーブルへの
+`GRANT` は後述のとおりマイグレーションの後に行う。
 
 **`audit_events` への `DELETE` は与えない。**監査は追記専用にする。
 
@@ -116,6 +130,20 @@ postdeploy:
 Phase 4 の `production` プロファイル設計に含める。**Phase 1 で先に作らない** — 決定 (c) のとおり azd のイメージ更新の問題を再来させる危険があり、`production` の設計と併せて決めるべきである。
 
 ## 根拠
+
+### 実測で確認した（2026-09-06、ローカル postgres 16.15）
+
+所有者でないロールでは、監査テーブルに対して次の結果になる。
+
+```
+INSERT   -> INSERT 0 1                          追記できる
+SELECT   -> 1                                   読める
+DELETE   -> ERROR: permission denied for table  消せない
+TRUNCATE -> ERROR: permission denied for table  消せない
+DROP     -> ERROR: must be owner of table       落とせない
+```
+
+**この ADR の目的が達成されることを、実装前に裏付けた。**
 
 ### 監査の保護が最小権限の主目的である
 
