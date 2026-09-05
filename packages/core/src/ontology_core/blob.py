@@ -7,9 +7,10 @@ Fuseki のローダ(containers/fuseki/load-snapshot.sh)がこのレイアウト�
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Self
+from typing import Any, Self
 
 from azure.core.credentials import AzureNamedKeyCredential, AzureSasCredential
 from azure.core.credentials_async import AsyncTokenCredential
@@ -18,7 +19,7 @@ from azure.storage.blob.aio import BlobServiceClient, ContainerClient
 
 from ontology_core.graphs import validate_namespace_name, validate_version
 
-__all__ = ["BlobStoreError", "OntologyBlobStore", "blob_path_for"]
+__all__ = ["BlobStoreError", "OntologyBlobStore", "blob_path_for", "manifest_path_for"]
 
 
 class BlobStoreError(RuntimeError):
@@ -65,6 +66,21 @@ def blob_path_for(prefix: str, namespace: str, version: str) -> str:
     validate_namespace_name(namespace)
     validate_version(version)
     return f"{prefix.rstrip('/')}/{namespace}/{version}.ttl"
+
+
+def manifest_path_for(prefix: str, namespace: str) -> str:
+    """名前空間ごとの承認状態マニフェスト(ADR-0010 決定7)の Blob 上のパスを返す。
+
+    `_state.json` は版ファイルと衝突しない。`ontology_core.graphs._VERSION_PATTERN`
+    (`[A-Za-z0-9][A-Za-z0-9.+-]{0,63}`)は先頭が英数字であることを要求し、`_`
+    始まりの名前を版として許可しない。したがって `validate_version` を通る限り
+    `_state.json`(`_state` は上記パターンにマッチしない)という名前の版ファイルは
+    作られ得ず、この名前を安全に予約できる。**この根拠が失われて `_VERSION_PATTERN`
+    が `_` 始まりを許すように変更されると、この予約は壊れる。変更する場合は
+    ここも見直すこと。**
+    """
+    validate_namespace_name(namespace)
+    return f"{prefix.rstrip('/')}/{namespace}/_state.json"
 
 
 class OntologyBlobStore:
@@ -132,6 +148,22 @@ class OntologyBlobStore:
         blob = self._container.get_blob_client(path)
         async with _wrap_errors("Blob の書き込み"):
             await blob.upload_blob(turtle.encode("utf-8"), overwrite=True)
+        return path
+
+    async def put_manifest(self, namespace: str, manifest: dict[str, Any]) -> str:
+        """名前空間の承認状態マニフェスト(`_state.json`)を書いて Blob パスを返す。
+
+        `put_version` と同じ `_wrap_errors` を通すため、失敗は `put_version` と
+        同様に必ず `BlobStoreError` になる(不変条件4)。マニフェストは
+        PostgreSQL の状態の射影であり正本ではない(ADR-0010 決定7)ので、
+        呼び出し側(`ProjectionService`)はこの失敗を握り潰して `reconcile` に
+        委ねる想定であり、この契約が壊れると意図しない例外伝播が起きる。
+        """
+        path = manifest_path_for(self._prefix, namespace)
+        blob = self._container.get_blob_client(path)
+        body = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+        async with _wrap_errors("マニフェストの書き込み"):
+            await blob.upload_blob(body, overwrite=True)
         return path
 
     async def get_version(self, blob_path: str) -> str:

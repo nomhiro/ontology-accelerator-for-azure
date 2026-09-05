@@ -84,8 +84,8 @@ param ontologyBlobContainer string
 @description('名前付きグラフ IRI の接頭辞。infra/modules/fuseki.bicep の graphIriBase と同じ値を main.bicep から渡すこと(値がずれると射影したグラフを ProjectionService が見つけられなくなる)。')
 param graphIriBase string = 'urn:ontology:graph'
 
-@description('正本 TTL を置く Blob のプレフィックス。containers/fuseki/load-snapshot.sh の BLOB_PREFIX と揃える。')
-param blobPrefix string = 'approved/'
+@description('正本 TTL を置く Blob のプレフィックス。containers/fuseki/load-snapshot.sh の BLOB_PREFIX と揃える。ADR-0010 決定8で `approved/` から改名した。')
+param blobPrefix string = 'versions/'
 
 @description('Application Insights の接続文字列。')
 param applicationInsightsConnectionString string

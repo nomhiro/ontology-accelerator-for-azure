@@ -13,7 +13,14 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
-from ontology_api.routers.versions import PublishRequest, publish_version
+from ontology_api.routers.versions import (
+    PublishRequest,
+    RejectRequest,
+    approve_version,
+    publish_version,
+    reject_version,
+    submit_version,
+)
 from ontology_core.auth.entra import Principal
 from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import Settings
@@ -35,6 +42,12 @@ class _NullStore(SparqlStore):
         return None
 
     async def put_graph(self, graph_iri: str, turtle: str, *, dataset: str) -> None:
+        return None
+
+    async def put_default_graph(self, turtle: str, *, dataset: str) -> None:
+        return None
+
+    async def delete_graph(self, graph_iri: str, *, dataset: str) -> None:
         return None
 
     async def list_datasets(self) -> list[str]:
@@ -86,3 +99,142 @@ async def test_publish_version_maps_auto_version_error_to_422(
 
     assert exc_info.value.status_code == 422
     assert "1.beta.0" in str(exc_info.value.detail)
+
+
+async def test_submit_approve_reject_router_status_codes(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """必須テスト4: 不正な遷移が 409、存在しない版が 404、reject の空 reason が 422。"""
+    name = "ver-approval"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri=f"https://e.example/{name}#",
+        created_by="t",
+    )
+    await session.commit()
+    store = _NullStore()
+
+    # 存在しない版への submit は 404。
+    with pytest.raises(HTTPException) as exc_info:
+        await submit_version(
+            namespace=name,
+            version="9.9.9",
+            principal=_PRINCIPAL,
+            session=session,
+            blob=blob_store,
+            store=store,
+            settings=settings,
+        )
+    assert exc_info.value.status_code == 404
+
+    published = await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=TTL, version="1.0.0"),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+    )
+
+    # draft を approve しようとすると 409。
+    with pytest.raises(HTTPException) as exc_info:
+        await approve_version(
+            namespace=name,
+            version=published.version,
+            principal=_PRINCIPAL,
+            session=session,
+            blob=blob_store,
+            store=store,
+            settings=settings,
+        )
+    assert exc_info.value.status_code == 409
+
+    submitted = await submit_version(
+        namespace=name,
+        version=published.version,
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+    )
+    assert submitted.status.value == "in-review"
+
+    # in-review を再度 submit しようとすると 409。
+    with pytest.raises(HTTPException) as exc_info:
+        await submit_version(
+            namespace=name,
+            version=published.version,
+            principal=_PRINCIPAL,
+            session=session,
+            blob=blob_store,
+            store=store,
+            settings=settings,
+        )
+    assert exc_info.value.status_code == 409
+
+    approved = await approve_version(
+        namespace=name,
+        version=published.version,
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+    )
+    assert approved.status.value == "approved"
+    assert approved.approved_by == (_PRINCIPAL.object_id or _PRINCIPAL.subject)
+
+    # approved を submit しようとすると 409。
+    with pytest.raises(HTTPException) as exc_info:
+        await submit_version(
+            namespace=name,
+            version=published.version,
+            principal=_PRINCIPAL,
+            session=session,
+            blob=blob_store,
+            store=store,
+            settings=settings,
+        )
+    assert exc_info.value.status_code == 409
+
+
+async def test_reject_empty_reason_is_422(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """RejectRequest.reason は空文字を拒否する(pydantic の入口検証で 422)。"""
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        RejectRequest(reason="")
+
+
+async def test_reject_unknown_version_is_404(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    name = "ver-reject-404"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri=f"https://e.example/{name}#",
+        created_by="t",
+    )
+    await session.commit()
+    store = _NullStore()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await reject_version(
+            namespace=name,
+            version="9.9.9",
+            payload=RejectRequest(reason="無効な版"),
+            principal=_PRINCIPAL,
+            session=session,
+            blob=blob_store,
+            store=store,
+            settings=settings,
+        )
+    assert exc_info.value.status_code == 404

@@ -127,7 +127,9 @@ var ontologyBlobContainer = 'ontologies'
 // プレフィックス。fuseki.bicep (ローダ) と api.bicep (ProjectionService) の
 // 両方が同じ値を見る必要があるため、main.bicep を単一の正本にして両モジュールへ渡す。
 var graphIriBase = 'urn:ontology:graph'
-var ontologyBlobPrefix = 'approved/'
+// ADR-0010 決定8: `approved/` は draft を含む全版を格納するため実態と食い違って
+// いた。`versions/` に改名した(未リリースなので破壊的変更を許容)。
+var ontologyBlobPrefix = 'versions/'
 
 // modelLocation は Phase 2 で Microsoft Foundry を追加する際に使う。
 // いま参照先がないため、値の解決だけ済ませて output で環境へ渡す。

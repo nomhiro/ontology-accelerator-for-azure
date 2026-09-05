@@ -78,7 +78,7 @@ async def blob_store() -> AsyncIterator[OntologyBlobStore]:
     async for blob in cc.list_blobs():
         await cc.delete_blob(blob.name)
 
-    store = OntologyBlobStore.from_client(service, container=container, prefix="approved/")
+    store = OntologyBlobStore.from_client(service, container=container, prefix="versions/")
     yield store
     await store.aclose()
     # `OntologyBlobStore.aclose()` は渡されたコンテナクライアントだけを閉じる

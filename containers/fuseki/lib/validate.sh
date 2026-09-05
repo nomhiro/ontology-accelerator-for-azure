@@ -47,7 +47,7 @@ validate_namespace() {
 #
 # namespace は validate_namespace が「/」を含めない文字種に制限しているが、
 # version_file 側(BLOB_PREFIX と namespace を取り除いた残り)は検証していな
-# かった。Blob 名を "approved/alpha/../../evil.ttl" のように作ると
+# かった。Blob 名を "versions/alpha/../../evil.ttl" のように作ると
 # namespace="alpha"(検証を通過)、version_file="../../evil.ttl" となり、
 # curl -o が STAGING_DIR の外へ任意のファイルを書き込めてしまう
 # (load-snapshot.sh はこのファイル自身のコメントで「Blob の内容を無条件に
@@ -114,8 +114,8 @@ normalize_graph_iri_base() {
 # ontology_core.blob.blob_path_for は `f"{prefix.rstrip('/')}/{namespace}/..."`
 # で常に区切りのスラッシュを 1 個保証する。load-snapshot.sh の Blob 一覧処理は
 # `"${name#"${BLOB_PREFIX}"}"` で前方一致除去するだけだったため、末尾スラッシュ
-# 無しの値(例: "approved")を渡すと Blob 名 "approved/ns/1.0.0.ttl" から
-# 除去されるのは "approved" だけになり、残り "/ns/1.0.0.ttl" の先頭が
+# 無しの値(例: "versions")を渡すと Blob 名 "versions/ns/1.0.0.ttl" から
+# 除去されるのは "versions" だけになり、残り "/ns/1.0.0.ttl" の先頭が
 # namespace の外(スラッシュ)に来て namespace="" と誤認識され、
 # 名前空間の階層が無い Blob として全件スキップされる(同上 I-4 追加分)。
 normalize_blob_prefix() {
@@ -124,4 +124,35 @@ normalize_blob_prefix() {
         value="${value%/}"
     done
     printf '%s/' "${value}"
+}
+
+# ---------------------------------------------------------------------------
+# 承認状態マニフェスト(versions/<namespace>/_state.json、ADR-0010 決定7)の
+# 解析。ローダは PostgreSQL を見ないため、状態はこのマニフェストだけから知る。
+#
+# 実行には jq が要る(Dockerfile で導入済み)。マニフェストが取得できない・
+# 壊れている名前空間は「黙って全件承認済みとして扱う」のではなく、呼び出し元
+# (load-snapshot.sh の build_tdb)がこれらの関数で判定し、その名前空間の
+# 読み込みを丸ごとスキップする(修正5)。
+# ---------------------------------------------------------------------------
+
+# マニフェストの JSON として最低限の形をしているか検証する。
+# `schema` が 1 であること、`namespace` が文字列であること、`versions` が
+# 配列であることまでを見る(内容の正しさは呼び出し元の各関数が個別に見る)。
+validate_manifest_json() {
+    printf '%s' "$1" | jq -e \
+        'type == "object" and (.schema == 1) and (.namespace | type == "string") and (.versions | type == "array")' \
+        >/dev/null 2>&1
+}
+
+# マニフェストの `current`(承認済み現行版。無ければ空文字)を返す。
+manifest_current() {
+    printf '%s' "$1" | jq -r '.current // ""'
+}
+
+# マニフェストの `versions` から、指定した版の `status` を返す。
+# 見つからなければ空文字(= draft の可能性。呼び出し元は「マニフェストに
+# 載っていない版は読み込まない」という方針でこれを扱う)。
+manifest_status_for_version() {
+    printf '%s' "$1" | jq -r --arg v "$2" '(.versions[] | select(.version == $v) | .status) // ""'
 }

@@ -2,7 +2,7 @@
 
 名前空間名は次の 3 か所で使われる。
   - Fuseki のデータセット名(名前空間の物理的な隔離単位)
-  - Blob のパス (`approved/<namespace>/<version>.ttl`)
+  - Blob のパス (`versions/<namespace>/<version>.ttl`)
   - 名前付きグラフ IRI
 
 いずれもパストラバーサルや予期しない文字が入ると隔離が崩れるため、

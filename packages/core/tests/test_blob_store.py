@@ -34,7 +34,7 @@ async def blob_store() -> AsyncIterator[OntologyBlobStore]:
     except Exception:  # 既存なら無視
         pass
 
-    store = OntologyBlobStore.from_client(service, container=_CONTAINER, prefix="approved/")
+    store = OntologyBlobStore.from_client(service, container=_CONTAINER, prefix="versions/")
     yield store
     await store.aclose()
     await service.close()
@@ -48,14 +48,14 @@ async def test_missing_blob_raises_blob_store_error(blob_store: OntologyBlobStor
     azure.core.exceptions の例外が生のまま漏れると、その判断が壊れる。
     """
     with pytest.raises(BlobStoreError):
-        await blob_store.get_version("approved/does-not-exist/9.9.9.ttl")
+        await blob_store.get_version("versions/does-not-exist/9.9.9.ttl")
 
 
 async def test_wrapped_error_is_not_a_bare_azure_error(blob_store: OntologyBlobStore) -> None:
     """BlobStoreError 以外(生の azure 例外)は外に漏れないこと。"""
     with pytest.raises(BlobStoreError):
         try:
-            await blob_store.get_version("approved/does-not-exist/9.9.9.ttl")
+            await blob_store.get_version("versions/does-not-exist/9.9.9.ttl")
         except AzureError as exc:
             pytest.fail(f"azure の例外が生のまま漏れた: {exc!r}")
 
@@ -78,7 +78,7 @@ async def test_from_connection_string_owns_the_service_it_creates() -> None:
     await service.close()
 
     store = OntologyBlobStore.from_connection_string(
-        _CONN, container=_CONTAINER, prefix="approved/"
+        _CONN, container=_CONTAINER, prefix="versions/"
     )
     assert store._owned_service is not None
 
@@ -91,7 +91,7 @@ async def test_from_connection_string_aclose_closes_the_owned_service() -> None:
     (遅延生成)何も検証できないため、先に実際のリクエストを1回送って開かせる。
     """
     store = OntologyBlobStore.from_connection_string(
-        _CONN, container=_CONTAINER, prefix="approved/"
+        _CONN, container=_CONTAINER, prefix="versions/"
     )
     owned_service = store._owned_service
     assert owned_service is not None

@@ -66,9 +66,18 @@
    ## 値は「最初の結果までのミリ秒, 全体のミリ秒」。
    ## アプリ側の SPARQL_QUERY_TIMEOUT_SECONDS(既定 30 秒)と揃えている。
    ja:context [ ja:cxtName "arq:queryTimeout" ;  ja:cxtValue "10000,30000" ] ;
-   ja:context [ ja:cxtName "arq:updateTimeout" ; ja:cxtValue "20000,60000" ] ;
+   ja:context [ ja:cxtName "arq:updateTimeout" ; ja:cxtValue "20000,60000" ] .
 
-   ## 名前付きグラフの和集合を既定グラフとして扱う。
-   ## オントロジーはバージョンごとに別グラフへ射影するため、
-   ## 明示的にグラフを指定しないクエリでも参照できるようにしておく。
-   ja:context [ ja:cxtName "tdb2:unionDefaultGraph" ; ja:cxtValue true ] .
+   ## `tdb2:unionDefaultGraph` は使わない(ADR-0010 決定6)。
+   ##
+   ## この "ds" データセットは予約された空のデータセットであり
+   ## (ontology_core.graphs.RESERVED_DATASET_NAMES、実データは名前空間ごとの
+   ## 別データセットに入る)、実データを一切受け取らないため、この設定の
+   ## 有無はここでは観測可能な差を生まない。それでも意図的に外しているのは、
+   ## 「既定グラフは常に単一の版を指す」という設計の不変条件をコピー元として
+   ## 揃えるため(名前空間ごとのデータセットは
+   ## containers/fuseki/load-snapshot.sh の write_assembler と
+   ## containers/fuseki/templates/config-tdb2 が生成し、いずれも
+   ## unionDefaultGraph を持たない)。かつて `tdb2:unionDefaultGraph = true` で
+   ## あったため、既定グラフが全バージョンの和集合になり、GRAPH 句なしの
+   ## クエリで新旧の定義が同時に返っていた(P1-C1、backlog.md 参照)。

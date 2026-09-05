@@ -9,11 +9,13 @@ from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, Set
 from ontology_api.repositories.versions import VersionRepository
 from ontology_api.services.projection import (
     AutoVersionError,
+    InvalidTransitionError,
     ProjectionService,
     ReconcileReport,
     UnknownNamespaceError,
+    UnknownVersionError,
 )
-from ontology_core.graphs import NamespaceNameError, validate_namespace_name
+from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
 from ontology_core.models import OntologyVersion
 
 router = APIRouter(tags=["versions"])
@@ -24,6 +26,12 @@ class PublishRequest(BaseModel):
 
     turtle: str = Field(min_length=1, max_length=20_000_000, description="Turtle 形式の本文")
     version: str | None = Field(default=None, description="省略時は自動採番")
+
+
+class RejectRequest(BaseModel):
+    """却下要求。理由は必須(空文字は 422)。"""
+
+    reason: str = Field(min_length=1, description="却下の理由(必須)")
 
 
 @router.post(
@@ -83,6 +91,110 @@ async def list_versions(
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return await VersionRepository(session).list_for(namespace)
+
+
+@router.post(
+    "/namespaces/{namespace}/versions/{version}/submit",
+    summary="draft を in-review にする(名前付きグラフへ射影)",
+)
+async def submit_version(
+    namespace: str,
+    version: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    store: StoreDep,
+    settings: SettingsDep,
+) -> OntologyVersion:
+    """ADR-0010 決定1・5。Phase 1 では権限を強制しない(認証済みの呼び出し元は誰でも実行できる)。"""
+    validate_namespace_name(namespace)
+    validate_version(version)
+    service = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+    )
+    try:
+        return await service.submit(
+            namespace=namespace, version=version, actor=principal.object_id or principal.subject
+        )
+    except UnknownVersionError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post(
+    "/namespaces/{namespace}/versions/{version}/approve",
+    summary="in-review を approved にする(既定+名前付きグラフへ射影、前の版は自動 superseded)",
+)
+async def approve_version(
+    namespace: str,
+    version: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    store: StoreDep,
+    settings: SettingsDep,
+) -> OntologyVersion:
+    """ADR-0010 決定1・3・5・6。
+
+    **Phase 1 では権限を強制しない。** 四眼原則(提案者と承認者を別人にする)と
+    「責任者のみが承認できる」制約は、名前空間 RBAC(`P2A-06`)と責任者
+    (`P2B-04`)に依存するため Phase 2 で対応する(ADR-0010)。認証済みの
+    呼び出し元は誰でも approve できる。`approved_by` には実際に呼び出した
+    主体が記録される(記録は正しいが、強制は無い)。README にも明記している。
+    """
+    validate_namespace_name(namespace)
+    validate_version(version)
+    service = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+    )
+    try:
+        return await service.approve(
+            namespace=namespace, version=version, actor=principal.object_id or principal.subject
+        )
+    except UnknownVersionError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post(
+    "/namespaces/{namespace}/versions/{version}/reject",
+    summary="in-review を draft に戻す(理由必須。名前付きグラフから外す)",
+)
+async def reject_version(
+    namespace: str,
+    version: str,
+    payload: RejectRequest,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    store: StoreDep,
+    settings: SettingsDep,
+) -> OntologyVersion:
+    """ADR-0010 決定1・5。Phase 1 では権限を強制しない。"""
+    validate_namespace_name(namespace)
+    validate_version(version)
+    service = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+    )
+    try:
+        return await service.reject(
+            namespace=namespace,
+            version=version,
+            actor=principal.object_id or principal.subject,
+            reason=payload.reason,
+        )
+    except UnknownVersionError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/admin/reconcile", summary="正本を基準にストアの状態を揃える")

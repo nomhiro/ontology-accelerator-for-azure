@@ -86,6 +86,14 @@ class VersionRepository:
         row = (await self._session.execute(stmt)).scalar_one_or_none()
         return _to_model(row) if row is not None else None
 
+    async def get(self, namespace: str, version: str) -> OntologyVersion | None:
+        stmt = select(OntologyVersionRow).where(
+            OntologyVersionRow.namespace == namespace,
+            OntologyVersionRow.version == version,
+        )
+        row = (await self._session.execute(stmt)).scalar_one_or_none()
+        return _to_model(row) if row is not None else None
+
     async def mark_projected(self, namespace: str, version: str) -> None:
         stmt = select(OntologyVersionRow).where(
             OntologyVersionRow.namespace == namespace,
@@ -95,9 +103,54 @@ class VersionRepository:
         row.projected_at = datetime.now(UTC)
         await self._session.flush()
 
+    async def set_status(
+        self,
+        namespace: str,
+        version: str,
+        *,
+        status: OntologyVersionStatus,
+        approved_by: str | None = None,
+        approved_at: datetime | None = None,
+        reset_projected: bool = False,
+    ) -> OntologyVersion:
+        """状態遷移(submit/approve/reject/supersede)をまとめて書く。
+
+        `reset_projected=True` は「この行に対応する射影(Fuseki への反映)を
+        やり直す必要がある」という意味で `projected_at` を NULL に戻す。
+        これを忘れると、遷移後の射影(名前付きグラフ・既定グラフの更新)が
+        失敗しても `unprojected()` がその行を拾えず、`reconcile` が永久に
+        回収できなくなる(状態遷移のたびに「射影済み」の意味が変わるため)。
+        """
+        stmt = select(OntologyVersionRow).where(
+            OntologyVersionRow.namespace == namespace,
+            OntologyVersionRow.version == version,
+        )
+        row = (await self._session.execute(stmt)).scalar_one()
+        row.status = status.value
+        if approved_by is not None:
+            row.approved_by = approved_by
+        if approved_at is not None:
+            row.approved_at = approved_at
+        if reset_projected:
+            row.projected_at = None
+        await self._session.flush()
+        await self._session.refresh(row)
+        return _to_model(row)
+
     async def unprojected(self) -> list[OntologyVersion]:
-        """まだ射影されていないバージョン。reconcile の対象。"""
-        stmt = select(OntologyVersionRow).where(OntologyVersionRow.projected_at.is_(None))
+        """まだ射影されていないバージョン。reconcile の対象。
+
+        `draft` は除外する。ADR-0010 決定5により `draft` は射影しないことが
+        正常な状態であり、`projected_at IS NULL` は `draft` にとっての通常の
+        姿になった(以前は「publish 後、射影が終わるまでの一時的な状態」
+        だったが、`draft` は射影自体が存在しないため恒久的に NULL のまま
+        になる)。ここで除外しないと `reconcile` が `draft` を毎回拾って
+        射影しようとしてしまう。
+        """
+        stmt = select(OntologyVersionRow).where(
+            OntologyVersionRow.projected_at.is_(None),
+            OntologyVersionRow.status != OntologyVersionStatus.DRAFT.value,
+        )
         return [_to_model(r) for r in (await self._session.execute(stmt)).scalars()]
 
     async def all_blob_paths(self) -> set[str]:

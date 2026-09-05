@@ -12,9 +12,21 @@
 #   FUSEKI_BASE                 Fuseki のサーバーエリア(既定 /fuseki)
 #   TDB_LOCATION                予約データセット "ds" の作成先(EmptyDir 上のパス)
 #   LOCAL_TTL_DIR               ローカル開発用。Blob の代わりにここから読む
+#   SUPERSEDED_RETAIN           superseded 版を名前付きグラフに読み込むか
+#                               (既定 0 = 読み込まない)。ADR-0010 が保持
+#                               ポリシーの既定値を未決としているため、
+#                               まず最小(0)にしている。0 以外を渡すと
+#                               「superseded を全部読み込む」の boolean
+#                               スイッチとして働く(「何版まで」という
+#                               件数制御ではない。運用実績が無いと決められ
+#                               ないため未実装)
 #
 # 名前空間ごとに Blob レイアウト <prefix><namespace>/<version>.ttl(Task 5)に
-# 従って TDB2 と assembler を作る(Task 7)。詳細は build_tdb を参照。
+# 従って TDB2 と assembler を作る(Task 7)。**版ごとに、どの版を読み込むか・
+# どこへ読み込むか(名前付きグラフのみ/既定グラフにも)は名前空間ごとの
+# マニフェスト `versions/<namespace>/_state.json`(ADR-0010 決定7)が持つ
+# 状態で決める。** ローダは PostgreSQL を一切見ないため、これが唯一の
+# 情報源になる。詳細は build_tdb を参照。
 set -eu
 
 # 名前空間名・バージョン文字列の検証(validate_namespace / validate_version_file)
@@ -37,13 +49,13 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 : "${DATABASES_DIR:=${FUSEKI_BASE}/databases}"
 : "${CONFIGURATION_DIR:=${FUSEKI_BASE}/configuration}"
 : "${STAGING_DIR:=/fuseki/staging}"
-: "${BLOB_PREFIX:=approved/}"
+: "${BLOB_PREFIX:=versions/}"
 : "${BLOB_API_VERSION:=2021-12-02}"
 : "${JENA_HOME:=/opt/jena}"
 # ローカル開発 (LOCAL_TTL_DIR) のサンプルには Blob のようなバージョン付きの
 # ディレクトリ階層が無い(例: samples/retail-core.ttl は <namespace>.ttl のみ)。
 # ファイル名を名前空間、この値をバージョンとして割り当てる。containers/fuseki の
-# task-8 相当の本番デプロイ手順が同じファイルを approved/retail-core/1.0.0.ttl
+# task-8 相当の本番デプロイ手順が同じファイルを versions/retail-core/1.0.0.ttl
 # としてアップロードする想定と合わせている。
 : "${LOCAL_TTL_VERSION:=1.0.0}"
 # 名前付きグラフ IRI の接頭辞。Phase 1 で名前空間とバージョンを含む形に整える。
@@ -70,14 +82,19 @@ BLOB_PREFIX="$(normalize_blob_prefix "${BLOB_PREFIX}")"
 # TDB_LOCATION(予約データセット "ds" のみ)ではなく DATABASES_DIR 全体を見て、
 # 名前空間のディレクトリが 1 つでも残っていれば温存する。
 : "${PRESERVE_EXISTING_TDB:=false}"
+: "${SUPERSEDED_RETAIN:=0}"
 
 # 名前空間ごとの assembler を書き出す。Fuseki は起動時に CONFIGURATION_DIR/*.ttl
 # を読み込むため、これで名前空間ごとのデータセットが立ち上がる。
 #
-# クエリ/更新タイムアウトと unionDefaultGraph は config.ttl の :dataset(予約
-# データセット "ds")と同じ値にしている。admin API 経由の動的なデータセット作成
-# (FusekiStore.create_dataset)にはここが適用されないため、そちらは
-# containers/fuseki/templates/config-tdb2 で別途カバーする(Task 7 Step 1b)。
+# クエリ/更新タイムアウトは config.ttl の :dataset(予約データセット "ds")と
+# 同じ値にしている。**`tdb2:unionDefaultGraph` は持たせない**(ADR-0010 決定6)。
+# 既定グラフは常に承認済み現行版だけを指すべきで、union にすると審査中・
+# 廃版の定義も既定グラフに漏れて Critical(P1-C1)が再来する。既定グラフの
+# 内容は build_namespace_tdb が `--graph` 無しの tdbloader 呼び出しで明示的に
+# 決める。admin API 経由の動的なデータセット作成(FusekiStore.create_dataset)
+# にはここが適用されないため、そちらは containers/fuseki/templates/config-tdb2
+# で別途カバーする(同じく unionDefaultGraph を持たせていない)。
 write_assembler() {
     namespace="$1"
     location="$2"
@@ -98,9 +115,19 @@ write_assembler() {
 <#dataset> rdf:type tdb2:DatasetTDB2 ;
     tdb2:location "${location}" ;
     ja:context [ ja:cxtName "arq:queryTimeout"  ; ja:cxtValue "10000,30000" ] ;
-    ja:context [ ja:cxtName "arq:updateTimeout" ; ja:cxtValue "20000,60000" ] ;
-    ja:context [ ja:cxtName "tdb2:unionDefaultGraph" ; ja:cxtValue true ] .
+    ja:context [ ja:cxtName "arq:updateTimeout" ; ja:cxtValue "20000,60000" ] .
 EOF
+}
+
+# 名前空間ごとのマニフェスト(versions/<ns>/_state.json)を取得する。
+# Azure Blob 経路(manifest_mode=true)でのみ呼ぶ。curl -f は 404 等で
+# 非 0 終了するため、呼び出し側はこれを「マニフェストが無い」の判定に使う。
+fetch_manifest() {
+    ns="$1"
+    curl -fsSL \
+        -H "Authorization: Bearer ${token}" \
+        -H "x-ms-version: ${BLOB_API_VERSION}" \
+        "${container_url}/${BLOB_PREFIX}${ns}/_state.json"
 }
 
 # STAGING_DIR/<namespace>/<version>.ttl から名前空間ごとに TDB2 を構築し、
@@ -114,39 +141,118 @@ EOF
 # バージョンごとにグラフを分けることで、エージェントがバージョンを固定して
 # 参照できるようにするため(docs/adr/0006-ontology-versioning-and-audit.md)。
 #
-# 名前空間ごとの assembler(write_assembler が書く)で unionDefaultGraph を
-# 有効にしているため、既定グラフへのクエリは「その名前空間内の名前付きグラフの
-# 和集合」を見る。既定グラフに直接読み込むと逆に見えなくなるので、
-# 必ず --graph を指定すること。
+# `manifest_mode`(第 1 引数)が "true" のとき、名前空間ごとにマニフェストを
+# 取得し、状態に応じて読み込み方を変える(ADR-0010 決定5)。
+#   - approved(かつ current と一致): 名前付きグラフ + 既定グラフ
+#   - in-review: 名前付きグラフのみ
+#   - superseded: SUPERSEDED_RETAIN が 0 以外なら名前付きグラフのみ。既定 0 では読み込まない
+#   - マニフェストに載っていない版(draft の可能性): 読み込まない
+# マニフェストが取得できない・不正な名前空間は、**黙って全件承認済みとして
+# 扱わず**、この名前空間を丸ごとスキップする(修正5。推測は Critical
+# (P1-C1)を再来させる)。1 つの名前空間の設定不備が他の名前空間を巻き込んで
+# 全滅させないよう、スキップ(その名前空間の読み込みを諦める)にとどめ、
+# ローダ全体は落とさない(exit 1 で全体を止める代替案も検討したが、
+# 複数名前空間を持つ運用で 1 件の不備が全テナントを止めるのは過剰と判断した)。
+#
+# `manifest_mode` が "false"(LOCAL_TTL_DIR 経路)のときはマニフェストを見ない。
+# この経路は samples/ 配下の単一ファイルを名前空間ごとに 1 版だけ読む、
+# 承認フローを経由しない開発用のブートストラップであり、意図的にマニフェスト
+# の対象外にしている(その 1 版を常に「現行の承認済み版」として名前付き
+# グラフ + 既定グラフの両方へ読み込む)。
 build_tdb() {
+    manifest_mode="$1"
     for ns_dir in "${STAGING_DIR}"/*/; do
         [ -d "${ns_dir}" ] || continue
-        build_namespace_tdb "$(basename "${ns_dir}")" "${ns_dir}"
+        namespace="$(basename "${ns_dir}")"
+        manifest=""
+        if [ "${manifest_mode}" = "true" ]; then
+            if ! manifest="$(fetch_manifest "${namespace}")"; then
+                log "名前空間 '${namespace}' の versions/${namespace}/_state.json が取得できません。この名前空間はスキップします(未承認を承認済みとして扱う推測はしません)"
+                continue
+            fi
+            if ! validate_manifest_json "${manifest}"; then
+                log "名前空間 '${namespace}' の _state.json が不正な形式です。この名前空間はスキップします"
+                continue
+            fi
+        fi
+        build_namespace_tdb "${namespace}" "${ns_dir}" "${manifest_mode}" "${manifest}"
     done
     rm -rf "${STAGING_DIR}"
 }
 
 # 1 つの名前空間の TDB2 を構築して差し替え、assembler を書く。
+# `manifest`(第 4 引数)は build_tdb が取得済みのマニフェスト JSON 文字列
+# (manifest_mode=false のときは未使用の空文字)。
 build_namespace_tdb() {
     namespace="$1"
     ns_staging="$2"
+    manifest_mode="$3"
+    manifest="$4"
     location="${DATABASES_DIR}/${namespace}"
     # 途中で失敗した TDB2 を Fuseki に読ませないよう、別の場所に作ってから差し替える。
     build_location="${location}.building"
     rm -rf "${build_location}" "${location}.old"
     mkdir -p "${build_location}"
 
+    current=""
+    if [ "${manifest_mode}" = "true" ]; then
+        current="$(manifest_current "${manifest}")"
+    fi
+
     log "TDB2 を構築します [${namespace}]: ${build_location}"
+    loaded=0
     for ttl in "${ns_staging}"*.ttl; do
         [ -e "${ttl}" ] || continue
         version="$(basename "${ttl}" .ttl)"
         graph_iri="${GRAPH_IRI_BASE}/${namespace}/${version}"
+
+        also_default="false"
+        if [ "${manifest_mode}" = "true" ]; then
+            status="$(manifest_status_for_version "${manifest}" "${version}")"
+            case "${status}" in
+                approved)
+                    [ "${version}" = "${current}" ] && also_default="true"
+                    ;;
+                in-review) ;;
+                superseded)
+                    if [ "${SUPERSEDED_RETAIN}" = "0" ]; then
+                        log "superseded 版をスキップします(SUPERSEDED_RETAIN=0) [${namespace}]: ${version}"
+                        continue
+                    fi
+                    ;;
+                *)
+                    # マニフェストに載っていない版。draft の可能性が高く、
+                    # 射影しない(ADR-0010 決定5)。
+                    log "マニフェストに無い版をスキップします(draft の可能性) [${namespace}]: ${version}"
+                    continue
+                    ;;
+            esac
+        else
+            # LOCAL_TTL_DIR 経路: マニフェスト対象外。単一ファイルを常に
+            # 現行の承認済み版として扱う(本ファイル冒頭のコメント参照)。
+            also_default="true"
+        fi
+
         log "読み込み [${namespace}]: $(basename "${ttl}") -> ${graph_iri}"
         "${JENA_HOME}/bin/tdb2.tdbloader" \
             --loc="${build_location}" \
             --graph="${graph_iri}" \
             "${ttl}"
+        loaded=$((loaded + 1))
+
+        if [ "${also_default}" = "true" ]; then
+            log "既定グラフにも読み込みます [${namespace}]: ${version}"
+            "${JENA_HOME}/bin/tdb2.tdbloader" \
+                --loc="${build_location}" \
+                "${ttl}"
+        fi
     done
+
+    if [ "${loaded}" -eq 0 ]; then
+        log "読み込む版が無かったため名前空間をスキップします [${namespace}]"
+        rm -rf "${build_location}"
+        return 0
+    fi
 
     if [ -d "${location}" ]; then
         mv "${location}" "${location}.old"
@@ -242,7 +348,7 @@ if [ -z "${AZURE_STORAGE_ACCOUNT_URL:-}" ]; then
             found=1
         done
         if [ "${found}" -eq 1 ]; then
-            build_tdb
+            build_tdb "false"
             exit 0
         fi
         log "${LOCAL_TTL_DIR} に TTL が見つかりませんでした"
@@ -251,6 +357,19 @@ if [ -z "${AZURE_STORAGE_ACCOUNT_URL:-}" ]; then
     fi
     prepare_empty_tdb
     exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 依存コマンドの確認
+# ---------------------------------------------------------------------------
+# ここから先(Azure Blob 経路)はマニフェスト(JSON)の解析に jq を使う。
+# curl は元から前提にしていた(Blob の取得・トークン取得に必須)ため
+# 確認していないが、jq は今回追加した依存なので、無ければ「マニフェストを
+# 解析できないので全部読み込む」という危険な黒魔術ではなく、明示的に失敗する。
+# containers/fuseki/Dockerfile で jq を導入済み。
+if ! command -v jq >/dev/null 2>&1; then
+    log "jq が見つかりません。マニフェストを解析できないため終了します"
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -354,4 +473,4 @@ ${blob_names}
 BLOB_NAMES
 log "${count} 件の TTL を取得しました"
 
-build_tdb
+build_tdb "true"

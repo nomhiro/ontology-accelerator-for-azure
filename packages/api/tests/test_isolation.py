@@ -32,8 +32,21 @@ async def store() -> AsyncIterator[FusekiStore]:
     await s.aclose()
 
 
-async def _count(store: FusekiStore, dataset: str) -> int:
-    result = await store.query("SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }", dataset=dataset)
+async def _count(store: FusekiStore, dataset: str, *, graph: str | None = None) -> int:
+    """`graph` を指定しなければ既定グラフを数える。
+
+    ADR-0010 決定6で動的に作るデータセットのテンプレート
+    (containers/fuseki/templates/config-tdb2)から `tdb2:unionDefaultGraph` を
+    外したため、既定グラフはもはや名前付きグラフの和集合ではない
+    (P1-C1 の Critical への対処)。名前付きグラフに置いた内容の存在を確認する
+    アサーションは、この変更後は明示的に `GRAPH` 句で数える必要がある。
+    """
+    query = (
+        "SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }"
+        if graph is None
+        else f"SELECT (COUNT(*) AS ?n) WHERE {{ GRAPH <{graph}> {{ ?s ?p ?o }} }}"
+    )
+    result = await store.query(query, dataset=dataset)
     return int(result["results"]["bindings"][0]["n"]["value"])
 
 
@@ -42,14 +55,15 @@ async def test_data_in_one_namespace_is_invisible_from_another(store: FusekiStor
         if ns not in await store.list_datasets():
             await store.create_dataset(ns)
 
+    graph_iri = "urn:ontology:graph/iso-alpha/1.0.0"
     await store.put_graph(
-        "urn:ontology:graph/iso-alpha/1.0.0",
+        graph_iri,
         "@prefix ex: <https://e.example/#> .\nex:Secret a ex:Class .\n",
         dataset="iso-alpha",
     )
 
-    assert await _count(store, "iso-alpha") == 1
-    # beta 側からは 1 件も見えないこと。
+    assert await _count(store, "iso-alpha", graph=graph_iri) == 1
+    # beta 側からは(既定グラフからも、同名グラフを名指ししても)1 件も見えないこと。
     assert await _count(store, "iso-beta") == 0
 
     # beta で alpha のグラフを名指ししても取れないこと。

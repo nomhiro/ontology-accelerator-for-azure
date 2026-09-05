@@ -41,9 +41,11 @@ LABEL org.opencontainers.image.title="Ontology Accelerator for Azure - Fuseki" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 # curl は init コンテナが Blob から正本を取得するために必要。
+# jq は名前空間ごとの承認状態マニフェスト(versions/<ns>/_state.json、
+# ADR-0010 決定7)を解析するために必要(load-snapshot.sh 修正5)。
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends curl ca-certificates; \
+    apt-get install -y --no-install-recommends curl ca-certificates jq; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --uid 10001 --home-dir /fuseki --create-home fuseki
 

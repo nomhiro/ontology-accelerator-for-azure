@@ -52,11 +52,11 @@ param fusekiStorageName string = ''
 @description('Fuseki のデータセット名。SPARQL エンドポイントのパスに現れる。')
 param fusekiDataset string = 'ds'
 
-@description('load-snapshot.sh が各 TTL を読み込む名前付きグラフ IRI の接頭辞。config.ttl が unionDefaultGraph を有効にしているため、既定グラフではなく名前付きグラフへ読み込む必要がある。')
+@description('load-snapshot.sh が各 TTL を読み込む名前付きグラフ IRI の接頭辞。バージョンごとに名前付きグラフへ読み込み、承認済み現行版のみ既定グラフにも読み込む(ADR-0010 決定6)。')
 param graphIriBase string = 'urn:ontology:graph'
 
-@description('正本 TTL を置く Blob のプレフィックス。infra/modules/api.bicep の blobPrefix と同じ値を main.bicep から渡すこと(値がずれると、API が書き込んだ場所を load-snapshot.sh が読みに行けなくなる)。')
-param blobPrefix string = 'approved/'
+@description('正本 TTL を置く Blob のプレフィックス。infra/modules/api.bicep の blobPrefix と同じ値を main.bicep から渡すこと(値がずれると、API が書き込んだ場所を load-snapshot.sh が読みに行けなくなる)。ADR-0010 決定8で `approved/` から改名した。')
+param blobPrefix string = 'versions/'
 
 @description('オントロジー正本を格納する Blob エンドポイント URL。')
 param storageAccountUrl string

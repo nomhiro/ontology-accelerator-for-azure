@@ -18,7 +18,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 ### 動作を確認済み(ローカル)
 
 - `docker compose up` で Fuseki 6.2.0 + PostgreSQL 16 が起動する
-- Fuseki の entrypoint が `samples/retail-core.ttl` から TDB2 を構築し、名前空間ごとのデータセット `retail-core` の名前付きグラフ `urn:ontology:graph/retail-core/1.0.0` として読み込む(= 「再構築可能な射影」設計の実装)
+- Fuseki の entrypoint が `samples/retail-core.ttl` から TDB2 を構築し、名前空間ごとのデータセット `retail-core` の名前付きグラフ `urn:ontology:graph/retail-core/1.0.0`(かつ既定グラフにも同じ内容)として読み込む(= 「再構築可能な射影」設計の実装)
 - Fuseki は名前空間ごとに分離したデータセット(例: `retail-core`)の `/retail-core/sparql` が SPARQL 1.1 で応答する。データセット単位の物理分離が名前空間の隔離境界であり(`packages/api/tests/test_isolation.py` で検証)、固定の `ds` は予約された空のデータセットで実データは入らない
 - Core API 経由の読み取りクエリが通り、更新クエリと `SERVICE` 句はガードで HTTP 400 になる
 - Fuseki 側でも `SERVICE` の実行が無効化されている(HTTP 422 / SSRF 対策)。管理 API は無認証で 401
@@ -28,14 +28,24 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   安価で正しい強制手段が無いため)。強制は Phase 2 で対応する
 - 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)。削除(`DELETE /namespaces/{name}`)は、公開済みバージョンが Blob に1件でも残っていれば 409 Conflict で拒否する(オントロジーは不変リビジョンであり、レプリカ再作成後に削除済みのはずのデータが Blob から復活することを防ぐため)。
   **既知の制約**: この判定(Blob 一覧の取得 → PostgreSQL の行削除)の間に別リクエストが同じ名前空間へ同時に publish すると削除自体は通ってしまい、その publish が書いた Blob だけが正本(PostgreSQL)に対応する行を失った状態で残る、ごく狭い競合状態(TOCTOU)がある。完全に閉じるにはロックか二段確認が必要で Phase 2 の「監査付き削除」で対応する予定です。Phase 1 では `POST /admin/reconcile` の `orphan_blobs` でこの状態を検出できます(削除は運用者の手動判断に委ねており、自動削除はしません)
-- **承認フローは未実装です。** `POST /namespaces/{ns}/versions` は版を `draft` として
-  記録し、`approved_by` / `approved_at` は未設定のままにします。Phase 1 には承認の段階が
-  存在しないため、`approved` を記録すると「誰も承認していないのに承認済み」というデータに
-  なるためです（[ADR-0006](docs/adr/0006-ontology-versioning-and-audit.md) の中核価値に反する）。
-  **その帰結として、Phase 1 では未承認の版がそのまま射影され、エージェントが未承認の定義を
-  受け取りえます。** 承認 API と、未承認の版を射影するか否かの判断は Phase 2 で扱います
-  （[`docs/backlog.md`](docs/backlog.md) の `P1-15` / `P2B-13`）
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 105 件: unit 72 件 + integration 33 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- **最小の承認フローが動作します(ADR-0010)。** `POST /namespaces/{ns}/versions` は版を
+  `draft` として記録するだけで、Fuseki には一切射影しません。承認は別の操作です。
+  ```
+  POST /namespaces/{ns}/versions/{v}/submit    draft → in-review(名前付きグラフへ射影)
+  POST /namespaces/{ns}/versions/{v}/approve   in-review → approved(既定グラフ + 名前付きグラフへ射影。
+                                                前の approved は自動で superseded)
+  POST /namespaces/{ns}/versions/{v}/reject    in-review → draft(reason 必須。名前付きグラフから外す)
+  ```
+  射影先は状態で分かれます(詳細は下記「自分のオントロジーを追加する」を参照)。
+  **エージェント(`GRAPH` 句なしのクエリ)は常に承認済みの現行版だけを見ます。**
+  レビュアは `GRAPH` 句で審査中(`in-review`)の版を検証できます。
+  `draft` は Blob と PostgreSQL にのみ存在し、Fuseki には一切現れません。
+- **Phase 1 では承認に権限を強制しません。** 名前空間 RBAC(`P2A-06`)と責任者
+  (`P2B-04`)が未実装のため、**認証済みの呼び出し元は誰でも submit/approve/reject
+  を実行できます。** `approved_by` には実際に呼び出した主体が記録されますが、
+  「責任者だけが承認できる」「提案者と承認者を別人にする(四眼原則)」は強制されません。
+  権限の強制は Phase 2 で対応します（[`docs/backlog.md`](docs/backlog.md) の `P2B-13`）
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 124 件: unit 72 件 + integration 52 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -43,7 +53,8 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
 - `azd up` が成功する(プロビジョニング 5 分 6 秒 + デプロイ 2 分 41 秒)。API / MCP / Fuseki / Web の 4 サービスがデプロイされる
 - **Blob(正本)から Fuseki の entrypoint が TDB2 を再構築し、SPARQL を返す** — 「再構築可能な射影」設計が実環境で成立
-  (名前付きグラフ `urn:ontology:graph/retail-core/1.0.0`、60 トリプル、OWL クラス 4 件、SHACL NodeShape 2 件)
+  (名前付きグラフ `urn:ontology:graph/retail-core/1.0.0`、60 トリプル、OWL クラス 4 件、SHACL NodeShape 2 件。
+  `postprovision` がサンプルを `approved` として宣言するマニフェストも書くため、既定グラフにも同じ内容が入る)
 - Fuseki 側で `SERVICE` 句が HTTP 422 でブロックされる(SSRF 対策)
 - Fuseki は internal ingress のため外部から到達できない
 - API `/healthz` が応答し、トークン無しの `GET /namespaces` は **401**(`AUTH_MODE=entra` が機能)
@@ -53,7 +64,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 ### 未実装・未検証
 
 - **Entra ID の App 登録を伴う認証経路は未検証です。** API がトークンを拒否すること(401)までは確認済みですが、有効なトークンで通す検証は App 登録が必要なため行っていません
-- **Scan / Model の機能は存在しません** — オントロジーの自動生成、レビュー・承認フロー、スキーマ発見はいずれも Phase 2 です
+- **Scan / Model の機能は存在しません** — オントロジーの自動生成、スキーマ発見は Phase 2 です。承認フロー自体は上記の通り最小実装がありますが、権限の強制(責任者のみ・四眼原則)は Phase 2 です
 - MCP サーバーはツール定義まで。Ontop 連邦クエリ・ベクトル検索・OWL 推論は Phase 3〜4 です
 - 名前空間ごとの RBAC は強制されていません(Phase 2)
 
@@ -133,8 +144,8 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
 
-上記のうち Phase 1 で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down` です。
-**未実装のもの**は、SHACL 検証(Phase 2)、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の表現と承認フロー(Phase 2)、LLM によるオントロジー生成(Phase 2)です。
+上記のうち Phase 1 で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、そして submit/approve/reject による最小の承認フロー(権限強制なし)です。
+**未実装のもの**は、SHACL 検証(Phase 2)、R2RML による連邦クエリ(Phase 3)、承認の権限強制(責任者のみ・四眼原則、Phase 2)、PROV-O による監査証跡の標準語彙での表現(Phase 2)、LLM によるオントロジー生成(Phase 2)です。
 監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
@@ -213,14 +224,37 @@ azd up          # just deploy でも同じ
 
 ### 自分のオントロジーを追加する
 
-**本来の経路は Core API の publish(`POST /namespaces/{namespace}/versions`)です。** 名前空間の作成(`POST /namespaces`)→ publish の順で、正本(Blob + PostgreSQL)への記録と Fuseki への射影が一貫して行われます。
+**経路は Core API の publish → submit → approve です。** 名前空間の作成(`POST /namespaces`)の後、以下の順で呼びます(ADR-0010)。
+
+```
+POST /namespaces/{ns}/versions                    正本(Blob + PostgreSQL)に draft として記録する。Fuseki には一切射影しない
+POST /namespaces/{ns}/versions/{v}/submit          draft → in-review。名前付きグラフへ射影する(GRAPH 句を書けばレビュアが見える)
+POST /namespaces/{ns}/versions/{v}/approve         in-review → approved。既定グラフ + 名前付きグラフへ射影する。
+                                                    同じ名前空間の前の approved 版は自動で superseded になる
+POST /namespaces/{ns}/versions/{v}/reject          in-review → draft(body に reason が必須)。名前付きグラフから外す
+```
+
+**エージェント(`GRAPH` 句を書かないクエリ)は常に承認済みの現行版だけを見ます。** `draft` は Blob と PostgreSQL にのみ存在し、Fuseki には一切現れません。レビュアは `GRAPH` 句で `in-review` の版を検証してから approve してください。
+
+**Phase 1 では承認に権限を強制しません。** `submit` / `approve` / `reject` は認証済みの呼び出し元なら誰でも実行できます(責任者のみ・四眼原則は Phase 2)。`approve` した主体は `approved_by` に正しく記録されます。「記録は正しいが、強制は無い」状態であることに注意してください。
+
+#### Blob のレイアウト
+
+正本 TTL とは別に、名前空間ごとに承認状態のマニフェストを Blob に置きます(ADR-0010 決定7)。`load-snapshot.sh` はこのマニフェストだけを見て、どの版をどこへ読み込むか(名前付きグラフのみ/既定グラフにも)を決めます。PostgreSQL は一切参照しません。
+
+```
+<接頭辞><namespace>/<version>.ttl        正本 TTL。接頭辞の既定値は `versions/`
+<接頭辞><namespace>/_state.json          承認状態マニフェスト(current・各版の status)
+```
+
+例: `versions/retail-core/1.0.0.ttl` と `versions/retail-core/_state.json`。接頭辞は `BLOB_PREFIX` 環境変数(`ontology_core.config.Settings.ontology_blob_prefix`)で変更できます。
 
 以下の Blob 直接投入は、Entra ID の App 登録が未完了などで Core API をまだ呼べない場合の **Phase 1 の暫定手段**です(`postprovision` フックが同梱サンプルをこの方法で置いているのもこの理由による)。PostgreSQL には行が作られないため、`GET /namespaces` や MCP の `list_namespaces` からは見えません。
 
-- **Blob のレイアウト**: `<接頭辞><namespace>/<version>.ttl`。接頭辞の既定値は `approved/`(`BLOB_PREFIX` 環境変数、`ontology_core.config.Settings.ontology_blob_prefix`)。例: `approved/retail-core/1.0.0.ttl`
 - **名前空間名**: 小文字英数字とハイフンのみ、2〜63 文字、先頭は英数字(`ontology_core.graphs.validate_namespace_name`)。予約名 `ds` は使えません(Fuseki の固定・空データセット用に予約されています)
 - **バージョン文字列**: 英数字と `. + -` のみ、1〜64 文字、先頭は英数字(`ontology_core.graphs.validate_version`)。ファイル名としては `<version>.ttl` になります
-- 階層が無い Blob(名前空間のディレクトリが無いもの。例: `approved/retail-core.ttl`)は`load-snapshot.sh` が**黙ってスキップ**します。エラーにはならないので、投入したはずのファイルが見えない場合はまずパス形式を確認してください
+- 階層が無い Blob(名前空間のディレクトリが無いもの。例: `versions/retail-core.ttl`)は `load-snapshot.sh` が**黙ってスキップ**します。エラーにはならないので、投入したはずのファイルが見えない場合はまずパス形式を確認してください
+- **`_state.json` を書かないと、その名前空間は `load-snapshot.sh` に丸ごとスキップされます。** マニフェストが無い名前空間を「未承認も含めて全部読み込む」と推測することはしません(それが元の Critical でした)。`postprovision` は同梱サンプルを `approved` として宣言するマニフェストも一緒に書きます
 - 反映には **Fuseki のリビジョン再起動**が必要です(`azd deploy` や ACA のスケールイベント等)。entrypoint が起動時に Blob から TDB2 を再構築する設計のため、Blob に置くだけでは既存レプリカには反映されません
 
 ### 削除

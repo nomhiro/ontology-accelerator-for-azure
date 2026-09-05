@@ -25,12 +25,22 @@ Prepared = tuple[AsyncSession, OntologyBlobStore]
 
 
 class FakeStore(SparqlStore):
-    """射影先の代役。put_graph の呼び出しを記録する。"""
+    """射影先の代役。put_graph / put_default_graph / delete_graph の呼び出しを記録する。"""
 
-    def __init__(self, *, fail_put: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_put: bool = False,
+        fail_default: bool = False,
+        fail_delete: bool = False,
+    ) -> None:
         self.datasets: list[str] = []
         self.graphs: dict[tuple[str, str], str] = {}
+        # dataset -> 既定グラフの内容。PUT のたびに丸ごと置き換わる(本物の GSP と同じ)。
+        self.default_graphs: dict[str, str] = {}
         self._fail_put = fail_put
+        self._fail_default = fail_default
+        self._fail_delete = fail_delete
 
     async def query(self, sparql: str, *, dataset: str) -> dict:  # type: ignore[type-arg]
         return {"results": {"bindings": []}}
@@ -42,6 +52,16 @@ class FakeStore(SparqlStore):
         if self._fail_put:
             raise SparqlStoreError("射影に失敗しました(テスト)")
         self.graphs[(dataset, graph_iri)] = turtle
+
+    async def put_default_graph(self, turtle: str, *, dataset: str) -> None:
+        if self._fail_default:
+            raise SparqlStoreError("既定グラフへの射影に失敗しました(テスト)")
+        self.default_graphs[dataset] = turtle
+
+    async def delete_graph(self, graph_iri: str, *, dataset: str) -> None:
+        if self._fail_delete:
+            raise SparqlStoreError("グラフの削除に失敗しました(テスト)")
+        self.graphs.pop((dataset, graph_iri), None)
 
     async def list_datasets(self) -> list[str]:
         return list(self.datasets)
@@ -66,7 +86,13 @@ async def prepared(session: AsyncSession, blob_store: OntologyBlobStore) -> Prep
     return session, blob_store
 
 
-async def test_publish_writes_source_of_truth_then_projects(prepared: Prepared) -> None:
+async def test_publish_writes_source_of_truth_but_does_not_project(prepared: Prepared) -> None:
+    """P1-15 / ADR-0010 決定5: `draft` は Fuseki に射影しない。
+
+    修正前は publish がそのまま put_graph まで呼んでいたため、未承認の版が
+    そのまま Fuseki に載っていた(P1-15 の指摘そのもの)。publish は
+    Blob(TTL) + PostgreSQL の正本だけ書き、Fuseki には一切触れないこと。
+    """
     session, blob = prepared
     store = FakeStore()
     svc = ProjectionService(
@@ -77,14 +103,29 @@ async def test_publish_writes_source_of_truth_then_projects(prepared: Prepared) 
 
     # 正本
     assert version.content_hash == hashlib.sha256(TTL.encode()).hexdigest()
-    assert version.blob_path == "approved/retail-core/1.0.0.ttl"
+    assert version.blob_path == "versions/retail-core/1.0.0.ttl"
     assert await blob.get_version(version.blob_path) == TTL
-    # 射影
-    assert ("retail-core", version.graph_iri) in store.graphs
-    assert store.graphs[("retail-core", version.graph_iri)] == TTL
-    # 射影済みが記録される
+    # 射影しない。draft は projected_at が NULL のままが正常な状態になる
+    # (VersionRepository.unprojected が draft を除外する設計と対になる)。
+    assert store.graphs == {}
+    assert store.default_graphs == {}
     rows = await VersionRepository(session).list_for("retail-core")
-    assert rows[0].projected_at is not None
+    assert rows[0].projected_at is None
+
+    # マニフェストは publish のたびに書く(draft しか無い名前空間でも、
+    # マニフェストが「存在しない」状態を作らないため。修正5のローダが
+    # 「マニフェスト無し = 想定外」と「まだ何も無い = 正常」を区別できるように)。
+    manifest_path = f"versions/{version.namespace}/_state.json"
+    import json
+
+    manifest = json.loads(await blob.get_version(manifest_path))
+    assert manifest == {
+        "schema": 1,
+        "namespace": "retail-core",
+        "current": None,
+        "versions": [],
+        "generated_at": manifest["generated_at"],
+    }
 
 
 async def test_publish_records_draft_not_approved(prepared: Prepared) -> None:
@@ -191,29 +232,35 @@ async def test_race_recovery_uses_winners_version_and_graph_iri(
     assert loser.version == winner.version == "2.0.0"
     assert loser.graph_iri == winner.graph_iri
 
-    # put_graph は勝った側の graph_iri に対してだけ呼ばれ、
-    # 負けた側が使おうとした版(auto版、"2.1.0")宛の孤児グラフは無い。
-    assert store.graphs == {("retail-core", winner.graph_iri): TTL}
+    # publish は Fuseki に触れない(Fix 3)ので put_graph は一度も呼ばれない。
+    # 負けた側が使おうとした版(auto版、"2.1.0")宛の孤児グラフも生まれない。
+    assert store.graphs == {}
 
-    # mark_projected が勝った側の行に当たり、500 にならず正常に完了している。
+    # 500 にならず正常に完了し、PG には勝った側の行が 1 件だけ残っている。
     rows = await VersionRepository(session).list_for("retail-core")
     assert len(rows) == 1
-    assert rows[0].projected_at is not None
 
 
-async def test_projection_failure_keeps_source_of_truth(prepared: Prepared) -> None:
-    """射影が失敗しても正本は残り、未射影として記録される。"""
+async def test_submit_projection_failure_keeps_source_of_truth(prepared: Prepared) -> None:
+    """submit の射影(名前付きグラフへの put_graph)が失敗しても、状態遷移
+    (正本・PostgreSQL)は残り、未射影として記録される。draft は publish が
+    Fuseki に触れないため(Fix 3)、この不変条件3の検証は submit 以降で行う。
+    """
     session, blob = prepared
+    published = await ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    ).publish(namespace="retail-core", turtle=TTL, actor="t")
+    await session.commit()
+
     svc = ProjectionService(
         session=session,
         blob=blob,
         store=FakeStore(fail_put=True),
         graph_iri_base="urn:ontology:graph",
     )
+    version = await svc.submit(namespace="retail-core", version=published.version, actor="t")
 
-    version = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
-
-    assert await blob.get_version(version.blob_path) == TTL
+    assert version.status is OntologyVersionStatus.IN_REVIEW
     rows = await VersionRepository(session).list_for("retail-core")
     assert rows[0].projected_at is None
     assert len(await VersionRepository(session).unprojected()) == 1
@@ -225,21 +272,26 @@ async def test_put_graph_failure_is_durably_committed_before_projection(
     """O-1 の必須テスト: `put_graph` の前に正本(PostgreSQL)を commit するため、
     put_graph が失敗してもその時点で行は既に耐久化されている。
 
-    `publish()` 自体は例外を投げず成功として返す(`projected_at` が NULL、
-    reconcile が回収する既存の正しい挙動、これは変えない)。ここで確認するのは
-    「その耐久化がいつ起きているか」であり、同一セッション内の `flush()` だけでは
-    「読めるが未コミット」との違いを判定できないため、**独立した新規コネクション**
-    (別セッション)から見えることを確認する。修正前(commit がリクエスト終了時
-    のみ)は `publish()` を直接呼ぶこのテストでは commit が一度も走らないため、
-    別コネクションからは 0 件に見えて失敗する。
+    Fix 3 により publish は Fuseki に触れなくなったため、この不変条件の
+    検証は「実際に射影を試みる操作」である submit で行う。`submit()` 自体は
+    例外を投げず成功として返す(`projected_at` が NULL、reconcile が回収する
+    既存の正しい挙動、これは変えない)。ここで確認するのは「その耐久化がいつ
+    起きているか」であり、同一セッション内の `flush()` だけでは「読めるが
+    未コミット」との違いを判定できないため、**独立した新規コネクション**
+    (別セッション)から見えることを確認する。
     """
     session, blob = prepared
+    published = await ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    ).publish(namespace="retail-core", turtle=TTL, actor="t")
+    await session.commit()
+
     failing = FakeStore(fail_put=True)
     svc = ProjectionService(
         session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
     )
 
-    version = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    version = await svc.submit(namespace="retail-core", version=published.version, actor="t")
     assert version.projected_at is None
 
     engine2, factory2 = create_engine_and_factory(settings)
@@ -247,6 +299,7 @@ async def test_put_graph_failure_is_durably_committed_before_projection(
         async with factory2() as other_session:
             rows = await VersionRepository(other_session).list_for("retail-core")
             assert len(rows) == 1
+            assert rows[0].status is OntologyVersionStatus.IN_REVIEW
             assert rows[0].projected_at is None
     finally:
         await engine2.dispose()
@@ -264,12 +317,21 @@ async def test_put_graph_failure_is_durably_committed_before_projection(
 
 
 async def test_reconcile_projects_unprojected_versions(prepared: Prepared) -> None:
-    """reconcile が未射影のバージョンとデータセットを埋める。"""
+    """reconcile が未射影のバージョンとデータセットを埋める。
+
+    `draft` は unprojected() の対象外(ADR-0010 決定5)なので、ここでは
+    submit で `in-review` にした版の射影が失敗した状態を再現する。
+    """
     session, blob = prepared
+    published = await ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    ).publish(namespace="retail-core", turtle=TTL, actor="t")
+    await session.commit()
+
     failing = FakeStore(fail_put=True)
     await ProjectionService(
         session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
-    ).publish(namespace="retail-core", turtle=TTL, actor="t")
+    ).submit(namespace="retail-core", version=published.version, actor="t")
     await session.commit()
 
     healthy = FakeStore()
@@ -296,15 +358,24 @@ async def test_reconcile_reports_blob_failures_without_aborting(prepared: Prepar
     from ontology_core.db import OntologyVersionRow
 
     session, blob = prepared
+    healthy_for_publish = FakeStore()
+    publish_svc = ProjectionService(
+        session=session, blob=blob, store=healthy_for_publish, graph_iri_base="urn:ontology:graph"
+    )
+    ok_draft = await publish_svc.publish(namespace="retail-core", turtle=TTL, actor="t")
+    broken_draft = await publish_svc.publish(
+        namespace="retail-core", turtle=TTL + "\nex:B a ex:Class .\n", actor="t"
+    )
+    await session.commit()
+
+    # draft は unprojected() の対象外なので、submit で in-review にして
+    # 射影(put_graph)を試みさせる。ここでは両方失敗させ、後で片方だけ壊す。
     failing = FakeStore(fail_put=True)
     svc = ProjectionService(
         session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
     )
-
-    ok = await svc.publish(namespace="retail-core", turtle=TTL, actor="t")
-    broken = await svc.publish(
-        namespace="retail-core", turtle=TTL + "\nex:B a ex:Class .\n", actor="t"
-    )
+    ok = await svc.submit(namespace="retail-core", version=ok_draft.version, actor="t")
+    broken = await svc.submit(namespace="retail-core", version=broken_draft.version, actor="t")
     await session.commit()
 
     # broken 版の DB 上の blob_path を、実在しない Blob を指すように壊す。
@@ -316,7 +387,7 @@ async def test_reconcile_reports_blob_failures_without_aborting(prepared: Prepar
             )
         )
     ).scalar_one()
-    row.blob_path = "approved/retail-core/does-not-exist.ttl"
+    row.blob_path = "versions/retail-core/does-not-exist.ttl"
     await session.flush()
 
     healthy = FakeStore()

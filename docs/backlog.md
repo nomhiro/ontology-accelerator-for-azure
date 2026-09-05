@@ -20,7 +20,7 @@
 
 ### `P1-C1` 既定グラフに全バージョンが載り、新旧の定義が同時に返る
 
-- **状態**: 未着手
+- **状態**: 完了(2026-09-05、`P1-15` / `P1-16` と同一ラウンドで実装)
 - **優先**: **Critical**
 - **Phase**: 1（欠陥修正）
 - **内容**: ローダが `approved/<namespace>/` の全 TTL を各名前付きグラフへ読み込み、`tdb2:unionDefaultGraph = true` のため既定グラフが全バージョンの和集合になる。`GRAPH` 句なしのクエリで矛盾する定義が同時に返る
@@ -33,6 +33,7 @@
 - **完了条件**: 既定グラフが常に単一の版を指すこと。2 版を公開した状態で `GRAPH` 句なしのクエリが 1 件だけ返す統合テストを追加し、**修正前のコードで落ちることを確認**してから直す
 - **出典**: [ADR-0009](adr/0009-ontology-operations.md) 決定 2。ADR-0006 が決定した保持ポリシーの実装漏れ
 - **設計**: [ADR-0010](adr/0010-approval-and-projection.md) 決定 6 で確定。`unionDefaultGraph` をやめ、承認済み現行版を既定グラフにも読み込む
+- **完了メモ**（2026-09-05）: `containers/fuseki/config.ttl` / `containers/fuseki/templates/config-tdb2` / `load-snapshot.sh` の `write_assembler` から `unionDefaultGraph` を削除。`ProjectionService.approve` が既定グラフへ `put_default_graph`（GSP の `?default`）で PUT する(丸ごと置き換わるため前の承認済み版は自動的に消える)。2 版を approve した状態で `GRAPH` 句なしのクエリが 1 件だけ返ることを実物の Fuseki に対して実証(`packages/api/tests/test_state_projection.py::test_p1_c1_two_approved_versions_default_graph_returns_exactly_one`)。修正前のコード・旧イメージで 2 件返ることも実測済み(報告参照)
 - **関連**: `P1-C2`（同じローダを触る）、**`P1-15` / `P1-16` と同一ラウンドで実装する**
 
 ### `P1-C2` publish 前に TTL の構文検証をしていない
@@ -50,7 +51,7 @@
 
 ### `P1-15` 未承認の版が射影される
 
-- **状態**: 未着手
+- **状態**: 完了(2026-09-05、`P1-C1` / `P1-16` と同一ラウンドで実装)
 - **優先**: 高
 - **Phase**: 1（`P1-C1` と同じ族）
 - **内容**: `publish` が版を `draft` として記録するようになった（誰も承認していないのに
@@ -66,12 +67,19 @@
   - Blob プレフィックスを `approved/` → `versions/` に改名
 - **完了条件**: エージェント（`GRAPH` 句なし）が承認済み現行版だけを見ること、
   レビュア（`GRAPH` 句あり）が `in-review` の版を検証できることを統合テストで実証
+- **完了メモ**（2026-09-05）: Blob プレフィックスを `versions/` に改名(全箇所は
+  コミットの diff を参照)。`ProjectionService.publish` は Fuseki に触れず
+  Blob(TTL) + PostgreSQL + マニフェストのみ書く。`submit`/`approve`/`reject` を
+  実装し、状態ごとに射影先を分けた(`packages/api/tests/test_state_projection.py`、
+  `test_approval.py` で実証)。ローダ(`load-snapshot.sh`)はマニフェスト
+  (`versions/<ns>/_state.json`)を見て版ごとに名前付きグラフ/既定グラフへの
+  読み込みを判断するよう書き換えた
 - **出典**: 2026-09-03 の `publish` の status 修正。修正が新たに生んだ論点として記録
 - **関連**: `P1-C1` / `P1-16` と同一ラウンドで実装する
 
 ### `P1-16` 最小の承認 API（submit / approve / reject）
 
-- **状態**: 未着手
+- **状態**: 完了(2026-09-05、`P1-C1` / `P1-15` と同一ラウンドで実装)
 - **優先**: 高
 - **Phase**: 1（`P1-15` の前提）
 - **内容**: `publish` が `draft` しか作らないため、承認する手段が無いと `publish` が
@@ -87,8 +95,33 @@
   「記録は正しく、強制が無い」状態であることを README に明記する。四眼原則も Phase 2
 - **完了条件**: 状態遷移が `audit_events` に記録され、`approved_by` / `approved_at` が
   書かれること。`approve` が前の承認済み版を `superseded` にすること
+- **完了メモ**（2026-09-05）: `routers/versions.py` に `submit`/`approve`/`reject` を
+  追加(権限は強制しない。README に明記)。不正な遷移は 409、存在しない版は 404、
+  `reject` の空 `reason` は 422。`approve` は前の `approved` を自動で `superseded`
+  にし、`audit_events` に `submitted`/`approved`/`rejected`/`superseded` を記録する
+  (`packages/api/tests/test_approval.py`、`test_versions_router.py`)
 - **出典**: [ADR-0010](adr/0010-approval-and-projection.md) の「受け入れるコスト」
 - **関連**: `P1-C1` / `P1-15` と同一ラウンド。本格版は `P2B-13`
+
+### `P1-17` reject の名前付きグラフ削除が失敗すると回収経路が無い
+
+- **状態**: 未着手
+- **優先**: 低
+- **Phase**: 1(`P1-16` の実装中に発見)
+- **内容**: `reject` は `draft` に戻す際、`submit` で射影済みの名前付きグラフを
+  `delete_graph`(GSP DELETE)で外す。この削除自体が失敗した場合(Fuseki
+  一時障害等)、`draft` は `VersionRepository.unprojected()` の対象外
+  (ADR-0010 決定5)なので、`reconcile()` はこの版を拾わない。つまり
+  名前付きグラフの内容が消えずに残留し続け、`GRAPH` 句で審査済みのはずの
+  却下版が見え続ける可能性がある。実害は限定的(既定グラフには影響しない。
+  `GRAPH` 句を明示したレビュア・監査経路のみ)だが、自動回収する手段が無い
+- **完了条件**: `reconcile()` が「`draft` かつ名前付きグラフが射影されたことがある
+  (`projected_at` が過去に設定されていた形跡)」版を検出し、`delete_graph` を
+  再試行できるようにする。現状のスキーマには「かつて射影されていたか」を
+  区別する列が無いため、列追加を含めた設計が必要
+- **出典**: 2026-09-05 の `P1-16` 実装時に発見(`ProjectionService.reject` の
+  コメント参照)。直さず記録のみ
+- **関連**: `P1-16`
 
 ### `P2B-13` 承認 API と状態遷移
 

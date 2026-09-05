@@ -51,6 +51,25 @@ class SparqlStore(ABC):
     async def put_graph(self, graph_iri: str, turtle: str, *, dataset: str) -> None:
         """Graph Store Protocol で名前付きグラフを置き換える。Core API からのみ呼ぶこと。"""
 
+    @abstractmethod
+    async def put_default_graph(self, turtle: str, *, dataset: str) -> None:
+        """Graph Store Protocol で既定グラフを置き換える。Core API からのみ呼ぶこと。
+
+        PUT は既定グラフの内容を丸ごと置き換える(追記ではない)。承認済み現行版は
+        名前空間ごとに常に 1 つなので(ADR-0010 決定6)、新しい版を approve する
+        たびにこれを呼ぶだけで、前の承認済み版の内容は自動的に置き換わる。
+        既定グラフから明示的に消す操作は不要。
+        """
+
+    @abstractmethod
+    async def delete_graph(self, graph_iri: str, *, dataset: str) -> None:
+        """Graph Store Protocol で名前付きグラフを削除する。Core API からのみ呼ぶこと。
+
+        既に存在しないグラフの削除は成功として扱う(冪等)。`reject` で
+        `submit` の射影(名前付きグラフへの put_graph)が完了する前に呼ばれても
+        エラーにならないようにするため。
+        """
+
     # ---- 管理操作(ストア固有) ----
 
     @abstractmethod
@@ -146,6 +165,34 @@ class FusekiStore(SparqlStore):
             content=turtle.encode("utf-8"),
             headers={"Content-Type": "text/turtle; charset=utf-8"},
         )
+
+    async def put_default_graph(self, turtle: str, *, dataset: str) -> None:
+        # SPARQL 1.1 Graph Store HTTP Protocol は既定グラフを `?default`
+        # (値の無いクエリパラメータ)で指し示す。httpx の `params={"default": ""}`
+        # は `?default=`(値が空文字列)を送るが、実際の Fuseki に対して
+        # `?default` と `?default=` の両方が既定グラフとして受理されることを
+        # 確認済み(Fuseki はパラメータの有無だけを見ており、値は見ない)。
+        await self._send(
+            "PUT",
+            self._resolve(self._gsp_endpoint, dataset),
+            operation="既定グラフの置き換え",
+            params={"default": ""},
+            content=turtle.encode("utf-8"),
+            headers={"Content-Type": "text/turtle; charset=utf-8"},
+        )
+
+    async def delete_graph(self, graph_iri: str, *, dataset: str) -> None:
+        # 404(既に存在しないグラフ)は冪等に成功として扱う。`_send` に通すと
+        # `SparqlStoreError` になり、reject が「まだ射影されていない
+        # in-review 版を却下する」正常系で失敗してしまう。
+        url = self._resolve(self._gsp_endpoint, dataset)
+        try:
+            response = await self._client.request("DELETE", url, params={"graph": graph_iri})
+        except httpx.HTTPError as exc:
+            raise SparqlStoreError(f"グラフの削除に失敗しました: {exc}") from exc
+        if response.status_code == 404:
+            return
+        self._raise_for_status(response, "グラフの削除")
 
     # ---- 管理操作(Fuseki 固有) ----
 

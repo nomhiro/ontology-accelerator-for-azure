@@ -100,8 +100,11 @@ class Settings(BaseSettings):
     # 名前付きグラフ IRI の接頭辞。containers/fuseki/load-snapshot.sh と
     # infra/modules/fuseki.bicep の graphIriBase と同じ値でなければならない。
     graph_iri_base: str = Field(default="urn:ontology:graph", alias="GRAPH_IRI_BASE")
-    # 承認済み TTL を置く Blob のプレフィックス。ローダの BLOB_PREFIX と揃える。
-    ontology_blob_prefix: str = Field(default="approved/", alias="BLOB_PREFIX")
+    # 公開済み TTL(状態は draft/in-review/approved/superseded 全部含む)を置く
+    # Blob のプレフィックス。ローダの BLOB_PREFIX と揃える。
+    # ADR-0010 決定8: `approved/` は draft を含む全版を格納するため実態と
+    # 食い違っていた。`versions/` に改名した(未リリースなので破壊的変更を許容)。
+    ontology_blob_prefix: str = Field(default="versions/", alias="BLOB_PREFIX")
 
     # ---- Azure 共通 ----
     azure_client_id: str = Field(default="", alias="AZURE_CLIENT_ID")
