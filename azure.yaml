@@ -53,21 +53,31 @@ services:
     dist: dist
 
 hooks:
-  # azd provision の直後にサンプルオントロジー (samples/retail-core.ttl) を
-  # Blob (ontologies コンテナ) へアップロードする。Fuseki の entrypoint が
-  # コンテナ起動時に正本 (Blob) から TDB2 を再構築するため、次に Fuseki の
-  # リビジョンが起動した時点でサンプルが名前空間 "retail-core" のデータセットとして
-  # 見えるようになる。continueOnError: true は、RBAC ロール割当の伝播待ちで
-  # 初回だけ失敗する既知のケース(README 参照)があるため、失敗しても
-  # azd up 全体は止めない方針。
-  postprovision:
+  # サンプルオントロジー (samples/retail-core.ttl) を **Core API 経由で** 投入する。
+  #
+  # **postprovision ではなく postdeploy である理由**: azd のフックは
+  # provision → postprovision → deploy → postdeploy の順に走る。postprovision の
+  # 時点ではコンテナアプリのイメージがまだプレースホルダで **Core API が起動して
+  # いない**。API 経由で投入するには deploy の後でなければならない。
+  #
+  # **API 経由である理由** (P1-10): 以前は Blob へ直接書いていたため PostgreSQL に
+  # 行が入らず、`GET /namespaces` と MCP の `list_namespaces` が空配列を返して
+  # **デプロイしたサンプルがエージェント経路から発見できなかった**。書き込み順序
+  # Blob → PostgreSQL → Fuseki (不変条件2) の 2 段目が飛んでいた。API 経由なら
+  # API が Blob・PostgreSQL・マニフェスト・Fuseki を正しい順序で書く。
+  #
+  # continueOnError は **false** にしている。ここが失敗すると Phase 1 の完了条件
+  # (エージェントが MCP 経由でサンプルを発見できる) が満たされないため、
+  # 黙って成功扱いにしてはいけない。スクリプト自身が最後に一覧を引いて
+  # 発見できることを確認する。
+  postdeploy:
     posix:
       shell: sh
-      continueOnError: true
+      continueOnError: false
       interactive: false
-      run: ./scripts/postprovision.sh
+      run: ./scripts/postdeploy.sh
     windows:
       shell: pwsh
-      continueOnError: true
+      continueOnError: false
       interactive: false
-      run: ./scripts/postprovision.ps1
+      run: ./scripts/postdeploy.ps1

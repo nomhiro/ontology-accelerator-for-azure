@@ -216,7 +216,7 @@ azd up          # just deploy でも同じ
 - **サンプルオントロジーの投入は `postprovision` フックが自動で行います**(`scripts/postprovision.sh` / `scripts/postprovision.ps1`)。手動で Blob にアップロードする必要はありません
   - `postprovision` は `azd provision` の後・`azd deploy` の前に走るため、**`azd provision` を単体で実行した直後はまだサンプルが見えません**。`azd up`(= provision → deploy)であれば、続く deploy で Fuseki の新しいリビジョンが立ち、entrypoint が Blob から TDB2 を再構築してサンプルが読み込まれます
   - `postprovision` は `az storage blob upload --auth-mode login` で Azure CLI にログインしているユーザー自身の権限を使います。この権限(Storage Blob Data Contributor)の割り当ても他の RBAC ロールと同様に**伝播待ちで初回だけ失敗することがあります**。`azure.yaml` は `continueOnError: true` を指定しているため失敗しても `azd up` 全体は成功扱いになりますが、失敗した場合は数分待ってから `azd provision` を再実行してください
-  - **既知の制約**: `postprovision` は正本(Blob)に TTL を置くだけで、PostgreSQL の `namespaces` / `ontology_versions` には行を作りません(設計上の書き込み順序である Blob → PostgreSQL → Fuseki の2段目を経由していません)。そのため同梱サンプルは SPARQL では見えますが、`GET /namespaces` は空配列を返し、`POST /admin/reconcile` は `retail-core` を `orphan_datasets` として恒久的に報告し続け、MCP の `list_namespaces` からも見えません(**AI エージェント経路からは発見できません**)。Task 9 で Entra アプリ登録が完了した後、`postprovision` を Core API 経由の投入に置き換えて解消する予定です
+  - **同梱サンプルは Core API 経由で投入されます。** `azd up` の `postdeploy` フックが、名前空間の作成 → publish → submit → approve を API に対して実行します。そのため PostgreSQL に行が入り、`GET /namespaces` と MCP の `list_namespaces` から**発見できます**(Azure 実機で検証済み)。フックが `postprovision` ではなく `postdeploy` なのは、`postprovision` の時点ではコンテナのイメージがまだプレースホルダで API が起動していないためです
 - **Key Vault のロール割り当ては RBAC の伝播待ちで初回に失敗しうる**ため、失敗した場合は数分待って再実行してください
 - **CI からサービスプリンシパルでデプロイする場合**は `principalType=ServicePrincipal` を指定してください。`principalId` が空だと Key Vault Secrets Officer の割り当てが作られないため、シークレット書き込み権限を別途付与する必要があります
 - `graphPersistence: azureFiles` を選ぶ場合、Azure Files は **SMB (Premium)** でマウントします。NFS はカスタム VNet が必須で `minimal` ティアと両立しないためです。この構成は**単一レプリカ前提**である点に注意してください(詳細は [ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md))
@@ -249,7 +249,7 @@ POST /namespaces/{ns}/versions/{v}/reject          in-review → draft(body に 
 
 例: `versions/retail-core/1.0.0.ttl` と `versions/retail-core/_state.json`。接頭辞は `BLOB_PREFIX` 環境変数(`ontology_core.config.Settings.ontology_blob_prefix`)で変更できます。
 
-以下の Blob 直接投入は、Entra ID の App 登録が未完了などで Core API をまだ呼べない場合の **Phase 1 の暫定手段**です(`postprovision` フックが同梱サンプルをこの方法で置いているのもこの理由による)。PostgreSQL には行が作られないため、`GET /namespaces` や MCP の `list_namespaces` からは見えません。
+以下の Blob 直接投入は、**Core API を使わずに正本へ直接置く場合の参考**です。この方法では PostgreSQL に行が作られないため、`GET /namespaces` や MCP の `list_namespaces` からは見えません(SPARQL では見えます)。**通常は Core API の publish → submit → approve を使ってください**(同梱サンプルの投入もそちらに移行済みです)。
 
 - **名前空間名**: 小文字英数字とハイフンのみ、2〜63 文字、先頭は英数字(`ontology_core.graphs.validate_namespace_name`)。予約名 `ds` は使えません(Fuseki の固定・空データセット用に予約されています)
 - **バージョン文字列**: 英数字と `. + -` のみ、1〜64 文字、先頭は英数字(`ontology_core.graphs.validate_version`)。ファイル名としては `<version>.ttl` になります

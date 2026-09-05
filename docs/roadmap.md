@@ -53,9 +53,20 @@ Phase 2 が**2 本柱**である点が当初のロードマップからの変更
 
 テストは 45 件（Phase 0）→ **131 件**（Phase 1 の欠陥修正を含む）。
 
-### 未達成 — 完了条件に届いていない点
+### 完了条件の達成状況
 
-**エージェントがサンプルを発見できない。** `postprovision` が PostgreSQL に行を入れないため `GET /namespaces` と MCP の `list_namespaces` が空配列を返す。書き込み順序 Blob → PostgreSQL → Fuseki の 2 段目が飛んでいる。本筋の対策は Entra アプリ登録が前提（[`backlog.md`](backlog.md) の `P1-09` / `P1-10`）。
+**完了条件はすべて満たした**（2026-09-05）。最後まで残っていた「エージェントが MCP 経由で参照できる」のうち**発見経路**を、`P1-09`（Entra アプリ登録と認証経路の実証）と `P1-10`（postprovision を Core API 経由にする）で閉じた。
+
+```
+トークン無し  /namespaces      -> 401
+トークン有り  /namespaces      -> 200   retail-core が 1 件
+SPARQL        owl:Class        -> Customer / Order / Product / Store
+reconcile                      -> 孤児ゼロ
+```
+
+`postprovision` は `deploy` の前に走るため API がまだ起動していない。`postdeploy` へ移して API 経由にした。API が Blob・PostgreSQL・マニフェスト・Fuseki を正しい順序で書くため、**書き込み順序の 2 段目（PostgreSQL）が飛ぶ問題が構造的に解消した**。
+
+残っているのは品質の底上げと最小権限化で、Phase 1 の完了条件そのものではない。
 
 ### 残りのタスク
 

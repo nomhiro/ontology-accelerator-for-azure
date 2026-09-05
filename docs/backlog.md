@@ -276,23 +276,59 @@
 
 ### `P1-09` Entra アプリ登録と認証経路の実証
 
-- **状態**: 未着手
+- **状態**: **完了**（2026-09-05、Azure 実機で検証。検証後に `azd down --purge`）
 - **優先**: 高
 - **内容**: API 用のアプリ登録を作り、`ENTRA_API_AUDIENCE` を Bicep から注入し、client credentials でトークンを取って publish / reconcile が通ることを実機で確認する
 - **完了条件**: publish が 201、reconcile が 200 を返すことを Azure 実機で確認
 - **出典**: Phase 1 実機検証。`ENTRA_API_AUDIENCE` が空であることを実測し、認証必須の経路が原理的に検証できないと判明
 - **前提**: テナントに `allowedToCreateApps: true` を確認済み（個人の既定ディレクトリ）
-- **ブロックしているもの**: `P1-10`
+- **実測結果**:
+  ```
+  トークン無し  /namespaces      -> 401
+  トークン有り  /namespaces      -> 200
+  トークン有り  /admin/reconcile -> 200
+  ```
+- **設定で踏んだ罠2件**（再構築時の参照用）:
+  1. **`api` は複合プロパティ**なので部分 PATCH すると `api` 全体が置き換わる。
+     スコープと `preAuthorizedApplications` は**同時に送る**必要がある
+  2. **`aud` は `api://` の URI ではなく appId の GUID**。`ENTRA_API_AUDIENCE` に
+     URI を入れると `Audience doesn't match` で失敗する（実コードで両方試して確認）
+  3. `requestedAccessTokenVersion` を **2** にする。既定の `null`（v1 相当）では
+     `iss` が `sts.windows.net` になり、`entra.py` が固定している v2.0 発行者と一致しない
+- **クライアントシークレットを持たない設計**: Azure CLI
+  （`04b07795-8ddb-461a-bbee-02f9e1bf7b46`）をアプリ登録の
+  `preAuthorizedApplications` に登録し、`az account get-access-token` で
+  運用者自身の資格情報からトークンを取る。秘密を扱う経路が無い
+- **アプリ登録は `azd down` では消えない。** テナントに残る永続的な成果物
 
 ### `P1-10` postprovision を Core API 経由にする
 
-- **状態**: 未着手
+- **状態**: **完了**（2026-09-05、Azure 実機で検証）
 - **優先**: 高
 - **内容**: 現在 postprovision は Blob に直接書き、PostgreSQL に行を入れない。そのため `GET /namespaces` と MCP の `list_namespaces` が空配列を返し、**デプロイしたサンプルがエージェント経路から発見できない**。書き込み順序 Blob → PostgreSQL → Fuseki の 2 段目が飛んでいる
 - **完了条件**: `azd up` 後に MCP の `list_namespaces` がサンプルの名前空間を返すこと
 - **なぜ重要**: Phase 1 の完了条件「AI エージェントが MCP 経由で参照できる」のうち**発見経路が満たされていない**
 - **出典**: ブランチ全体レビュー I-6
 - **依存**: `P1-09`（認証が必要）
+- **設計上の発見**: **`postprovision` は `deploy` の前に走る**ため、その時点で
+  コンテナのイメージはプレースホルダで **API が起動していない**。API 経由にするには
+  `postdeploy` へ移す必要があった。`scripts/postprovision.{sh,ps1}` を
+  `scripts/postdeploy.{sh,ps1}` に置き換え、`azure.yaml` のフックも変更した
+- **`continueOnError: false` にした理由**: ここが失敗すると Phase 1 の完了条件が
+  満たされないため、黙って成功扱いにしてはいけない。スクリプト自身が最後に
+  `GET /namespaces` を引いて発見できることを確認する
+- **実測結果**（`azd up` の中で `postdeploy` が走ったことを時刻で確定）:
+  ```
+  名前空間 created_at : 16:52:31.86
+  version created_at  : 16:52:32.31
+  approved_at         : 16:52:33.36
+  azd up 終了         : 16:52:36
+  GET /namespaces     -> retail-core が 1 件
+  SPARQL owl:Class    -> Customer / Order / Product / Store の 4 件
+  reconcile           -> 孤児ゼロ（datasets_created / versions_projected /
+                         failures / orphan_datasets / orphan_blobs すべて空）
+  ```
+  明示的に 2 回目を実行すると 409 が返り、**スクリプトが冪等**であることも実証された
 
 ### `P1-11` PostgreSQL の最小権限ロール
 
@@ -301,6 +337,32 @@
 - **内容**: UAMI が PostgreSQL の Entra 管理者として登録されており、API の実行時 ID が `azure_pg_admin` 権限を持つ。侵害されれば DB を DROP できる
 - **完了条件**: API が必要最小限の権限で動作し、管理者権限を持たないこと
 - **出典**: Task 8 レビューの差分外指摘。「管理者権限で動いてしまうために誰も困らず、最小権限化の欠落が発覚しなかった」
+- **実機で確認した現状**（2026-09-05）:
+  ```
+  Entra 管理者        : id-<suffix> (ServicePrincipal) = API の実行時 ID そのもの
+  POSTGRES_USER       : id-<suffix>
+  publicNetworkAccess : Enabled（VNet 統合なし）
+  ファイアウォール    : AllowAllAzureServicesAndResources (0.0.0.0) のみ
+                        = **運用者のマシンからは届かない**
+  マイグレーション    : API の docker-entrypoint.sh で起動時に実行
+  ```
+- **先に決めるべき設計判断（ADR-0011 の対象）**: API が管理者でなくなると
+  **起動時のマイグレーション（DDL）が実行できない**。選択肢:
+  - **(A) `SET ROLE` で実行時に権限を落とす** — 管理者として接続し、
+    マイグレーション後にアプリ用ロールへ切り替える。実装は小さいが
+    `RESET ROLE` で戻せるため強い境界にならない
+  - **(B) マイグレーションを API の外へ出す** — ACA Job か `postdeploy` フックで
+    実行し、API の ID は非管理者にする。標準的な答えで `maxReplicas: 3` の
+    同時実行問題も根本的に解消するが、**ファイアウォールが Azure 内のみ**なので
+    `postdeploy`（運用者マシン）からは届かない → ACA Job が必要
+  - **(C) アプリ用ロールに自スキーマの DDL を与える** — 単純だが
+    「侵害 → DROP DATABASE」が「侵害 → DROP TABLE」に緩和されるだけ
+  - **(D) コンテナに 2 つのマネージド ID を持たせる** — ACA は複数の
+    ユーザー割り当て ID を持てる。起動時は管理者 ID、実行時はアプリ ID。
+    `AZURE_CLIENT_ID` の切り替えが必要で込み入る
+- **私（controller）の見立て**: (B) が本筋。マイグレーションは配置時の関心事であり
+  実行時の関心事ではない。ただし ACA Job の追加と順序制御（Job 完了後に API 起動）が
+  必要で、ADR に値する判断。**次のラウンドで ADR-0011 を書いてから実装する**
 
 ### `P1-12` MCP → Core API のトークン伝播
 
