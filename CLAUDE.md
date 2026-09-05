@@ -66,7 +66,18 @@ sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
 az bicep build --file infra/main.bicep --stdout > /dev/null
 ```
 
-**Azure へのデプロイは費用が発生する。** `azd up` は約 11 分、`azd down --purge` は約 24 分。実施前に確認を取り、**検証後は必ず `azd down --purge`** する（Key Vault の purge まで確認する。論理削除が残ると同名で再デプロイできない）。
+**Azure へのデプロイは費用が発生する。** `azd up` は約 11 分、`azd down --purge` は約 24 分。実施前に確認を取り、**検証後は必ず `azd down --purge`** する。
+
+**`azd down --purge` を中断してはいけない。** Key Vault の purge は**リソースグループの削除が完了した後**に実行されるため、途中で止めると論理削除が残る。論理削除が残ると同名で再デプロイできない。中断してしまった場合の復旧:
+
+```bash
+az keyvault list-deleted --query "[?contains(name,'<suffix>')].name" -o tsv
+az keyvault purge --name <name> --location japaneast
+```
+
+リソースグループの削除自体は ARM のサーバ側で継続するので、コマンドを止めても完了する。止まるのは purge だけである。
+
+**新しい azd 環境を作ると `AZURE_SUBSCRIPTION_ID` は引き継がれない。** 環境ごとに独立しているため、`azd env new` の後に `azd env set AZURE_SUBSCRIPTION_ID <id>` が必要（`azd up` が `prompt required` で止まる）。
 
 ## 新しいテストを書くときの規律
 
