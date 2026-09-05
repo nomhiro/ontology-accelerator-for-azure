@@ -48,6 +48,10 @@ just dev-api             # Core API 起動
 - **`just up` は Azurite に Blob コンテナを作る。** これを飛ばすと publish と削除が `ContainerNotFound` で失敗する。名前空間の作成と SPARQL 参照は Blob を触らないため動いてしまい、原因が分かりにくい
 - **`git commit` はインデックス全体をコミットする。** `git add <パス>` で絞っても、他に staged なものがあれば混ざる。**コミット前に `git diff --cached --name-only` で確認する**
 - **PowerShell の `>` は UTF-16LE で書き出す。** ファイル出力はシェルに任せず、生成側の言語で `encoding='utf-8'` を明示する
+- **docker のボリュームを `/lib` にマウントしてはいけない。** Alpine の `/lib` は musl libc 等の
+  システム共有ライブラリの場所で、そこを自分のディレクトリで覆うと `/bin/sh` 自身が動かなくなり
+  `exec /bin/sh: no such file or directory` で全滅する。`/work` などに置くこと。
+  `jq` が必要なシェルテストを docker で回すときに踏む
 - **Git Bash は `/` で始まる引数を Windows パスに変換する。** `az` に ARM のリソース ID を渡すと壊れる。`export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` を先に置くか、リソース ID ではなく名前を渡す
 
 ## 検証
