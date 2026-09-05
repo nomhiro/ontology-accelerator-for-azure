@@ -156,3 +156,56 @@ manifest_current() {
 manifest_status_for_version() {
     printf '%s' "$1" | jq -r --arg v "$2" '(.versions[] | select(.version == $v) | .status) // ""'
 }
+
+# 版の射影先を決める(ADR-0010 決定5、P1-18)。
+#
+# 状態別の振り分けは元々 load-snapshot.sh の build_namespace_tdb に case 文
+# としてインラインで埋まっていて、再実行可能なテストが無かった。判断を I/O
+# (tdbloader の実行)から切り離すため、副作用の無い純粋関数としてここに
+# 置く。build_namespace_tdb はこの関数の出力を解釈するだけにし、状態を
+# 判定する case 文は持たない(判断が二箇所に存在すると、片方だけ直して
+# 食い違う)。
+#
+# 引数: manifest(_state.json の内容), version(版文字列),
+#       retain(SUPERSEDED_RETAIN の値)
+# 標準出力に返す(空白区切り。case 文で状態を再判定させないため、
+# 呼び出し側は文字列全体の一致で見分ける):
+#   "named default"  … 名前付きグラフと既定グラフの両方へ読み込む
+#   "named"          … 名前付きグラフのみへ読み込む
+#   ""(空)            … 読み込まない(この版は丸ごとスキップする)
+projection_targets() {
+    manifest="$1"
+    version="$2"
+    retain="$3"
+
+    status="$(manifest_status_for_version "${manifest}" "${version}")"
+    case "${status}" in
+        approved)
+            current="$(manifest_current "${manifest}")"
+            if [ "${version}" = "${current}" ]; then
+                printf 'named default'
+            else
+                # current は 1 つしかない。他に approved が残っていても
+                # (本来起こらないはずだが)既定グラフには載せない。将来
+                # current の扱いが変わったときに気づけるよう、明示的に
+                # テストしておく(validate.test.sh)。
+                printf 'named'
+            fi
+            ;;
+        in-review)
+            printf 'named'
+            ;;
+        superseded)
+            if [ "${retain}" = "0" ]; then
+                printf ''
+            else
+                printf 'named'
+            fi
+            ;;
+        *)
+            # マニフェストに載っていない版(draft の可能性)。読み込まない
+            # (ADR-0010 決定5。推測は Critical(P1-C1)を再来させる)。
+            printf ''
+            ;;
+    esac
+}

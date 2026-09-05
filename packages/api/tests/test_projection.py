@@ -15,10 +15,14 @@ from ontology_core.config import Settings
 from ontology_core.db import create_engine_and_factory
 from ontology_core.models import OntologyVersion, OntologyVersionStatus
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
+from ontology_core.turtle import TurtleSyntaxError
 
 pytestmark = pytest.mark.integration
 
 TTL = "@prefix ex: <https://e.example/#> .\nex:A a ex:Class .\n"
+# 述語だけで終わる。rdflib は BadSyntax ではなく IndexError を投げる経路
+# (packages/core/tests/test_turtle.py で実測済み)。P1-C2 のブリーフに挙げられた例そのもの。
+BROKEN_TTL = "@prefix ex: <http://e/> . ex:A a"
 
 # session と blob_store をまとめて受け渡すためのフィクスチャの戻り値型。
 Prepared = tuple[AsyncSession, OntologyBlobStore]
@@ -126,6 +130,34 @@ async def test_publish_writes_source_of_truth_but_does_not_project(prepared: Pre
         "versions": [],
         "generated_at": manifest["generated_at"],
     }
+
+
+async def test_publish_rejects_invalid_turtle_before_writing_source_of_truth(
+    prepared: Prepared,
+) -> None:
+    """P1-C2: 構文が壊れた TTL は正本(Blob・PostgreSQL)に一切書かれない。
+
+    修正前は publish が TTL を解析せずに Blob へ書いていたため、壊れた TTL が
+    そのまま正本に入り、その後の put_graph が Fuseki に拒否されて失敗し続けても
+    射影の失敗は握り潰される設計(不変条件3)なので呼び出し元には成功が返り、
+    reconcile が永久に回収できない状態になっていた。さらに P1-C1 の 409 ガード
+    (Blob に版が残っている名前空間は削除できない)により、名前空間を削除して
+    逃げることもできなかった。
+
+    「422 を返す」だけでは、Blob に書いた後で検証している実装でも通ってしまう
+    ため、ここでは Blob に何も書かれていないこと(list_versions が空)と
+    PostgreSQL に行が無いことを明示的に確認する(これが本質)。
+    """
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+
+    with pytest.raises(TurtleSyntaxError):
+        await svc.publish(namespace="retail-core", turtle=BROKEN_TTL, actor="t")
+
+    assert await blob.list_versions("retail-core") == []
+    assert await VersionRepository(session).list_for("retail-core") == []
 
 
 async def test_publish_records_draft_not_approved(prepared: Prepared) -> None:

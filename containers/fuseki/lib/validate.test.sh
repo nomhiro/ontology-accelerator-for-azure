@@ -131,6 +131,27 @@ check_eq2() {
     fi
 }
 
+# 引数: 説明, 関数名, 入力1, 入力2, 入力3, 期待する出力文字列
+#
+# projection_targets(manifest, version, retain) のように 3 引数を取る関数用。
+check_eq3() {
+    description="$1"
+    fn="$2"
+    input1="$3"
+    input2="$4"
+    input3="$5"
+    expected="$6"
+
+    actual="$("${fn}" "${input1}" "${input2}" "${input3}")"
+
+    if [ "${actual}" = "${expected}" ]; then
+        echo "ok - ${description}"
+    else
+        echo "NG - ${description}(期待: '${expected}', 実際: '${actual}')"
+        failures=$((failures + 1))
+    fi
+}
+
 # jq が無いとここで実行できない。CI(ubuntu-latest)には標準で入っているが、
 # ローカルで直接 `sh containers/fuseki/lib/validate.test.sh` する場合は
 # jq が必要(fuseki コンテナの中や、jq をインストールした環境で実行すること)。
@@ -163,6 +184,26 @@ else
     check_eq2 "superseded の版の status" manifest_status_for_version "${manifest_ok}" "1.0.0" "superseded"
     check_eq2 "マニフェストに無い版(draft の可能性)は空文字" \
         manifest_status_for_version "${manifest_ok}" "9.9.9" ""
+
+    # ---- projection_targets (P1-18) ----
+    # build_namespace_tdb にインラインで埋まっていた状態別振り分け(旧 case 文)
+    # を切り出した純粋関数。P1-C1 の Critical はこの振り分けが正しいことに
+    # 依存しているため、ここが壊れると既定グラフに複数版が載る状態へ静かに
+    # 戻る。retain(第 3 引数)は SUPERSEDED_RETAIN に対応する。
+    two_approved='{"schema":1,"namespace":"x","current":"2.0.0","versions":[{"version":"2.0.0","status":"approved"},{"version":"2.1.0","status":"approved"}],"generated_at":"t"}'
+
+    check_eq3 "approved かつ current と一致 → named default" \
+        projection_targets "${manifest_ok}" "2.0.0" "0" "named default"
+    check_eq3 "approved だが current と不一致 → named のみ(既定には載せない。本来起こらないはずのケース)" \
+        projection_targets "${two_approved}" "2.1.0" "0" "named"
+    check_eq3 "in-review → named" \
+        projection_targets "${manifest_ok}" "2.1.0" "0" "named"
+    check_eq3 "superseded かつ SUPERSEDED_RETAIN=0 → 読み込まない" \
+        projection_targets "${manifest_ok}" "1.0.0" "0" ""
+    check_eq3 "superseded かつ SUPERSEDED_RETAIN=2 → named" \
+        projection_targets "${manifest_ok}" "1.0.0" "2" "named"
+    check_eq3 "マニフェストに載っていない版(draft の可能性) → 読み込まない" \
+        projection_targets "${manifest_ok}" "9.9.9" "0" ""
 fi
 
 if [ "${failures}" -gt 0 ]; then

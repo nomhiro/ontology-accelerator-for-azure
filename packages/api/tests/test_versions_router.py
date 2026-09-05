@@ -29,6 +29,9 @@ from ontology_core.sparql.client import SparqlStore
 pytestmark = pytest.mark.integration
 
 TTL = "@prefix ex: <https://e.example/#> .\nex:A a ex:Class .\n"
+# 述語だけで終わる。rdflib は BadSyntax ではなく IndexError を投げる経路
+# (packages/core/tests/test_turtle.py で実測済み)。P1-C2 のブリーフの例そのもの。
+BROKEN_TTL = "@prefix ex: <http://e/> . ex:A a"
 _PRINCIPAL = Principal.local_dev()
 
 
@@ -99,6 +102,45 @@ async def test_publish_version_maps_auto_version_error_to_422(
 
     assert exc_info.value.status_code == 422
     assert "1.beta.0" in str(exc_info.value.detail)
+
+
+async def test_publish_version_maps_turtle_syntax_error_to_422(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """P1-C2: 構文が壊れた TTL の publish は 422 になり、Blob にも PostgreSQL にも
+    何も残らない。
+
+    「422 を返す」だけでは、Blob に書いた後で検証している実装でも通ってしまう
+    ため、サービス層(test_projection.py)と同じく Blob・PostgreSQL の状態も
+    ここで明示的に確認する。
+    """
+    from ontology_api.repositories.versions import VersionRepository
+
+    name = "ver-ttl-422"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri=f"https://e.example/{name}#",
+        created_by="t",
+    )
+    await session.commit()
+    store = _NullStore()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await publish_version(
+            namespace=name,
+            payload=PublishRequest(turtle=BROKEN_TTL),
+            principal=_PRINCIPAL,
+            session=session,
+            blob=blob_store,
+            store=store,
+            settings=settings,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert await blob_store.list_versions(name) == []
+    assert await VersionRepository(session).list_for(name) == []
 
 
 async def test_submit_approve_reject_router_status_codes(

@@ -2,7 +2,7 @@
 
 **このファイルはタスクの状態を持つ単一の正本である。** 方針は [`docs/roadmap.md`](roadmap.md)、設計判断は [`docs/adr/`](adr/) にある。
 
-最終更新: 2026-09-05（承認と射影の実装後）
+最終更新: 2026-09-06（`P1-C2` / `P1-18` の実装後）
 
 ## 使い方
 
@@ -38,11 +38,26 @@
 
 ### `P1-C2` publish 前に TTL の構文検証をしていない
 
-- **状態**: 未着手
+- **状態**: 完了(2026-09-06)
 - **優先**: 高
 - **Phase**: 1（欠陥修正）
 - **内容**: `rdflib` は `packages/core` の依存に入っているが**使用 0 ファイル**。TTL は解析されずに Blob（正本）へ書かれる。壊れた TTL は正本に入り、その後 `put_graph` で失敗する。失敗は握り潰される設計（正しい）ため呼び出し元には成功が返り、`reconcile` は永久に失敗し続ける。さらに `P1-C1` の 409 ガードにより名前空間を削除できない
 - **完了条件**: `publish` が Blob へ書く**前**に rdflib で解析し、失敗を 422 で返す。壊れた TTL を投入するテストを追加
+- **完了メモ**（2026-09-06）: `packages/core/src/ontology_core/turtle.py` に
+  `validate_turtle` / `TurtleSyntaxError` を新設。`ProjectionService.publish` は
+  Blob への最初の書き込み(`put_version`)より前にこれを呼ぶ(`asyncio.to_thread`
+  経由。rdflib の解析は同期・CPU バウンドで、20MB の TTL で実測約 18.5 秒
+  かかるため、イベントループを塞がないよう別スレッドに逃がした)。
+  `routers/versions.py` は `TurtleSyntaxError` を 422 にマップ(`AutoVersionError`
+  と同じ形)。**rdflib の解析エラーは型が一貫していない**ことを実測で確認した
+  ── ブリーフの例(`ex:A a` のような述語だけで終わる入力)は
+  `rdflib.plugins.parsers.notation3.BadSyntax` ではなく `IndexError` になり、
+  未終端の文字列リテラルは `AssertionError` になる。特定の例外型に絞ると検証を
+  すり抜けるため、`validate_turtle` は `Exception` を広く捕まえて
+  `TurtleSyntaxError` に正規化する(`packages/core/tests/test_turtle.py` で
+  3 つの経路それぞれを固定)。Blob に何も書かれないこと・PostgreSQL に行が
+  無いことを `test_projection.py` / `test_versions_router.py` で明示的に確認
+  (修正前のコードでは両方とも書かれてしまうことを実際に確認してから直した)
 - **出典**: 2026-09-01 の実装調査（`rdflib` 使用 0 ファイル）
 
 ---
@@ -162,7 +177,7 @@
 
 ### `P1-18` ローダの制御フローに自動テストが無い
 
-- **状態**: 未着手
+- **状態**: 完了(2026-09-06、範囲を絞って。下記メモ参照)
 - **優先**: 中
 - **Phase**: 1
 - **内容**: `load-snapshot.sh` の `fetch_manifest` / `build_namespace_tdb` / `build_tdb`
@@ -178,6 +193,22 @@
   ここが壊れると既定グラフに複数版が載る状態へ静かに戻る
 - **完了条件**: 4パターンのマニフェストに対する振り分けを `validate.test.sh` と
   同じ形式で自動化する。マニフェスト無しの名前空間で失敗を明示することも含める
+- **完了メモ**（2026-09-06）: `build_namespace_tdb` にインラインで埋まっていた
+  状態別振り分け(旧 `case` 文)を、副作用の無い純粋関数 `projection_targets`
+  (`containers/fuseki/lib/validate.sh`)に切り出した。`build_namespace_tdb` は
+  この関数の出力(`"named default"` / `"named"` / 空)を解釈するだけになり、
+  状態を判定する `case` 文はもう持たない(二箇所に判断があると片方だけ直して
+  食い違うため)。`validate.test.sh` に 6 パターン(承認済み+current一致/
+  不一致、in-review、superseded×SUPERSEDED_RETAIN=0/2、未掲載版)を追加し、
+  修正前は関数が存在せず `not found` で落ちることを確認してから直した。
+  **範囲を絞った**: ブリーフ(`.superpowers/sdd/2026-09-06-validation-and-loader-tests/brief.md`)
+  の指示により、`fetch_manifest`(curl の I/O)と、マニフェストが取得できない・
+  不正な名前空間を丸ごとスキップする `build_tdb` の制御は今回の対象外にした
+  (前者は外部 I/O、後者は `validate_manifest_json` の形式検証は既にテスト
+  済みで、スキップの分岐そのものの制御フローテストはまだ無い)。したがって
+  この完了条件の「マニフェスト無しの名前空間で失敗を明示することも含める」は
+  **未達のまま**。`P1-19`(スキップの可視化)と合わせて別ラウンドで扱うのが
+  自然
 - **出典**: 2026-09-05 の実装者の自己申告。「検証はしたが自動化はできていない」
 
 ## Phase 1 の残り

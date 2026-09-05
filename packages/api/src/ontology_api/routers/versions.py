@@ -17,6 +17,7 @@ from ontology_api.services.projection import (
 )
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
 from ontology_core.models import OntologyVersion
+from ontology_core.turtle import TurtleSyntaxError
 
 router = APIRouter(tags=["versions"])
 
@@ -70,6 +71,13 @@ async def publish_version(
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except AutoVersionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except TurtleSyntaxError as exc:
+        # P1-C2: 構文が壊れた TTL。`ProjectionService.publish` は Blob へ書く
+        # 前に検証しているため、ここに来た時点で正本(Blob・PostgreSQL)には
+        # 何も残っていない。
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc

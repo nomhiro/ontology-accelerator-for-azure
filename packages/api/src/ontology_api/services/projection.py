@@ -1,6 +1,9 @@
 """射影ループと承認の状態遷移(ADR-0010)。
 
 **書き込み順序は「正本 → 射影」で固定する。**
+0. (`publish` のみ)TTL を rdflib で構文検証する(P1-C2、`ontology_core.turtle.
+   validate_turtle`)。**Blob へ書く前に行う。** 検証を通さずに 1 へ進むと、
+   壊れた TTL が正本に入り、以後の射影が永久に失敗し続ける(下記参照)
 1. TTL を Blob に置く(正本、書いた時点で耐久化。状態遷移(submit/approve/
    reject)では TTL は変わらないためこの手順は無い)
 2. バージョンと監査イベントを PostgreSQL に記録して commit する(正本、
@@ -34,6 +37,7 @@ PostgreSQL から再生成する)。
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass, field
@@ -49,6 +53,7 @@ from ontology_core.blob import BlobStoreError, OntologyBlobStore
 from ontology_core.graphs import dataset_name, version_graph_iri
 from ontology_core.models import OntologyVersion, OntologyVersionStatus
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
+from ontology_core.turtle import validate_turtle
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +190,26 @@ class ProjectionService:
 
         resolved = version or _next_version(await versions.latest_for(namespace))
         graph_iri = version_graph_iri(self._base, namespace, resolved)
+
+        # ---- 0. TTL の構文検証(P1-C2) ----
+        # **最初の Blob 書き込み(直後の put_version)より前に呼ぶ。位置が本質。**
+        # ここより後(put_version の後)に置いても、壊れた TTL が正本に入って
+        # しまった後の検証になり意味が無い。壊れた TTL が Blob に入ると、
+        # その後の put_graph が Fuseki に拒否されて失敗し続けても射影の失敗は
+        # 握り潰される設計(不変条件3)なので呼び出し元には成功が返り、
+        # reconcile が永久に回収できなくなる。さらに P1-C1 の 409 ガード
+        # (Blob に版が残っている名前空間は削除できない)により、名前空間を
+        # 削除して逃げることもできなくなる。
+        #
+        # rdflib の解析は同期・CPU バウンドで、`PublishRequest` が許す
+        # 20MB の TTL では実測で約 18.5 秒かかる(手元の環境、単純な
+        # トリプルの繰り返しで計測。実運用の TTL は語彙が複雑になり得るため
+        # さらに遅くなる可能性がある)。`publish` は async であり、
+        # そのままだとこの間イベントループを塞いで他のリクエストが進めなく
+        # なるため、`asyncio.to_thread` で別スレッドに逃がす。
+        # `submit`/`approve` では検証しない(オントロジーは不変リビジョンで
+        # あり、内容は publish 時に一度検証すれば足りる)。
+        await asyncio.to_thread(validate_turtle, turtle)
 
         # ---- 1. 正本(Blob) ----
         blob_path = await self._blob.put_version(namespace, resolved, turtle)

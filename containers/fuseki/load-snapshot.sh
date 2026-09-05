@@ -142,7 +142,9 @@ fetch_manifest() {
 # 参照できるようにするため(docs/adr/0006-ontology-versioning-and-audit.md)。
 #
 # `manifest_mode`(第 1 引数)が "true" のとき、名前空間ごとにマニフェストを
-# 取得し、状態に応じて読み込み方を変える(ADR-0010 決定5)。
+# 取得し、状態に応じて読み込み方を変える(ADR-0010 決定5)。実際の振り分けは
+# lib/validate.sh の projection_targets(純粋関数、validate.test.sh でテスト
+# 済み。P1-18)が行う。build_namespace_tdb はその出力を解釈するだけ。
 #   - approved(かつ current と一致): 名前付きグラフ + 既定グラフ
 #   - in-review: 名前付きグラフのみ
 #   - superseded: SUPERSEDED_RETAIN が 0 以外なら名前付きグラフのみ。既定 0 では読み込まない
@@ -194,11 +196,6 @@ build_namespace_tdb() {
     rm -rf "${build_location}" "${location}.old"
     mkdir -p "${build_location}"
 
-    current=""
-    if [ "${manifest_mode}" = "true" ]; then
-        current="$(manifest_current "${manifest}")"
-    fi
-
     log "TDB2 を構築します [${namespace}]: ${build_location}"
     loaded=0
     for ttl in "${ns_staging}"*.ttl; do
@@ -206,31 +203,23 @@ build_namespace_tdb() {
         version="$(basename "${ttl}" .ttl)"
         graph_iri="${GRAPH_IRI_BASE}/${namespace}/${version}"
 
-        also_default="false"
+        # 版ごとの射影先(名前付きグラフのみ/既定グラフにも/読み込まない)は
+        # lib/validate.sh の projection_targets が状態から一元的に決める
+        # (ADR-0010 決定5、P1-18)。ここでは状態を判定する case 文を持たず、
+        # その出力(空白区切りの文字列)を解釈するだけにする。判断が二箇所に
+        # 存在すると、片方だけ直して食い違う(旧コードはここに case 文が
+        # インラインで埋まっていて、再実行可能なテストが無かった)。
         if [ "${manifest_mode}" = "true" ]; then
-            status="$(manifest_status_for_version "${manifest}" "${version}")"
-            case "${status}" in
-                approved)
-                    [ "${version}" = "${current}" ] && also_default="true"
-                    ;;
-                in-review) ;;
-                superseded)
-                    if [ "${SUPERSEDED_RETAIN}" = "0" ]; then
-                        log "superseded 版をスキップします(SUPERSEDED_RETAIN=0) [${namespace}]: ${version}"
-                        continue
-                    fi
-                    ;;
-                *)
-                    # マニフェストに載っていない版。draft の可能性が高く、
-                    # 射影しない(ADR-0010 決定5)。
-                    log "マニフェストに無い版をスキップします(draft の可能性) [${namespace}]: ${version}"
-                    continue
-                    ;;
-            esac
+            targets="$(projection_targets "${manifest}" "${version}" "${SUPERSEDED_RETAIN}")"
         else
             # LOCAL_TTL_DIR 経路: マニフェスト対象外。単一ファイルを常に
             # 現行の承認済み版として扱う(本ファイル冒頭のコメント参照)。
-            also_default="true"
+            targets="named default"
+        fi
+
+        if [ -z "${targets}" ]; then
+            log "読み込む対象ではないためスキップします(マニフェストの状態による。superseded かつ SUPERSEDED_RETAIN=0、またはマニフェストに無い版) [${namespace}]: ${version}"
+            continue
         fi
 
         log "読み込み [${namespace}]: $(basename "${ttl}") -> ${graph_iri}"
@@ -240,7 +229,7 @@ build_namespace_tdb() {
             "${ttl}"
         loaded=$((loaded + 1))
 
-        if [ "${also_default}" = "true" ]; then
+        if [ "${targets}" = "named default" ]; then
             log "既定グラフにも読み込みます [${namespace}]: ${version}"
             "${JENA_HOME}/bin/tdb2.tdbloader" \
                 --loc="${build_location}" \
