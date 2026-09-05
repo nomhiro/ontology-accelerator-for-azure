@@ -45,7 +45,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   を実行できます。** `approved_by` には実際に呼び出した主体が記録されますが、
   「責任者だけが承認できる」「提案者と承認者を別人にする(四眼原則)」は強制されません。
   権限の強制は Phase 2 で対応します（[`docs/backlog.md`](docs/backlog.md) の `P2B-13`）
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 124 件: unit 72 件 + integration 52 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest  件: unit  件 + integration  件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
