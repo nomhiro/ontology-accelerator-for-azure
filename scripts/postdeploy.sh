@@ -24,10 +24,23 @@
 # preAuthorizedApplications に登録されているため、`az account get-access-token`
 # で運用者自身の資格情報からトークンを取れる（ADR-0010 決定2の「外部の承認
 # システムも API を叩く」と同じ考え方で、ここでは運用者が叩いている）。
+#
+# **PostgreSQL のブートストラップ・マイグレーション・ファイアウォール規則の
+# 開閉もこのフックが行う（ADR-0011）。** アプリのロール（UAMI）にはテーブルの
+# 所有権も DDL 権限も無いため、マイグレーションは運用者（Entra 管理者）が
+# ここで実行するしかない。運用者のマシンからは既定でファイアウォールが
+# 届かない（AllowAllAzureServicesAndResources は Azure 内のみ）ため、
+# 一時的な規則をここで作って必ず削除する。
 set -eu
 
 : "${SERVICE_API_URI:?SERVICE_API_URI が必要です（azd の出力）}"
 : "${ENTRA_API_AUDIENCE:?ENTRA_API_AUDIENCE が必要です（アプリ登録の appId）}"
+: "${AZURE_RESOURCE_GROUP:?AZURE_RESOURCE_GROUP が必要です（azd の出力）}"
+: "${POSTGRES_SERVER_NAME:?POSTGRES_SERVER_NAME が必要です（azd の出力）}"
+: "${POSTGRES_HOST:?POSTGRES_HOST が必要です（azd の出力）}"
+: "${POSTGRES_DATABASE:?POSTGRES_DATABASE が必要です（azd の出力）}"
+: "${POSTGRES_USER:?POSTGRES_USER が必要です（azd の出力。UAMI の名前）}"
+: "${AZURE_PRINCIPAL_NAME:?AZURE_PRINCIPAL_NAME が必要です（preprovision フックが設定）}"
 
 NS="retail-core"
 VERSION="1.0.0"
@@ -35,6 +48,76 @@ SAMPLE="samples/retail-core.ttl"
 API="${SERVICE_API_URI%/}"
 
 [ -f "${SAMPLE}" ] || { echo "postdeploy: ${SAMPLE} が見つかりません" >&2; exit 1; }
+
+# ---- ファイアウォール規則（運用者のIPを一時的に許可する。ADR-0011 決定4） ----
+#
+# trap で EXIT 時に必ず削除を試みる。ステップ5で明示的に削除した後は
+# firewall_created を false に戻すため、trap は二重削除の no-op になる。
+FIREWALL_RULE_NAME="postdeploy-operator"
+firewall_created="false"
+
+delete_firewall_rule() {
+    [ "${firewall_created}" = "true" ] || return 0
+    echo "postdeploy: ファイアウォール規則 ${FIREWALL_RULE_NAME} を削除します"
+    if az postgres flexible-server firewall-rule delete \
+        --resource-group "${AZURE_RESOURCE_GROUP}" \
+        --name "${POSTGRES_SERVER_NAME}" \
+        --rule-name "${FIREWALL_RULE_NAME}" --yes >/dev/null 2>&1; then
+        firewall_created="false"
+    else
+        echo "postdeploy: ファイアウォール規則の削除に失敗しました。手動で確認してください（az postgres flexible-server firewall-rule delete --resource-group ${AZURE_RESOURCE_GROUP} --name ${POSTGRES_SERVER_NAME} --rule-name ${FIREWALL_RULE_NAME}）" >&2
+    fi
+}
+trap delete_firewall_rule EXIT
+
+echo "postdeploy: 運用者のIPを取得します"
+# 0.0.0.0/0 のような代替は行わない。取得できなければ失敗させる（ADR-0011 決定4）。
+operator_ip="$(curl -s --max-time 10 https://api.ipify.org || true)"
+case "${operator_ip}" in
+    '' | *[!0-9.]*)
+        echo "postdeploy: 運用者のIPを取得できません（ipify応答: '${operator_ip}'）" >&2
+        exit 1
+        ;;
+esac
+echo "postdeploy: 運用者のIP = ${operator_ip}"
+
+echo "postdeploy: ファイアウォール規則 ${FIREWALL_RULE_NAME} を作成します"
+az postgres flexible-server firewall-rule create \
+    --resource-group "${AZURE_RESOURCE_GROUP}" \
+    --name "${POSTGRES_SERVER_NAME}" \
+    --rule-name "${FIREWALL_RULE_NAME}" \
+    --start-ip-address "${operator_ip}" \
+    --end-ip-address "${operator_ip}" >/dev/null
+firewall_created="true"
+
+# ---- PostgreSQL のブートストラップ（マイグレーション前。ADR-0011 決定2） ----
+#
+# ontology_owner の作成・UAMI の pgaadauth 登録・将来のテーブルへの既定権限。
+# ALTER DEFAULT PRIVILEGES は CREATE TABLE より前でなければ効かないため、
+# マイグレーションより先に実行する（順序が重要）。
+echo "postdeploy: PostgreSQL をブートストラップします（マイグレーション前）"
+POSTGRES_ADMIN_USER="${AZURE_PRINCIPAL_NAME}" POSTGRES_APP_ROLE="${POSTGRES_USER}" \
+    uv run python scripts/bootstrap-db.py pre
+
+# ---- マイグレーション（運用者が ontology_owner として実行。ADR-0011 決定3） ----
+#
+# アプリのロール（POSTGRES_USER = UAMI）は DDL 権限を持たないため、ここでは
+# POSTGRES_USER を運用者自身に上書きして接続する。ontology_api.migrate を
+# 使う（docker-entrypoint.sh から外した分、ここが唯一の実行場所になる。
+# アドバイザリロックは複数運用者の同時実行に備えて残っている）。
+echo "postdeploy: マイグレーションを ontology_owner で実行します"
+POSTGRES_USER="${AZURE_PRINCIPAL_NAME}" MIGRATION_ROLE="ontology_owner" \
+    uv run --directory packages/api python -m ontology_api.migrate
+
+# ---- PostgreSQL のブートストラップ（マイグレーション後） ----
+#
+# 既存テーブルへの GRANT と、audit_events の DELETE 剥奪（追記専用にする）。
+echo "postdeploy: PostgreSQL をブートストラップします（マイグレーション後）"
+POSTGRES_ADMIN_USER="${AZURE_PRINCIPAL_NAME}" POSTGRES_APP_ROLE="${POSTGRES_USER}" \
+    uv run python scripts/bootstrap-db.py post
+
+# ---- ファイアウォール規則を削除する（開けたままにしない） ----
+delete_firewall_rule
 
 # ---- API が応答するまで待つ ----
 # deploy 直後はリビジョンが起動中で、マイグレーションも走っている。

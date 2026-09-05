@@ -27,6 +27,9 @@ param principalId string = ''
 ])
 param principalType string = 'User'
 
+@description('principalId の名前(User は UPN、ServicePrincipal / Group は表示名)。PostgreSQL の Entra 管理者登録に使う(ADR-0011 決定1)。preprovision フックが `az ad signed-in-user show` 等で取得して azd env に設定する。')
+param principalName string = ''
+
 // ---------------------------------------------------------------------------
 // デプロイ構成
 // ---------------------------------------------------------------------------
@@ -175,8 +178,10 @@ module postgres './modules/postgres.bicep' = {
     databaseName: postgresDatabaseName
     administratorLogin: postgresAdminLogin
     administratorLoginPassword: postgresAdminPassword
-    identityPrincipalId: shared.outputs.identityPrincipalId
     identityName: shared.outputs.identityName
+    adminPrincipalId: principalId
+    adminPrincipalName: principalName
+    adminPrincipalType: principalType
     authMode: authMode
   }
 }
@@ -351,6 +356,10 @@ output POSTGRES_HOST string = postgres.outputs.host
 output POSTGRES_PORT string = '5432'
 output POSTGRES_DATABASE string = postgres.outputs.databaseName
 output POSTGRES_USER string = postgres.outputs.connectionUser
+// az postgres flexible-server firewall-rule create/delete の --name に渡す
+// サーバー名(FQDN ではない)。scripts/postdeploy.{sh,ps1} が運用者の IP を
+// 許可する規則を作って最後に削除するために使う(ADR-0011 決定4)。
+output POSTGRES_SERVER_NAME string = postgres.outputs.name
 
 output AUTH_MODE string = authMode
 output DEPLOYMENT_TIER string = deploymentTier

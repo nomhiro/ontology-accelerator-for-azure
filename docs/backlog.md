@@ -332,7 +332,7 @@
 
 ### `P1-11` PostgreSQL の最小権限ロール
 
-- **状態**: 未着手
+- **状態**: **実装済み（ローカル検証のみ。Azure 実機の検証は未実施 — controller が実施予定）**
 - **優先**: 高
 - **内容**: UAMI が PostgreSQL の Entra 管理者として登録されており、API の実行時 ID が `azure_pg_admin` 権限を持つ。侵害されれば DB を DROP できる
 - **完了条件**: API が必要最小限の権限で動作し、管理者権限を持たないこと
@@ -383,6 +383,113 @@
   6. `production` プロファイル（VNet 統合）での完全な分離は **Phase 4**
 - **受け入れるコスト**: 無人の CI/CD では動かない（運用者のマシンが必要）。
   これは Phase 4 で解決する
+- **実装した内容（2026-09-06、修正1〜6すべて対応）**:
+  1. `infra/modules/postgres.bicep`: Entra 管理者を UAMI からデプロイ実行者
+     （`principalId` / `principalName` / `principalType`）に変更。`identityName`
+     は接続ユーザー名の組み立てだけに残す
+  2. `scripts/bootstrap-db.py`（新規）: `asyncpg` ベースの冪等なブートストラップ。
+     `pre` / `post` の2フェーズ
+  3. `packages/api/alembic/env.py`: `MIGRATION_ROLE` が設定されていれば
+     `SET ROLE` してからマイグレーションを実行する
+  4. `packages/api/docker-entrypoint.sh`: マイグレーション実行を削除し、
+     uvicorn を直接 exec する。ADR-0011 で Task 8 の判断を覆した理由をコメントに残した
+  5. `scripts/postdeploy.{sh,ps1}`: ファイアウォール規則の作成・削除（trap /
+     try-finally）、`bootstrap-db.py pre` → マイグレーション → `bootstrap-db.py post`
+     を既存のサンプル投入の前に追加
+  6. `scripts/preprovision.{sh,ps1}`（新規）+ `azure.yaml`: 運用者の Entra 表示名
+     （UPN）を解決して `AZURE_PRINCIPAL_NAME` を設定する。`AZURE_PRINCIPAL_ID` は
+     azd が provision 時に自動的に解決するが（Microsoft Learn の環境変数一覧で
+     確認）、名前（UPN/表示名）側にはこの既定変数が無いため
+  - `infra/main.bicep` に `POSTGRES_SERVER_NAME` output を追加（ファイアウォール
+    規則の操作に `--name` として必要。既存の `POSTGRES_HOST` はFQDNで使えない）
+  - `README.md` の「必要な Azure 権限と Entra ID の前提」を更新
+- **ブリーフの記述を2件修正した（実装前に報告済み。理由は下記）**:
+  1. `pgaadauth_create_principal` はアプリの DB ではなく `postgres`
+     （メンテナンス用）データベースに接続して実行する必要がある。他の DB から
+     呼ぶと `function ... does not exist`（Microsoft Q&A で複数件確認・実測でも
+     再現）。`bootstrap-db.py` は `postgres` DB への別接続でこのステップだけ実行する
+  2. PostgreSQL 15 以降 `public` スキーマの `CREATE` は `PUBLIC` から剥奪されている
+     ため、`ontology_owner` に `GRANT USAGE, CREATE ON SCHEMA public` が無いと
+     `SET ROLE ontology_owner` 下での `CREATE TABLE`（マイグレーション）が
+     `permission denied for schema public` で失敗する（ローカルの
+     postgres:16-alpine で実測確認）。ブリーフのSQLに無かったため追加した
+- **実装中に見つけたバグ（テストで検出。ブリーフには無い）**: `env.py` で
+  `SET ROLE` を実行するために `connection.execute()` を呼ぶと、`AsyncConnection`
+  が暗黙にトランザクションを開始する（autobegin）。その状態のまま Alembic の
+  `begin_transaction()` に入ると、Alembic 自身は成功ログを出す（内部的には
+  ネストしたトランザクションの commit が成功している）にもかかわらず、**外側の
+  トランザクションは一度も commit されず、`engine.connect()` を抜ける際に暗黙に
+  ROLLBACK されてマイグレーションの DDL が丸ごと消える**。実測で再現し、
+  `SET ROLE` の直後に明示的な `await connection.commit()` を追加して解消した
+  （修正前に一度 `alembic upgrade head` が exit 0 のままテーブルを1つも作らない
+  ことを確認してから直した）
+- **ローカルで確認した内容**:
+  - `uv run pytest` 131件、`ruff check` / `ruff format --check`、`mypy packages`、
+    `az bicep build` すべて成功
+  - `bootstrap-db.py` の冪等性: `pre` / `post` それぞれ2回連続実行して両方成功
+    （ローカル postgres:16-alpine、使い捨てDBに対して）
+  - `MIGRATION_ROLE` の分岐: **両方を実測で確認した**。設定時（`MIGRATION_ROLE=
+    ontology_owner`）は `SET ROLE` してマイグレーションを実行し、テーブルの
+    所有者が `ontology_owner` になる。未設定時は何もせず、テーブルの所有者は
+    接続ユーザー自身（`ontology`）になる ── 使い捨てDBに対して両方の版を
+    それぞれ作り直し、`pg_tables.tableowner` の違いで対比を確認した。
+    既存の `just migrate` の経路は変更なし（131件のテストに影響なし。
+    テストは alembic を経由せず `Base.metadata.create_all` を使うため、
+    この分岐自体はテストの対象外であることに注意）
+  - 権限分離の実効性そのもの: 非スーパーユーザーの `LOGIN` ロール（UAMI の代役）
+    で接続し、`INSERT` は成功、`DELETE FROM audit_events` と `DROP TABLE` は
+    どちらも権限エラーで拒否されることを確認
+  - `#EXT#` を含むゲストUPN形式の名前の扱い（3点）: (1) Bicep の `principalName`
+    と `bootstrap-db.py` の `asyncpg.connect(user=...)` はどちらも UPN を
+    そのまま文字列として渡す口で、SQL識別子としての引用は関与しない
+    (2) SQL識別子として運用者名を直接埋め込む経路（`GRANT ontology_owner TO
+    "<運用者>"`）は `CURRENT_USER` を使う設計に変えて構造的に無くした
+    (3) それでも `#` `@` `.` を含む名前を二重引用符で `CREATE ROLE` できることを
+    ローカルで実測確認した（`"nom40hiro21_...#EXT#@...onmicrosoft.com"`）。
+    実際のEntra側の `pgaadauth_create_principal` 呼び出し自体は Azure 実機での
+    確認が必要（デプロイ時チェックリストに記載）
+  - `AZURE_PRINCIPAL_ID` が azd から供給されるかは、Microsoft Learn の
+    「Environment variables FAQ」で `Determined automatically during provisioning`
+    と明記されているのを確認した（実機でのライブ確認は未実施。controller が
+    デプロイ時に確認する）
+- **デプロイで確認すべき項目（controller が実施）**:
+  - UAMI が Entra 管理者でないこと
+  - `preprovision` が `AZURE_PRINCIPAL_NAME` を正しく解決すること（運用者の UPN。
+    `#EXT#` を含む形式であることも含めて実際の値を確認する）
+  - `postdeploy` の中でマイグレーションが成功すること（`bootstrap-db.py pre` →
+    `alembic upgrade head` → `bootstrap-db.py post`）
+  - API が DML で正常に動くこと（publish → submit → approve → SPARQL）
+  - **アプリのロール（UAMI）で `DELETE FROM audit_events` が失敗すること**
+    ← 最重要
+  - **アプリのロールで `DROP TABLE` が失敗すること**
+  - ファイアウォール規則が処理の最後に残っていないこと
+  - **既存環境への再デプロイでは、古い UAMI の Entra 管理者登録が ARM の
+    incremental デプロイでは削除されない**可能性がある（子リソースが
+    テンプレートから外れても自動削除されないため）。既存環境で確認する場合は
+    `az postgres flexible-server microsoft-entra-admin list` で古い登録が
+    残っていないか確認し、残っていれば手動で削除するか、環境を作り直す
+  - `pgaadauth_create_principal('<UAMI名>', false, false)` が成功し、API が
+    実際に接続できること。名前ベースの登録が失敗する場合は
+    `pgaadauth_create_principal_with_oid` へのフォールバックを検討する
+- **見つけたが直していない問題（範囲外のため。出典: この実装作業中の調査）**:
+  1. `infra/main.parameters.json` は `principalType` を `AZURE_PRINCIPAL_TYPE`
+     に結び付けていない（Bicep 側は `principalType` パラメータを持つが既定値
+     `'User'` に固定されたまま）。`AZURE_PRINCIPAL_ID` と同様 `AZURE_PRINCIPAL_TYPE`
+     も azd が provision 時に自動的に解決する環境変数だが、これを使っていない
+     のは今回の変更前からの既存不備。**この変更で影響が広がった**: CI がサービス
+     プリンシパルでデプロイすると、PostgreSQL の Entra 管理者登録が実際の型
+     ではなく `User` として作られてしまう
+  2. README.md の「初回デプロイ時の注意」に「サンプルオントロジーの投入は
+     `postprovision` フックが自動で行います（`scripts/postprovision.sh` /
+     `scripts/postprovision.ps1`）」という記述が残っている。実際には `P1-10` で
+     `postdeploy` に移行済み・ファイル名も `postdeploy.{sh,ps1}` に変わっており、
+     同じ箇条書きの後半はそれを正しく説明しているため内容として矛盾している
+  3. `infra/modules/shared.bicep` の `output identityPrincipalId` が、この変更で
+     参照元（`postgres.bicep` の旧 `entraAdministrator`)を失い未使用になった
+  4. この開発環境に `shellcheck` が入っておらず、`scripts/*.sh` の shellcheck は
+     実行できなかった。代わりに `sh -n`(構文チェックのみ)と、`.ps1` は
+     `[System.Management.Automation.Language.Parser]::ParseFile`(構文チェックの
+     み)で検証した
 
 ### `P1-12` MCP → Core API のトークン伝播
 

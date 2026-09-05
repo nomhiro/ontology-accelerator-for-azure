@@ -1,7 +1,9 @@
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
+from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from ontology_core.config import get_settings
@@ -75,6 +77,33 @@ async def run_async_migrations() -> None:
 
     try:
         async with engine.connect() as connection:
+            # ADR-0011 決定2・3: テーブルの所有者は `ontology_owner`(NOLOGIN)であり、
+            # アプリのロール(UAMI)には所有権も DDL も無い。マイグレーションは
+            # 運用者が Entra 管理者として接続し、`SET ROLE` で一時的に所有者に
+            # なって実行する。`MIGRATION_ROLE` は `ontology_core.config.Settings` に
+            # 加えていない — アプリの実行時設定ではなく、マイグレーション実行者
+            # (運用者の postdeploy / `just migrate`)だけが使う環境変数のため。
+            #
+            # 未設定(ローカル開発。`ontology_owner` ロールが存在しない)なら
+            # 何もしない。値は運用者が postdeploy で明示的に設定する定数であり、
+            # 外部入力ではないため f-string での組み込みはインジェクションの
+            # リスクにならない(`ontology_api.migrate` の `_LOCK_TIMEOUT_SECONDS`
+            # と同じ考え方)。識別子として `"..."` で囲むのは、将来 `MIGRATION_ROLE`
+            # に特殊文字を含む値が渡されても構文エラーにならないようにするため。
+            migration_role = os.environ.get("MIGRATION_ROLE", "")
+            if migration_role:
+                quoted_role = '"' + migration_role.replace('"', '""') + '"'
+                await connection.execute(text(f"SET ROLE {quoted_role}"))
+                # `execute()` は AsyncConnection を暗黙に「トランザクション開始済み」
+                # にする(autobegin)。ここで明示的に commit してその暗黙トランザクション
+                # を終わらせておかないと、直後の Alembic の `begin_transaction()` が
+                # 既存の開いたトランザクションの中で動くことになり、Alembic 側は
+                # 成功ログを出す(内部的にはネストしたトランザクションのコミットが
+                # 成功している)にもかかわらず、外側のトランザクションは一度も
+                # commit されないまま `engine.connect()` の `async with` を抜けて
+                # 暗黙に ROLLBACK され、**マイグレーションの DDL が丸ごと消える**
+                # (実測で再現・確認済み: 追加前はテーブルが1つも作られなかった)。
+                await connection.commit()
             await connection.run_sync(do_run_migrations)
     finally:
         await engine.dispose()

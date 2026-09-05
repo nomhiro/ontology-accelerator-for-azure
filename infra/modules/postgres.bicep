@@ -1,6 +1,13 @@
 // PostgreSQL Flexible Server を構築するモジュール。
 // 正本 (名前空間・RBAC・承認履歴・R2RML マッピング) の格納先。
-// Microsoft Entra 認証を有効化し、UAMI を Entra 管理者として登録してパスワードレス接続を可能にする。
+// Microsoft Entra 認証を有効化し、パスワードレス接続を可能にする。
+//
+// ADR-0011 決定1: Entra 管理者は UAMI ではなく **デプロイを実行する運用者**
+// (`azd up` を実行するユーザー、または CI のサービスプリンシパル)。UAMI は
+// サーバー管理者ではなくなり、`bootstrap-db.py` が作る非管理者ロールとして
+// 接続する(このモジュールは UAMI の登録自体は行わない。`identityName` は
+// 接続ユーザー名を組み立てるためだけに残す)。監査証跡(audit_events)を API を
+// 掌握した攻撃者からも守るのが目的(ADR-0011 の根拠)。
 
 @description('PostgreSQL Flexible Server の名前。')
 param name string
@@ -28,11 +35,22 @@ param administratorLogin string
 @secure()
 param administratorLoginPassword string
 
-@description('Entra 管理者として登録する UAMI のプリンシパルID (オブジェクトID)。')
-param identityPrincipalId string
-
-@description('Entra 管理者として登録する UAMI の名前。PostgreSQL 側のロール名になる。')
+@description('API / MCP / Fuseki が共有する UAMI の名前。PostgreSQL 側の接続ユーザー名になる(ADR-0011: 管理者権限は持たない)。')
 param identityName string
+
+@description('Entra 管理者として登録するプリンシパル (デプロイを実行する運用者) のオブジェクトID。ADR-0011 決定1。')
+param adminPrincipalId string
+
+@description('Entra 管理者として登録するプリンシパルの名前。User は UPN(ゲストは #EXT# を含む形式)、ServicePrincipal / Group は表示名。')
+param adminPrincipalName string
+
+@description('Entra 管理者プリンシパルの種別。CI からサービスプリンシパルでデプロイする場合は ServicePrincipal を指定する。')
+@allowed([
+  'User'
+  'ServicePrincipal'
+  'Group'
+])
+param adminPrincipalType string = 'User'
 
 @description('認証モード。entra のときパスワード認証も残すが、接続は Entra を既定にする。')
 @allowed([
@@ -89,13 +107,14 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   }
 }
 
-// UAMI を Entra 管理者に登録する。リソース名はオブジェクトIDでなければならない。
+// デプロイを実行する運用者を Entra 管理者に登録する(ADR-0011 決定1)。
+// リソース名はオブジェクトIDでなければならない。
 resource entraAdministrator 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = {
   parent: postgres
-  name: identityPrincipalId
+  name: adminPrincipalId
   properties: {
-    principalType: 'ServicePrincipal'
-    principalName: identityName
+    principalType: adminPrincipalType
+    principalName: adminPrincipalName
     tenantId: subscription().tenantId
   }
 }

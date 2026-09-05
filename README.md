@@ -272,7 +272,10 @@ azd down --purge   # just destroy でも同じ
 - **サブスクリプションに対する権限**: リソースグループの作成とロール割り当てを行うため、`Contributor` に加えて `User Access Administrator`(または `Owner`)相当が必要です。Managed Identity へのロール割り当てを IaC が行います
 - **Entra ID App 登録**: 人間の認可コードフロー、およびエージェントの client credentials フローのために App 登録が必要です。テナントで App 登録が禁止されている場合、テナント管理者への依頼が必要になります
 - **App 登録権限がない場合**: `AUTH_MODE=disabled` の **ローカル専用 dev モード**を用意しています。認証を完全に無効化するため、**ローカル開発以外では絶対に使用しないでください**。Azure へデプロイした環境でこのモードを有効にしてはいけません
-- **既知の制約: 実行時 ID が PostgreSQL の管理者権限を持ちます。** API / MCP / Fuseki が共有する UAMI を PostgreSQL Flexible Server の Entra 管理者として登録しています(`infra/modules/postgres.bicep` の `entraAdministrator` リソース)。これはパスワードレス接続(Entra トークンでの接続)を最短で実現するための構成ですが、最小権限の観点では課題が残ります。**API の実行時 ID が侵害されると、`azure_pg_admin` 権限で DB ごと削除できてしまいます。** Phase 1 の残りタスクとして、API 専用の非管理者ロールを別途作成し、管理者権限から切り離すことを予定しています
+- **PostgreSQL の権限分離([ADR-0011](docs/adr/0011-database-privilege-separation.md))**: API / MCP / Fuseki が共有する UAMI は PostgreSQL の Entra 管理者ではなく、テーブルの所有権も DDL 権限も持たない非管理者ロールです。侵害されても `azure_pg_admin` 権限は奪われず、`audit_events`(監査証跡)の `DELETE` もできません(追記専用)。テーブルの所有者は専用ロール `ontology_owner`(`NOLOGIN`)で、Entra 管理者は**デプロイを実行する運用者**(`azd up` を実行するユーザー、または CI のサービスプリンシパル)が務めます
+  - **無人の CI/CD では動きません。** マイグレーション(`alembic upgrade head`)は `postdeploy` フックで運用者自身が `ontology_owner` として実行します。運用者のマシンから PostgreSQL に届くよう、`postdeploy` が一時的なファイアウォール規則を作って最後に削除します(常時開けたままにはしません)。`publicNetworkAccess: Disabled` の `production` プロファイルでこの経路は成立しないため、VNet 内で実行されるマイグレーション経路は Phase 4 で設計します
+  - **API 起動時にテーブルが無い窓があります。** マイグレーションが `postdeploy`(deploy の後)に移ったため、API コンテナは一時的にテーブルが無い状態で起動しえます。`/healthz` は DB を触らないため起動確認自体は通りますが、DB を触るエンドポイントは `postdeploy` 完了までエラーを返します
+  - **複数の運用者でマイグレーションを実行する場合**、それぞれの Entra 管理者に `GRANT ontology_owner TO "<運用者>"` が必要です(`scripts/bootstrap-db.py` は現在ログイン中の運用者自身にしか付与しません)
 
 ## Microsoft Foundry モデルのリージョン可用性
 

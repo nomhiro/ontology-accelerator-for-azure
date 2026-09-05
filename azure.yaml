@@ -53,6 +53,28 @@ services:
     dist: dist
 
 hooks:
+  # デプロイを実行する運用者の Entra 表示名 (UPN / サービスプリンシパルの表示名) を
+  # 解決し、AZURE_PRINCIPAL_NAME として azd 環境に設定する。
+  #
+  # provision (infra/modules/postgres.bicep の Entra 管理者登録) が使うため、
+  # provision より前でなければならない (ADR-0011 決定1)。詳細は
+  # scripts/preprovision.sh の冒頭コメントを参照。
+  #
+  # continueOnError は false。名前が解決できないまま空文字列で管理者登録が
+  # 作られると、postdeploy (bootstrap-db.py・マイグレーション) が分かりにくい
+  # 形で失敗するため、ここで止める。
+  preprovision:
+    posix:
+      shell: sh
+      continueOnError: false
+      interactive: false
+      run: ./scripts/preprovision.sh
+    windows:
+      shell: pwsh
+      continueOnError: false
+      interactive: false
+      run: ./scripts/preprovision.ps1
+
   # サンプルオントロジー (samples/retail-core.ttl) を **Core API 経由で** 投入する。
   #
   # **postprovision ではなく postdeploy である理由**: azd のフックは
