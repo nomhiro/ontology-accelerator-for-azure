@@ -54,7 +54,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - `azd up` が成功する(プロビジョニング 5 分 6 秒 + デプロイ 2 分 41 秒)。API / MCP / Fuseki / Web の 4 サービスがデプロイされる
 - **Blob(正本)から Fuseki の entrypoint が TDB2 を再構築し、SPARQL を返す** — 「再構築可能な射影」設計が実環境で成立
   (名前付きグラフ `urn:ontology:graph/retail-core/1.0.0`、60 トリプル、OWL クラス 4 件、SHACL NodeShape 2 件。
-  `postprovision` がサンプルを `approved` として宣言するマニフェストも書くため、既定グラフにも同じ内容が入る)
+  `postdeploy` が Core API 経由で承認まで行うため、既定グラフにも同じ内容が入る)
 - Fuseki 側で `SERVICE` 句が HTTP 422 でブロックされる(SSRF 対策)
 - Fuseki は internal ingress のため外部から到達できない
 - API `/healthz` が応答し、トークン無しの `GET /namespaces` は **401**(`AUTH_MODE=entra` が機能)
@@ -213,9 +213,7 @@ azd up          # just deploy でも同じ
 
 #### 初回デプロイ時の注意
 
-- **サンプルオントロジーの投入は `postprovision` フックが自動で行います**(`scripts/postprovision.sh` / `scripts/postprovision.ps1`)。手動で Blob にアップロードする必要はありません
-  - `postprovision` は `azd provision` の後・`azd deploy` の前に走るため、**`azd provision` を単体で実行した直後はまだサンプルが見えません**。`azd up`(= provision → deploy)であれば、続く deploy で Fuseki の新しいリビジョンが立ち、entrypoint が Blob から TDB2 を再構築してサンプルが読み込まれます
-  - `postprovision` は `az storage blob upload --auth-mode login` で Azure CLI にログインしているユーザー自身の権限を使います。この権限(Storage Blob Data Contributor)の割り当ても他の RBAC ロールと同様に**伝播待ちで初回だけ失敗することがあります**。`azure.yaml` は `continueOnError: true` を指定しているため失敗しても `azd up` 全体は成功扱いになりますが、失敗した場合は数分待ってから `azd provision` を再実行してください
+- **サンプルオントロジーの投入は `postdeploy` フックが自動で行います**(`scripts/postdeploy.sh` / `scripts/postdeploy.ps1`)。手動で Blob にアップロードする必要はありません
   - **同梱サンプルは Core API 経由で投入されます。** `azd up` の `postdeploy` フックが、名前空間の作成 → publish → submit → approve を API に対して実行します。そのため PostgreSQL に行が入り、`GET /namespaces` と MCP の `list_namespaces` から**発見できます**(Azure 実機で検証済み)。フックが `postprovision` ではなく `postdeploy` なのは、`postprovision` の時点ではコンテナのイメージがまだプレースホルダで API が起動していないためです
 - **Key Vault のロール割り当ては RBAC の伝播待ちで初回に失敗しうる**ため、失敗した場合は数分待って再実行してください
 - **CI からサービスプリンシパルでデプロイする場合**は `principalType=ServicePrincipal` を指定してください。`principalId` が空だと Key Vault Secrets Officer の割り当てが作られないため、シークレット書き込み権限を別途付与する必要があります
@@ -254,7 +252,7 @@ POST /namespaces/{ns}/versions/{v}/reject          in-review → draft(body に 
 - **名前空間名**: 小文字英数字とハイフンのみ、2〜63 文字、先頭は英数字(`ontology_core.graphs.validate_namespace_name`)。予約名 `ds` は使えません(Fuseki の固定・空データセット用に予約されています)
 - **バージョン文字列**: 英数字と `. + -` のみ、1〜64 文字、先頭は英数字(`ontology_core.graphs.validate_version`)。ファイル名としては `<version>.ttl` になります
 - 階層が無い Blob(名前空間のディレクトリが無いもの。例: `versions/retail-core.ttl`)は `load-snapshot.sh` が**黙ってスキップ**します。エラーにはならないので、投入したはずのファイルが見えない場合はまずパス形式を確認してください
-- **`_state.json` を書かないと、その名前空間は `load-snapshot.sh` に丸ごとスキップされます。** マニフェストが無い名前空間を「未承認も含めて全部読み込む」と推測することはしません(それが元の Critical でした)。`postprovision` は同梱サンプルを `approved` として宣言するマニフェストも一緒に書きます
+- **`_state.json` を書かないと、その名前空間は `load-snapshot.sh` に丸ごとスキップされます。** マニフェストが無い名前空間を「未承認も含めて全部読み込む」と推測することはしません(それが元の Critical でした)。同梱サンプルは `postdeploy` が Core API 経由で承認するため、API がマニフェストを書きます
 - 反映には **Fuseki のリビジョン再起動**が必要です(`azd deploy` や ACA のスケールイベント等)。entrypoint が起動時に Blob から TDB2 を再構築する設計のため、Blob に置くだけでは既存レプリカには反映されません
 
 ### 削除

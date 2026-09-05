@@ -21,6 +21,7 @@ set -eu
 
 # 通常は運用者本人が `az login` している（User）。
 principal_name="$(az ad signed-in-user show --query userPrincipalName -o tsv 2>/dev/null || true)"
+principal_type="User"
 
 if [ -z "${principal_name}" ]; then
     # サービスプリンシパルでログインしている場合（CI からの無人デプロイ等）。
@@ -29,6 +30,7 @@ if [ -z "${principal_name}" ]; then
     echo "preprovision: signed-in user が見つかりません。サービスプリンシパルとして解決します"
     app_id="$(az account show --query user.name -o tsv)"
     principal_name="$(az ad sp show --id "${app_id}" --query displayName -o tsv)"
+    principal_type="ServicePrincipal"
 fi
 
 [ -n "${principal_name}" ] || {
@@ -38,3 +40,14 @@ fi
 
 echo "preprovision: AZURE_PRINCIPAL_NAME=${principal_name} を設定します"
 azd env set AZURE_PRINCIPAL_NAME "${principal_name}"
+
+# principalType も解決する。PostgreSQL の Entra 管理者リソースは principalType を
+# 要求し、**実際の型と一致していなければ認証が成立しない**。既定を User に
+# 固定していると、CI がサービスプリンシパルでデプロイしたときに誤った型で
+# 登録される(実装者が指摘した既存不備。ADR-0011 の変更で影響が広がった)。
+#
+# 判定は「サインイン中のユーザーとして解決できたか」で行う。
+# az ad signed-in-user show はサービスプリンシパルでは失敗するため、
+# 上で principal_name をどちらの経路で得たかがそのまま型になる。
+echo "preprovision: AZURE_PRINCIPAL_TYPE=${principal_type} を設定します"
+azd env set AZURE_PRINCIPAL_TYPE "${principal_type}"

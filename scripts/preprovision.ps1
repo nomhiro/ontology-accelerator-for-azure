@@ -14,6 +14,7 @@ $ErrorActionPreference = "Stop"
 
 # 通常は運用者本人が az login している（User）。
 $principalName = (az ad signed-in-user show --query userPrincipalName -o tsv 2>$null)
+$principalType = "User"
 if ($LASTEXITCODE -ne 0 -or -not $principalName) {
     # サービスプリンシパルでログインしている場合（CI からの無人デプロイ等）。
     Write-Host "preprovision: signed-in user が見つかりません。サービスプリンシパルとして解決します"
@@ -21,6 +22,7 @@ if ($LASTEXITCODE -ne 0 -or -not $principalName) {
     if ($LASTEXITCODE -ne 0 -or -not $appId) { throw "az account show に失敗しました" }
     $principalName = az ad sp show --id $appId --query displayName -o tsv
     if ($LASTEXITCODE -ne 0 -or -not $principalName) { throw "az ad sp show に失敗しました" }
+    $principalType = "ServicePrincipal"
 }
 
 if (-not $principalName) { throw "デプロイ実行者の Entra 表示名を解決できません" }
@@ -28,3 +30,10 @@ if (-not $principalName) { throw "デプロイ実行者の Entra 表示名を解
 Write-Host "preprovision: AZURE_PRINCIPAL_NAME=$principalName を設定します"
 azd env set AZURE_PRINCIPAL_NAME $principalName
 if ($LASTEXITCODE -ne 0) { throw "azd env set に失敗しました" }
+
+# principalType も解決する。PostgreSQL の Entra 管理者リソースは principalType を
+# 要求し、実際の型と一致していなければ認証が成立しない。既定を User に固定して
+# いると、CI がサービスプリンシパルでデプロイしたときに誤った型で登録される。
+Write-Host "preprovision: AZURE_PRINCIPAL_TYPE=$principalType を設定します"
+azd env set AZURE_PRINCIPAL_TYPE $principalType
+if ($LASTEXITCODE -ne 0) { throw "azd env set (AZURE_PRINCIPAL_TYPE) に失敗しました" }
