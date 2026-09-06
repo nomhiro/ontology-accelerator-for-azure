@@ -232,6 +232,16 @@ POST /namespaces/{ns}/versions/{v}/approve         in-review → approved。既�
 POST /namespaces/{ns}/versions/{v}/reject          in-review → draft(body に reason が必須)。名前付きグラフから外す
 ```
 
+**同時編集は `base_version` で検出します(P1-13)。** `POST /namespaces/{ns}/versions` の body に、編集の基準にした版を渡してください。名前空間の最新版と一致しなければ **409** を返します(HTTP の `If-Match` に相当します)。
+
+```json
+{ "turtle": "...", "base_version": "1.2.0" }
+```
+
+渡さないと検査しません。**人が編集する経路では必ず渡してください。** 渡さない場合、2 人が同じ版から編集して公開すると、版番号は自動採番で衝突しないため、**後の版が前の変更を静かに消します**。最初の公開では渡しません(まだ基準が無いため)。
+
+同じ本文の再送(タイムアウト後のリトライ)は、`base_version` が古くても 409 になりません。内容ハッシュによる冪等判定が基準バージョンの検査より先にあるためです。
+
 **エージェント(`GRAPH` 句を書かないクエリ)は常に承認済みの現行版だけを見ます。** `draft` は Blob と PostgreSQL にのみ存在し、Fuseki には一切現れません。レビュアは `GRAPH` 句で `in-review` の版を検証してから approve してください。
 
 **Phase 1 では承認に権限を強制しません。** `submit` / `approve` / `reject` は認証済みの呼び出し元なら誰でも実行できます(責任者のみ・四眼原則は Phase 2)。`approve` した主体は `approved_by` に正しく記録されます。「記録は正しいが、強制は無い」状態であることに注意してください。

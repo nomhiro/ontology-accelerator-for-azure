@@ -9,6 +9,7 @@ from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, Set
 from ontology_api.repositories.versions import VersionRepository
 from ontology_api.services.projection import (
     AutoVersionError,
+    ConcurrentUpdateError,
     InvalidTransitionError,
     ProjectionService,
     ReconcileReport,
@@ -45,6 +46,14 @@ class PublishRequest(BaseModel):
 
     turtle: str = Field(min_length=1, max_length=MAX_TURTLE_LENGTH, description="Turtle 形式の本文")
     version: str | None = Field(default=None, description="省略時は自動採番")
+    # 楽観的同時実行制御(P1-13)。HTTP の If-Match に相当する。
+    # **省略できる**(最初の公開、および基準を持たない自動投入のため)が、
+    # 人が編集する経路では必ず渡すべきである。渡さないと、2 人が同じ版から
+    # 編集したときに後の版が前の変更を静かに消す。
+    base_version: str | None = Field(
+        default=None,
+        description="編集の基準にした版。最新と一致しなければ 409。省略時は検査しない",
+    )
 
 
 class RejectRequest(BaseModel):
@@ -83,11 +92,16 @@ async def publish_version(
             turtle=payload.turtle,
             actor=principal.object_id or principal.subject,
             version=payload.version,
+            base_version=payload.base_version,
         )
     except UnknownNamespaceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ConcurrentUpdateError as exc:
+        # P1-13: 他の人が先に公開している。正本には何も書いていない
+        # (検査は Blob への書き込みより前にある)。
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except AutoVersionError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)

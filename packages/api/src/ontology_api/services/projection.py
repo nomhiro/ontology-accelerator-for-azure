@@ -75,6 +75,16 @@ class UnknownVersionError(Exception):
     """存在しない (名前空間, バージョン) の組を指定したことを表す。"""
 
 
+class ConcurrentUpdateError(Exception):
+    """基準バージョンが最新と一致しない(他の人が先に公開している)。
+
+    2 人が同じ版から編集して公開すると、後の版に前の変更が含まれない。
+    自動採番の経路では版番号も衝突しないため、**検出も警告もされずに前の
+    変更が消える**(P1-13)。HTTP の `If-Match` に相当する楽観的同時実行制御で
+    これを検出する。呼び出し元は 409 に対応させる。
+    """
+
+
 class InvalidTransitionError(Exception):
     """現在の状態から許されない遷移を要求したことを表す(例: draft を approve)。"""
 
@@ -212,11 +222,25 @@ class ProjectionService:
         self._base = graph_iri_base
 
     async def publish(
-        self, *, namespace: str, turtle: str, actor: str, version: str | None = None
+        self,
+        *,
+        namespace: str,
+        turtle: str,
+        actor: str,
+        version: str | None = None,
+        base_version: str | None = None,
     ) -> OntologyVersion:
         """オントロジーを新しいバージョンとして公開する。
 
         同一内容(content_hash が一致)の再投入は既存のバージョンを返す(冪等)。
+
+        Args:
+            base_version: 編集の基準にした版(P1-13)。渡した場合、名前空間の
+                最新版と一致しなければ `ConcurrentUpdateError` にする。
+                省略すると検査しない(既存の呼び出しとの後方互換)。
+
+        Raises:
+            ConcurrentUpdateError: `base_version` が最新版と一致しないとき。
         """
         namespaces = NamespaceRepository(self._session)
         if await namespaces.get(namespace) is None:
@@ -227,7 +251,25 @@ class ProjectionService:
         if (existing := await versions.find_by_hash(namespace, content_hash)) is not None:
             return existing
 
-        resolved = version or _next_version(await versions.latest_for(namespace))
+        # ---- 基準バージョンの検査(P1-13) ----
+        #
+        # **内容ハッシュによる冪等判定より後、正本への書き込みより前**に置く。
+        # 位置が本質である。
+        #   - 冪等判定より前に置くと、タイムアウト後の再送(同じ本文・同じ
+        #     base_version)が「最新が進んでいる」として 409 になる。これは
+        #     競合ではなく再送であり、弾いてはいけない
+        #   - 書き込みより後に置くと、弾く前に Blob へ書いてしまう
+        latest = await versions.latest_for(namespace)
+        if base_version is not None:
+            actual = latest.version if latest is not None else None
+            if actual != base_version:
+                raise ConcurrentUpdateError(
+                    f"基準バージョン '{base_version}' は名前空間 '{namespace}' の"
+                    f"最新バージョン '{actual}' と一致しません。"
+                    "最新を取得してから編集し直してください。"
+                )
+
+        resolved = version or _next_version(latest)
         graph_iri = version_graph_iri(self._base, namespace, resolved)
 
         # ---- 0. TTL の構文検証(P1-C2) ----
@@ -240,10 +282,11 @@ class ProjectionService:
         # (Blob に版が残っている名前空間は削除できない)により、名前空間を
         # 削除して逃げることもできなくなる。
         #
-        # rdflib の解析は同期・CPU バウンドで、`PublishRequest` が許す
-        # 20MB の TTL では実測で約 18.5 秒かかる(手元の環境、単純な
-        # トリプルの繰り返しで計測。実運用の TTL は語彙が複雑になり得るため
-        # さらに遅くなる可能性がある)。`publish` は async であり、
+        # rdflib の解析は同期・CPU バウンドで、実測で約 1.0 秒/MB かかる
+        # (手元の環境、単純なトリプルの繰り返しで計測。実運用の TTL は
+        # 語彙が複雑になり得るためさらに遅くなる可能性がある)。
+        # `PublishRequest` が許す上限は 5,000,000 文字なので約 5 秒である
+        # (P1-20 で 20MB から下げた)。`publish` は async であり、
         # そのままだとこの間イベントループを塞いで他のリクエストが進めなく
         # なるため、`asyncio.to_thread` で別スレッドに逃がす。
         # `submit`/`approve` では検証しない(オントロジーは不変リビジョンで

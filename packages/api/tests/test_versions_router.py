@@ -283,3 +283,66 @@ async def test_reject_unknown_version_is_404(
             settings=settings,
         )
     assert exc_info.value.status_code == 404
+
+
+async def test_publish_version_maps_concurrent_update_error_to_409(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """P1-13: 基準バージョンが古いと 409 になり、正本には何も残らない。
+
+    「409 を返す」だけでは Blob に書いた後で検査している実装でも通ってしまう
+    ため、Blob と PostgreSQL の状態もここで確認する
+    (test_publish_version_maps_turtle_syntax_error_to_422 と同じ方針)。
+    """
+    from ontology_api.repositories.versions import VersionRepository
+
+    name = "ver-409-base"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri=f"https://e.example/{name}#",
+        created_by="t",
+    )
+    await session.commit()
+    store = _NullStore()
+
+    first = await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=TTL),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+    )
+    # bob が先に公開する。
+    await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=TTL + "ex:B a ex:Class .\n", base_version=first.version),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+    )
+
+    blobs_before = sorted(await blob_store.list_versions(name))
+    versions_before = len(await VersionRepository(session).list_for(name))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await publish_version(
+            namespace=name,
+            payload=PublishRequest(turtle=TTL + "ex:C a ex:Class .\n", base_version=first.version),
+            principal=_PRINCIPAL,
+            session=session,
+            blob=blob_store,
+            store=store,
+            settings=settings,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert first.version in str(exc_info.value.detail)
+    # 正本は増えていない(検査が Blob への書き込みより前にあること)。
+    assert sorted(await blob_store.list_versions(name)) == blobs_before
+    assert len(await VersionRepository(session).list_for(name)) == versions_before

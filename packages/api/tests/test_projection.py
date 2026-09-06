@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import VersionRepository
-from ontology_api.services.projection import AutoVersionError, ProjectionService
+from ontology_api.services.projection import (
+    AutoVersionError,
+    ConcurrentUpdateError,
+    ProjectionService,
+)
 from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import Settings
 from ontology_core.db import create_engine_and_factory
@@ -534,3 +538,107 @@ async def test_audit_event_is_recorded(prepared: Prepared) -> None:
     events = (await session.execute(select(AuditEventRow))).scalars().all()
     assert [e.action for e in events] == ["published"]
     assert events[0].actor == "alice"
+
+
+# ---- P1-13: 基準バージョンによる lost update の検出 ----
+#
+# 2 人が同じ版から編集して公開すると、後の版に前の変更が含まれない。
+# 自動採番の経路では版番号も衝突しないため、**検出も警告もされずに
+# 前の変更が消える**。`base_version` を渡してもらい、最新と一致しなければ
+# 409 を返す(HTTP の If-Match に相当する楽観的同時実行制御)。
+
+
+async def test_publish_with_matching_base_version_succeeds(prepared: Prepared) -> None:
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    first = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+
+    second = await svc.publish(
+        namespace="retail-core",
+        turtle=TTL + "<urn:a> <urn:b> <urn:c> .\n",
+        actor="alice",
+        base_version=first.version,
+    )
+    assert second.version != first.version
+
+
+async def test_publish_with_stale_base_version_is_rejected(prepared: Prepared) -> None:
+    """他の人が先に公開していたら 409 相当で弾く(これが本題)。"""
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    base = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    # bob が先に公開した。
+    await svc.publish(
+        namespace="retail-core",
+        turtle=TTL + "<urn:bob> <urn:b> <urn:c> .\n",
+        actor="bob",
+        base_version=base.version,
+    )
+
+    # alice は base のまま編集していた。
+    with pytest.raises(ConcurrentUpdateError):
+        await svc.publish(
+            namespace="retail-core",
+            turtle=TTL + "<urn:alice> <urn:b> <urn:c> .\n",
+            actor="alice",
+            base_version=base.version,
+        )
+
+
+async def test_publish_without_base_version_does_not_check(prepared: Prepared) -> None:
+    """`base_version` を渡さない既存の呼び出しは従来どおり通る(後方互換)。"""
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    second = await svc.publish(
+        namespace="retail-core", turtle=TTL + "<urn:a> <urn:b> <urn:c> .\n", actor="bob"
+    )
+    assert second.version == "1.1.0"
+
+
+async def test_publish_with_base_version_on_empty_namespace_is_rejected(
+    prepared: Prepared,
+) -> None:
+    """まだ 1 版も無いのに基準バージョンを主張してきたら弾く。
+
+    クライアントが持っている前提(「1.0.0 から編集した」)が実際と違う。
+    最初の公開では `base_version` を渡さない。
+    """
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    with pytest.raises(ConcurrentUpdateError):
+        await svc.publish(namespace="retail-core", turtle=TTL, actor="alice", base_version="1.0.0")
+
+
+async def test_retry_of_the_same_content_is_still_idempotent(prepared: Prepared) -> None:
+    """同一内容の再送は、基準バージョンが古くても 409 にしない。
+
+    ネットワークのタイムアウト後にクライアントが同じ本文と同じ
+    `base_version` で再送する経路。1 回目で既に登録されているため
+    最新は `base_version` と一致しなくなるが、**これは競合ではなく再送**
+    である。内容ハッシュによる冪等判定を基準バージョンの検査より
+    **前**に置くことでこれを成立させている(順序が本質)。
+    """
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    base = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    body = TTL + "<urn:a> <urn:b> <urn:c> .\n"
+    first = await svc.publish(
+        namespace="retail-core", turtle=body, actor="alice", base_version=base.version
+    )
+
+    # 同じ内容・同じ base_version で再送する。
+    again = await svc.publish(
+        namespace="retail-core", turtle=body, actor="alice", base_version=base.version
+    )
+    assert again.version == first.version
