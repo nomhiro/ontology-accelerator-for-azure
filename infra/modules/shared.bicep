@@ -382,4 +382,3 @@ output containerRegistryLoginServer string = containerRegistry.properties.loginS
 output identityId string = identity.id
 output identityName string = identity.name
 output identityClientId string = identity.properties.clientId
-output identityPrincipalId string = identity.properties.principalId

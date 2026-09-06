@@ -10,9 +10,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from functools import cache
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
+import sqlalchemy as sa
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from azure.storage.blob.aio import BlobServiceClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +37,27 @@ def _test_settings() -> Settings:
     )
 
 
+@cache
+def _alembic_head() -> str:
+    """マイグレーションの head リビジョンを返す(P1-23)。
+
+    ハードコードするとマイグレーションを追加したときに黙って古い値を
+    stamp することになるため、alembic のスクリプトから読む。`alembic.ini`
+    は使わず script_location だけを渡す(ini を探す経路を増やさないため)。
+    """
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).parents[1] / "alembic"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None, "alembic の head リビジョンが取得できません"
+    return head
+
+
+@pytest.fixture
+def alembic_head() -> str:
+    """マイグレーションの head リビジョン(テストから参照するため)。"""
+    return _alembic_head()
+
+
 @pytest_asyncio.fixture
 async def session() -> AsyncIterator[AsyncSession]:
     """テーブルを作り直したまっさらな DB のセッションを返す。"""
@@ -39,6 +65,29 @@ async def session() -> AsyncIterator[AsyncSession]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+        # `alembic_version` を head で stamp する(P1-23)。
+        #
+        # **これが無いと、テストを実行した後の `just migrate` が
+        # DuplicateTableError で失敗する。** テーブルは `create_all` で
+        # 出来ているのに alembic は「まだ何も適用されていない」と判断し、
+        # `CREATE TABLE` からやり直そうとするため。「テストを回してから
+        # just migrate」という自然な順序で貢献者が踏む。
+        #
+        # `alembic_version` は `Base.metadata` に無いので `drop_all` の
+        # 対象外である。ここで毎回 head に揃える(冪等)。
+        await conn.execute(
+            sa.text(
+                "CREATE TABLE IF NOT EXISTS alembic_version ("
+                "  version_num VARCHAR(32) NOT NULL,"
+                "  CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)"
+                ")"
+            )
+        )
+        await conn.execute(sa.text("DELETE FROM alembic_version"))
+        await conn.execute(
+            sa.text("INSERT INTO alembic_version (version_num) VALUES (:head)"),
+            {"head": _alembic_head()},
+        )
     async with factory() as s:
         yield s
     await engine.dispose()

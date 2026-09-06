@@ -22,10 +22,28 @@ from ontology_core.turtle import TurtleSyntaxError
 router = APIRouter(tags=["versions"])
 
 
+# 受け付ける Turtle の最大長(文字数)。
+#
+# **rdflib の解析コストは約 1.0 秒/MB である**(実測: 0.12MB→0.11秒、
+# 1.27MB→1.30秒、20MB→18.5秒)。解析は `asyncio.to_thread` に出しているので
+# イベントループは塞がないが、スレッドプールを占有する。以前の上限
+# 20,000,000 は**1 リクエストで約 20 秒スレッドを占有できる**値で、上限として
+# 大きすぎた(P1-20)。
+#
+# 5,000,000 文字(約 5 秒)に下げる。オントロジーの定義(クラス・プロパティ・
+# 制約)は実データを含まないため、企業のドメイン 1 つ分でも Turtle で
+# 数百 KB の規模に収まる。5MB は実用上十分に余裕がある。
+#
+# これを超える規模を扱う必要が出たら、上限を上げるのではなく**非同期ジョブ
+# 経路**(ACA Jobs)に回す。同期 API の上限を上げると、この占有時間がそのまま
+# 伸びる。
+MAX_TURTLE_LENGTH = 5_000_000
+
+
 class PublishRequest(BaseModel):
     """オントロジーの投入要求。"""
 
-    turtle: str = Field(min_length=1, max_length=20_000_000, description="Turtle 形式の本文")
+    turtle: str = Field(min_length=1, max_length=MAX_TURTLE_LENGTH, description="Turtle 形式の本文")
     version: str | None = Field(default=None, description="省略時は自動採番")
 
 
