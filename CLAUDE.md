@@ -77,6 +77,14 @@ az keyvault purge --name <name> --location japaneast
 
 リソースグループの削除自体は ARM のサーバ側で継続するので、コマンドを止めても完了する。止まるのは purge だけである。
 
+**`azd provision` は Entra 管理者の登録について冪等でない。** 既存環境に再 provision すると `AadAuthPrincipalCreationFailed: role "..." already exists` で失敗する。同じ環境に作り直すのではなく `azd env new` で別環境を使うか、管理者登録を先に削除する。
+
+**ARM の output 名は camelCase で返る。** `SERVICE_API_URI` は `servicE_API_URI` として返ってくる。復元するときは先頭 1 文字だけ大文字化するのではなく、キー全体を `upper()` する（`ServicE_API_URI` のような中途半端な名前を作らないため）。
+
+**Windows の環境変数は大文字小文字を区別しない。** `.azure/<env>/.env` に大文字小文字だけ違う残骸（空の値）があると、正しい変数を上書きして**フックから見えなくなる**。フックが「必要な環境変数が無い」と言い出したら、`.env` の重複を疑う。
+
+**`az postgres flexible-server firewall-rule` の引数は紛らわしい。** サーバは `--server-name` / `-s`、**規則名は `--name` / `-n`**。`--rule-name` は存在しない（`--name` にサーバ名を渡すと「`--server-name` が必要」と言われ、`--rule-name` を渡すと「認識されない引数」になる）。
+
 **新しい azd 環境を作ると `AZURE_SUBSCRIPTION_ID` は引き継がれない。** 環境ごとに独立しているため、`azd env new` の後に `azd env set AZURE_SUBSCRIPTION_ID <id>` が必要（`azd up` が `prompt required` で止まる）。
 
 ## 新しいテストを書くときの規律

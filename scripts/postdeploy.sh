@@ -61,11 +61,11 @@ delete_firewall_rule() {
     echo "postdeploy: ファイアウォール規則 ${FIREWALL_RULE_NAME} を削除します"
     if az postgres flexible-server firewall-rule delete \
         --resource-group "${AZURE_RESOURCE_GROUP}" \
-        --name "${POSTGRES_SERVER_NAME}" \
-        --rule-name "${FIREWALL_RULE_NAME}" --yes >/dev/null 2>&1; then
+        --server-name "${POSTGRES_SERVER_NAME}" \
+        --name "${FIREWALL_RULE_NAME}" --yes >/dev/null 2>&1; then
         firewall_created="false"
     else
-        echo "postdeploy: ファイアウォール規則の削除に失敗しました。手動で確認してください（az postgres flexible-server firewall-rule delete --resource-group ${AZURE_RESOURCE_GROUP} --name ${POSTGRES_SERVER_NAME} --rule-name ${FIREWALL_RULE_NAME}）" >&2
+        echo "postdeploy: ファイアウォール規則の削除に失敗しました。手動で確認してください（az postgres flexible-server firewall-rule delete --resource-group ${AZURE_RESOURCE_GROUP} --server-name ${POSTGRES_SERVER_NAME} --name ${FIREWALL_RULE_NAME}）" >&2
     fi
 }
 trap delete_firewall_rule EXIT
@@ -84,8 +84,8 @@ echo "postdeploy: 運用者のIP = ${operator_ip}"
 echo "postdeploy: ファイアウォール規則 ${FIREWALL_RULE_NAME} を作成します"
 az postgres flexible-server firewall-rule create \
     --resource-group "${AZURE_RESOURCE_GROUP}" \
-    --name "${POSTGRES_SERVER_NAME}" \
-    --rule-name "${FIREWALL_RULE_NAME}" \
+    --server-name "${POSTGRES_SERVER_NAME}" \
+    --name "${FIREWALL_RULE_NAME}" \
     --start-ip-address "${operator_ip}" \
     --end-ip-address "${operator_ip}" >/dev/null
 firewall_created="true"

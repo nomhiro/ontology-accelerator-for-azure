@@ -50,12 +50,12 @@ function Remove-OperatorFirewallRule {
     Write-Host "postdeploy: ファイアウォール規則 $firewallRuleName を削除します"
     az postgres flexible-server firewall-rule delete `
         --resource-group $env:AZURE_RESOURCE_GROUP `
-        --name $env:POSTGRES_SERVER_NAME `
-        --rule-name $firewallRuleName --yes | Out-Null
+        --server-name $env:POSTGRES_SERVER_NAME `
+        --name $firewallRuleName --yes | Out-Null
     if ($LASTEXITCODE -eq 0) {
         $script:firewallCreated = $false
     } else {
-        Write-Host "postdeploy: ファイアウォール規則の削除に失敗しました。手動で確認してください（az postgres flexible-server firewall-rule delete --resource-group $env:AZURE_RESOURCE_GROUP --name $env:POSTGRES_SERVER_NAME --rule-name $firewallRuleName）" -ForegroundColor Red
+        Write-Host "postdeploy: ファイアウォール規則の削除に失敗しました。手動で確認してください（az postgres flexible-server firewall-rule delete --resource-group $env:AZURE_RESOURCE_GROUP --server-name $env:POSTGRES_SERVER_NAME --name $firewallRuleName）" -ForegroundColor Red
     }
 }
 
@@ -71,8 +71,8 @@ try {
     Write-Host "postdeploy: ファイアウォール規則 $firewallRuleName を作成します"
     az postgres flexible-server firewall-rule create `
         --resource-group $env:AZURE_RESOURCE_GROUP `
-        --name $env:POSTGRES_SERVER_NAME `
-        --rule-name $firewallRuleName `
+        --server-name $env:POSTGRES_SERVER_NAME `
+        --name $firewallRuleName `
         --start-ip-address $operatorIp `
         --end-ip-address $operatorIp | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "ファイアウォール規則の作成に失敗しました" }

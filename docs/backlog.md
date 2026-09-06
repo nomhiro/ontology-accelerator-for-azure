@@ -332,7 +332,7 @@
 
 ### `P1-11` PostgreSQL の最小権限ロール
 
-- **状態**: **実装済み（ローカル検証のみ。Azure 実機の検証は未実施 — controller が実施予定）**
+- **状態**: **完了**（2026-09-06。Azure 実機で 19 項目を検証し NG 0 件）
 - **優先**: 高
 - **内容**: UAMI が PostgreSQL の Entra 管理者として登録されており、API の実行時 ID が `azure_pg_admin` 権限を持つ。侵害されれば DB を DROP できる
 - **完了条件**: API が必要最小限の権限で動作し、管理者権限を持たないこと
@@ -452,7 +452,7 @@
     「Environment variables FAQ」で `Determined automatically during provisioning`
     と明記されているのを確認した（実機でのライブ確認は未実施。controller が
     デプロイ時に確認する）
-- **デプロイで確認すべき項目（controller が実施）**:
+- **デプロイで確認した項目（controller が実施。すべて確認済み）**:
   - UAMI が Entra 管理者でないこと
   - `preprovision` が `AZURE_PRINCIPAL_NAME` を正しく解決すること（運用者の UPN。
     `#EXT#` を含む形式であることも含めて実際の値を確認する）
@@ -471,6 +471,35 @@
   - `pgaadauth_create_principal('<UAMI名>', false, false)` が成功し、API が
     実際に接続できること。名前ベースの登録が失敗する場合は
     `pgaadauth_create_principal_with_oid` へのフォールバックを検討する
+- **Azure 実機の検証結果（2026-09-06、`rg-p1-privsep`。検証後 `azd down --purge`）**:
+  ```
+  Entra 管理者   : nom40hiro21_..._outlook.onm (User, oid fa7120dd-...)
+  UAMI          : id-qlx37mkenwuwc (principalId d4c1e181-...)  ← 管理者に含まれない
+  テーブル所有者 : alembic_version / audit_events / namespaces / ontology_versions
+                  すべて ontology_owner
+  アプリのロールの権限（has_table_privilege）:
+    audit_events       SELECT=Y INSERT=Y UPDATE=Y DELETE=n TRUNCATE=n
+    その他3テーブル     SELECT=Y INSERT=Y UPDATE=Y DELETE=Y TRUNCATE=n
+    public.CREATE=n / pg_has_role(ontology_owner)=false
+  SET ROLE してアプリのロールとして実行した結果:
+    SELECT audit_events            -> 3 行（成功）
+    DELETE FROM audit_events       -> permission denied for table audit_events
+    TRUNCATE audit_events          -> permission denied for table audit_events
+    DROP TABLE audit_events        -> must be owner of table audit_events
+    CREATE TABLE                   -> permission denied for schema public
+    ALTER TABLE audit_events       -> must be owner of table audit_events
+  postdeploy: bootstrap-db pre → alembic upgrade head（03fff5e0d815）→ post
+              → ファイアウォール規則削除 → publish 201 / submit 200 / approve 200
+              → GET /namespaces に retail-core が現れる
+  API: SPARQL（GRAPH 句なし）-> 60 トリプル、owl:Class 4 件
+       版の状態 = approved、projected_at あり
+       INSERT DATA -> 400（読み取り専用）、未認証 -> 401
+  ファイアウォール規則: AllowAllAzureServicesAndResources のみ（一時規則は残らず）
+  ```
+  **`#EXT#` を含む 75 文字の UPN でも接続できた。** PostgreSQL 側のロール名は
+  63 文字に切り詰められる（`...outlook.onm` で終わる）が、`asyncpg.connect(user=<完全なUPN>)`
+  は Azure 側の認証で解決されるため、呼び出し側で切り詰める必要は**無い**
+  （事前に切り詰めが必要かを懸念していたが、実測で不要と判明した）
 - **見つけたが直していない問題（範囲外のため。出典: この実装作業中の調査）**:
   1. `infra/main.parameters.json` は `principalType` を `AZURE_PRINCIPAL_TYPE`
      に結び付けていない（Bicep 側は `principalType` パラメータを持つが既定値
