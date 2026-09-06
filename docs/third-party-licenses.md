@@ -11,12 +11,16 @@
 | ライブラリ | ライセンス | 取得元 | 扱い |
 |---|---|---|---|
 | Apache Jena / Fuseki | Apache-2.0(確認済) | https://jena.apache.org/ | ✓ 既定のトリプルストア |
-| Ontop | Apache-2.0(確認済) | https://ontop-vkg.org/ | ✓ ただし配布イメージ同梱の JDBC ドライバは別ライセンスの可能性 → 自前 Dockerfile で必要分のみ追加(R6) |
+| Ontop | Apache-2.0(確認済) | https://ontop-vkg.org/ | ✓ **公式イメージに JDBC ドライバは同梱されていない**(確認済。下記 R6)。自前イメージに追加するドライバは許諾的なものだけに限る |
 | Oxigraph | MIT / Apache-2.0 | https://github.com/oxigraph/oxigraph | ✓ 代替ストア候補 |
 | rdflib | BSD-3-Clause | https://github.com/RDFLib/rdflib | ✓ Python 側の RDF 処理 |
 | pyshacl | Apache-2.0 | https://github.com/RDFLib/pySHACL | ✓ SHACL 検証(Phase 2) |
 | ELK reasoner | Apache-2.0 | https://github.com/liveontologies/elk-reasoner | ✓ **既定の OWL 推論器**にする |
 | HermiT | **LGPL-3.0** | https://www.hermit-reasoner.com/ | △ 同梱せず、任意有効化のコンテナビルド時取得。ACA Job の**別プロセス**として動かす構成が LGPL 上最も安全。NOTICE に明記 |
+| PostgreSQL JDBC (pgjdbc) | BSD-2-Clause(確認済) | https://github.com/pgjdbc/pgjdbc | ✓ Ontop 用。自前イメージに**同梱してよい**(Phase 3) |
+| Microsoft JDBC Driver for SQL Server | MIT(確認済) | https://github.com/microsoft/mssql-jdbc | ✓ Ontop 用。自前イメージに**同梱してよい**(Phase 3) |
+| MySQL Connector/J | **GPL-2.0 with FOSS exception**(確認済) | https://github.com/mysql/mysql-connector-j | ✗ **同梱しない。** 利用者が実行時に `jdbc/` へ置く(下記 R6) |
+| Oracle JDBC (ojdbc) | **Oracle 独自条項**(OSS ではない) | https://www.oracle.com/database/technologies/appdev/jdbc.html | ✗ **同梱しない。** 再配布が許諾されていない。利用者が実行時に置く |
 | FastAPI | MIT | https://github.com/fastapi/fastapi | ✓ 利用中 |
 | Fluent UI | MIT | https://github.com/microsoft/fluentui | ✓ 利用中 |
 | MCP Python SDK | MIT | https://github.com/modelcontextprotocol/python-sdk | ✓ 利用中 |
@@ -55,11 +59,31 @@
 
 ---
 
-## Ontop 配布イメージの JDBC ドライバ(R6)
+## Ontop 配布イメージの JDBC ドライバ(R6) — 調査済み・結論
 
-Ontop 本体は Apache-2.0 ですが、**公式配布イメージに同梱される JDBC ドライバは別ライセンスである可能性があります**(例: 商用 DB のドライバは再配布が制限されることがあります)。
+**当初懸念していたリスクは存在しませんでした。** 公式の Ontop イメージ(`ontop/ontop`)には **JDBC ドライバが一切同梱されていません**。公式チュートリアルは利用者側で `jdbc/` ディレクトリを用意してドライバを入れ、`-v $PWD/jdbc:/opt/ontop/jdbc` でマウントすることを求めています(公式ドキュメントの記述: 「Make sure to have the `jdbc/` directory and the JDBC driver inside.」。例として挙げられている H2 のドライバも利用者が自分で取得します)。Ontop 本体は Apache-2.0 です。
 
-対応: 公式イメージをそのまま再配布せず、**自前の Dockerfile で必要なドライバのみを追加**します。追加したドライバのライセンスは本ドキュメントに追記します。**Phase 1 の必須スパイクの 1 つとして、配布物のライセンスを確認します。**
+したがって R6 の論点は「公式イメージに何が入っているか」ではなく、**「自前イメージに何を入れるか」**に移ります。
+
+### 決めたこと
+
+1. **同梱してよいドライバ**(許諾的で再配布に制約が無いもの)
+   - PostgreSQL JDBC (pgjdbc): **BSD-2-Clause**
+   - Microsoft JDBC Driver for SQL Server: **MIT**
+
+   この 2 つは Azure 上の主要な関係データベース(Azure Database for PostgreSQL / Azure SQL)に対応し、Apache-2.0 の配布物に同梱しても問題がありません。
+
+2. **同梱しないドライバ**(利用者が実行時に `jdbc/` へ置く)
+   - **MySQL Connector/J: GPL-2.0 with FOSS exception。** FOSS exception により Apache-2.0 のソフトウェアと組み合わせられる可能性は高いものの、**例外条項の適用範囲の解釈に依存する形でコンテナイメージを再配布するリスクを取る必要がない**ため同梱しません。利用者が自分の環境で置くぶんには何の制約もかかりません
+   - **Oracle JDBC (ojdbc): Oracle 独自条項で、そもそも再配布が許諾されていません**
+
+3. **仕組みとして、`/opt/ontop/jdbc` をマウント可能なまま保ちます。** 同梱しないドライバは利用者が実行時に置けます。**私たちが再配布しないことと、利用者が使えないことは別**です。この分離を維持することが R6 への構造的な答えになります。
+
+4. 自前イメージに新しいドライバを追加するときは、**このドキュメントの表に行を追加してから**追加します(NOTICE への記載が必要かどうかも同時に判断します)。
+
+### 実装への反映
+
+`containers/ontop/` は Phase 3 です。上記 1・2 を Dockerfile のコメントに書き、`P2A-01`(顧客 DB 接続)以降で対応する DB を増やすときにこの表を更新します。
 
 ---
 
