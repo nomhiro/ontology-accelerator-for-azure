@@ -22,6 +22,14 @@
 #
 # 使い方:
 #   ENTRA_TENANT_ID=<tenant> ENTRA_API_AUDIENCE=<appId> sh scripts/verify-mcp-auth.sh
+#
+# **Windows(Git Bash)では `MSYS_NO_PATHCONV=1` を設定していない状態で実行する。**
+# CLAUDE.md は `az` にリソース ID を渡すときに `MSYS_NO_PATHCONV=1` を置くよう
+# 教えているが、それを設定したままこのスクリプトを走らせると、Windows ネイティブの
+# curl が `/tmp/...` や `/dev/null` を解決できず書き込みに失敗する。HTTP コードは
+# 取れているのに `|| echo 000` も走って `200000` のような不可解な値になり、
+# 原因が分かりにくい(実際に踏んだ)。`unset MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL`
+# してから実行すること。
 set -eu
 
 : "${ENTRA_TENANT_ID:?ENTRA_TENANT_ID が必要です}"
