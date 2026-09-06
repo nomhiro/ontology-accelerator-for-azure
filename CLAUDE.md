@@ -59,7 +59,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 150 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 161 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -77,6 +77,11 @@ az keyvault purge --name <name> --location japaneast
 ```
 
 リソースグループの削除自体は ARM のサーバ側で継続するので、コマンドを止めても完了する。止まるのは purge だけである。
+
+**MCP SDK は `ToolError` 以外の例外のメッセージを隠す。** ツールの中で
+`ValueError` を投げると、エージェントに届くのは `Error executing tool <name>`
+だけで理由が失われる。意図的な拒否は必ず
+`mcp.server.mcpserver.exceptions.ToolError` で投げること。
 
 **シェル側のテストは `jq` を要求する。** `containers/fuseki/` の 2 本は load-snapshot.sh 自身がマニフェストの解析に jq を使うため、jq が無い環境では実行できない。Windows には既定で無いので docker 経由で回す:
 

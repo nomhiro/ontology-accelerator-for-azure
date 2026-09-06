@@ -59,11 +59,12 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - Fuseki は internal ingress のため外部から到達できない
 - API `/healthz` が応答し、トークン無しの `GET /namespaces` は **401**(`AUTH_MODE=entra` が機能)
 - MCP `/mcp` が `tools/list` を返す(`list_namespaces` / `sparql_query`)
+- **MCP のツール呼び出しが実際の Entra トークンで Core API まで通る(ADR-0012)。** トークン無し・不正なトークンは MCP 側の検証で拒否され、理由がエージェントに返る。検証手順は `scripts/verify-mcp-auth.sh`
 - API / MCP の scale-to-zero が機能する(初回アクセスはコールドスタート)
 
 ### 未実装・未検証
 
-- **Entra ID の App 登録を伴う認証経路は未検証です。** API がトークンを拒否すること(401)までは確認済みですが、有効なトークンで通す検証は App 登録が必要なため行っていません
+- **名前空間ごとの認可はまだ強制されません。** 認証(誰であるか)は Entra ID で検証され、MCP 経路でも呼び出し元の識別子が Core API まで届きます(ADR-0012)。しかし「誰がどの名前空間に何をしてよいか」は判定していません(Phase 2 の `P2A-06`)
 - **Scan / Model の機能は存在しません** — オントロジーの自動生成、スキーマ発見は Phase 2 です。承認フロー自体は上記の通り最小実装がありますが、権限の強制(責任者のみ・四眼原則)は Phase 2 です
 - MCP サーバーはツール定義まで。Ontop 連邦クエリ・ベクトル検索・OWL 推論は Phase 3〜4 です
 - 名前空間ごとの RBAC は強制されていません(Phase 2)
@@ -245,6 +246,20 @@ POST /namespaces/{ns}/versions/{v}/reject          in-review → draft(body に 
 **エージェント(`GRAPH` 句を書かないクエリ)は常に承認済みの現行版だけを見ます。** `draft` は Blob と PostgreSQL にのみ存在し、Fuseki には一切現れません。レビュアは `GRAPH` 句で `in-review` の版を検証してから approve してください。
 
 **Phase 1 では承認に権限を強制しません。** `submit` / `approve` / `reject` は認証済みの呼び出し元なら誰でも実行できます(責任者のみ・四眼原則は Phase 2)。`approve` した主体は `approved_by` に正しく記録されます。「記録は正しいが、強制は無い」状態であることに注意してください。
+
+#### MCP から Core API への認証
+
+**エージェントは Core API 向けのアクセストークンを取得し、それを MCP へ渡します。** MCP と Core API は同一のアプリ登録(同一オーディエンス)を共有しているため、トークン交換は要りません([ADR-0012](docs/adr/0012-mcp-to-core-api-authentication.md))。
+
+```
+Authorization: Bearer <api://<appId>/.default のアクセストークン>
+```
+
+MCP は受け取ったトークンを**自分で検証してから** Core API へそのまま転送します。ヘッダの存在を識別子の主張として扱いません。転送するのは `Authorization` だけで、`Cookie` などは転送しません。
+
+この設計により、**監査イベントの `actor` が実際のエージェントを指します。** MCP のマネージド ID で Core API を呼ぶ実装にすると、Core API から見た呼び出し元が常に MCP になり、「誰の問い合わせに対してどのバージョンを返したか」が記録できなくなります(ADR-0006 の帰属が壊れます)。
+
+`AUTH_MODE=disabled`(ローカル開発専用)では検証も転送も行いません。
 
 #### Blob のレイアウト
 
