@@ -73,6 +73,17 @@ class SparqlStore(ABC):
     # ---- 管理操作(ストア固有) ----
 
     @abstractmethod
+    async def list_graphs(self, dataset: str) -> list[str]:
+        """データセット内の名前付きグラフ IRI を返す。
+
+        射影が正本から乖離していないかを `reconcile` が確認するために使う
+        (ADR-0010 補記1)。**内容が空の名前付きグラフは返らない**
+        (下の実装のクエリが `?s ?p ?o` を要求するため)。空のグラフには
+        残留する内容が無く、`GRAPH` 句で引いても何も見えないため区別する
+        必要がない。
+        """
+
+    @abstractmethod
     async def list_datasets(self) -> list[str]:
         """データセット名の一覧を返す。"""
 
@@ -193,6 +204,25 @@ class FusekiStore(SparqlStore):
         if response.status_code == 404:
             return
         self._raise_for_status(response, "グラフの削除")
+
+    async def list_graphs(self, dataset: str) -> list[str]:
+        # 管理 API ではなく **SPARQL 1.1 のクエリ**で取る。設計原則3
+        # (SPARQL 1.1 Protocol をハード境界にする)により、利用者が
+        # 持ち込んだストアでも動く必要があるため。
+        #
+        # `GRAPH ?g { }`(空パターン)は Jena では全グラフ名を返すが、
+        # ストアによって挙動が異なる。`?s ?p ?o` を要求する形は移植性が高い
+        # 代わりに空のグラフを返さない(抽象側のドキュメントに明記済み)。
+        operation = "名前付きグラフ一覧の取得"
+        payload = await self.query(
+            "SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }", dataset=dataset
+        )
+        try:
+            bindings = payload["results"]["bindings"]
+            return sorted({str(row["g"]["value"]) for row in bindings})
+        except (KeyError, TypeError) as exc:
+            # 不変条件4: ストアの失敗は必ず SparqlStoreError として表面化する。
+            raise SparqlStoreError(f"{operation}の応答形式が不正です: {exc}") from exc
 
     # ---- 管理操作(Fuseki 固有) ----
 

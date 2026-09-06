@@ -67,6 +67,9 @@ class FakeStore(SparqlStore):
             raise SparqlStoreError("グラフの削除に失敗しました(テスト)")
         self.graphs.pop((dataset, graph_iri), None)
 
+    async def list_graphs(self, dataset: str) -> list[str]:
+        return sorted(iri for (ds, iri) in self.graphs if ds == dataset)
+
     async def list_datasets(self) -> list[str]:
         return list(self.datasets)
 

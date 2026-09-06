@@ -140,3 +140,57 @@ async def test_draft_is_not_projected_at_all(
 
     assert await _default_graph_subjects(store, ns) == []
     assert await _named_graph_subjects(store, ns, v1.graph_iri) == []
+
+
+async def test_list_graphs_returns_named_graphs_from_real_fuseki(
+    store: FusekiStore, ns: str
+) -> None:
+    """`list_graphs` の SPARQL クエリが実物の Fuseki で意図どおり動くこと(ADR-0010 補記1)。
+
+    このクエリ(`SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }`)が
+    フェイクでは検証できない部分そのものである。既定グラフの内容が
+    名前付きグラフとして混ざらないことも同時に確認する(混ざると
+    `reconcile` が既定グラフを「残留」と誤判定しかねない)。
+    """
+    await store.put_default_graph(TTL_V1, dataset=ns)
+    assert await store.list_graphs(ns) == []
+
+    await store.put_graph("urn:ontology:graph/state-proj/1.0.0", TTL_V1, dataset=ns)
+    await store.put_graph("urn:ontology:graph/state-proj/2.0.0", TTL_V2, dataset=ns)
+
+    assert await store.list_graphs(ns) == [
+        "urn:ontology:graph/state-proj/1.0.0",
+        "urn:ontology:graph/state-proj/2.0.0",
+    ]
+
+    await store.delete_graph("urn:ontology:graph/state-proj/1.0.0", dataset=ns)
+    assert await store.list_graphs(ns) == ["urn:ontology:graph/state-proj/2.0.0"]
+
+
+async def test_reconcile_removes_residual_named_graph_on_real_fuseki(
+    session: AsyncSession, blob_store: OntologyBlobStore, store: FusekiStore, ns: str
+) -> None:
+    """P1-17 の回収が実物の Fuseki でも成立すること。
+
+    `reject` の `delete_graph` が失敗した状況を、状態だけ `draft` に戻して
+    グラフを残すことで作る(実際の Fuseki 一時障害と同じ最終状態)。
+    """
+    svc = ProjectionService(
+        session=session, blob=blob_store, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace=ns, turtle=TTL_V1, actor="alice")
+    submitted = await svc.submit(namespace=ns, version=draft.version, actor="alice")
+    assert await _named_graph_subjects(store, ns, submitted.graph_iri) != []
+
+    # 削除だけが失敗した状態を作る(PG は draft、Fuseki にはグラフが残る)。
+    await VersionRepository(session).set_status(
+        ns, draft.version, status=OntologyVersionStatus.DRAFT, reset_projected=True
+    )
+    await session.commit()
+    assert submitted.graph_iri in await store.list_graphs(ns)
+
+    report = await svc.reconcile()
+
+    assert report.graphs_removed == [submitted.graph_iri]
+    assert submitted.graph_iri not in await store.list_graphs(ns)
+    assert await _named_graph_subjects(store, ns, submitted.graph_iri) == []

@@ -165,3 +165,19 @@ async def test_non_dict_json_body_is_wrapped_in_query_not_returned_as_is() -> No
     finally:
         await store.aclose()
         await client.aclose()
+
+
+async def test_unexpected_json_shape_is_wrapped_in_list_graphs() -> None:
+    """`list_graphs` も同じ契約(不変条件4)を持つ。
+
+    契約が破れると `ProjectionService.reconcile()` の
+    `except SparqlStoreError` をすり抜けて、残留グラフの検出だけでなく
+    その後のマニフェスト再生成まで巻き込んで reconcile 全体が中断する。
+    """
+    store, client = _store_with_mock_response('{"results": {"bindings": [{"nope": {}}]}}')
+    try:
+        with pytest.raises(SparqlStoreError):
+            await store.list_graphs("ds")
+    finally:
+        await store.aclose()
+        await client.aclose()

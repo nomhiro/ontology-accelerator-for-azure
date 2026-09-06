@@ -131,6 +131,24 @@ class ReconcileReport:
     # **報告するが削除しない**(オントロジーは不変リビジョン、ADR-0006)。
     # これが Phase 1 における唯一の検出手段であり、削除は運用者の手動判断に委ねる。
     orphan_blobs: list[str] = field(default_factory=list)
+    # 正本の状態から射影されているべきでないのに残っていた名前付きグラフ(削除済み)。
+    #
+    # 主な発生源は `reject` の `delete_graph` 失敗(P1-17)。`draft` は
+    # `unprojected()` の対象外(ADR-0010 決定5)なので、バージョン単位の
+    # 回収経路では拾えない。**これは orphan_datasets / orphan_blobs と違い
+    # 自動削除する。** 判断できる根拠が違うためである: グラフ IRI は
+    # `<GRAPH_IRI_BASE>/<名前空間>/<版>` として**このシステムが組み立てたもの**で、
+    # かつ PostgreSQL がどの版が射影されるべきかの正本なので、
+    # 「自分たちの接頭辞に一致し、かつ正本が射影を求めていない」グラフは
+    # 定義上残留である。データセットや Blob と違い、失っても正本から
+    # 再構築できる(ADR-0002)。
+    graphs_removed: list[str] = field(default_factory=list)
+    # データセット内にあるが、自分たちの IRI 接頭辞に一致しないグラフ。
+    #
+    # `GRAPH_IRI_BASE` を変更した後の古いグラフや、持ち込みストアにある
+    # 別用途のグラフがこれに当たる。**報告するが削除しない**
+    # (orphan_datasets と同じ保守的な方針)。
+    foreign_graphs: list[str] = field(default_factory=list)
 
 
 def _next_version(previous: OntologyVersion | None) -> str:
@@ -562,6 +580,43 @@ class ProjectionService:
                 # 失敗も専用の例外で来る契約になっているため、OSError 等を広く
                 # 構える必要はない。
                 report.failures.append(f"{version.namespace}@{version.version}: {exc}")
+
+        # 名前付きグラフ単位の残留検出(ADR-0010 補記1、P1-17)。
+        #
+        # **バージョン単位の回収(上の unprojected ループ)では拾えない乖離がある。**
+        # `reject` は `draft` に戻してから `delete_graph` を呼ぶが、この削除の
+        # 失敗は握り潰される(不変条件3と同じ扱い)。`draft` は `unprojected()`
+        # の対象外なので、残留した名前付きグラフを誰も回収しない。
+        # そこで「ストアに実際にあるグラフ」と「正本が射影を求めるグラフ」を
+        # 突き合わせる。射影の失敗ではなく**射影の取り消しの失敗**を回収する経路。
+        #
+        # 上の射影ループより後に置く(そこで新たに射影したグラフを
+        # 残留と誤判定しないため。順序が本質)。
+        for ns in namespaces:
+            dataset = dataset_name(ns.name)
+            # `version_graph_iri` と同じ組み立て方(base の末尾 `/` を落とす)。
+            prefix = f"{self._base.rstrip('/')}/{ns.name}/"
+            try:
+                actual = await self._store.list_graphs(dataset)
+            except SparqlStoreError as exc:
+                report.failures.append(f"{ns.name}: 名前付きグラフ一覧の取得に失敗 ({exc})")
+                continue
+            expected = {
+                version.graph_iri
+                for version in await versions.list_for(ns.name)
+                if version.status is not OntologyVersionStatus.DRAFT
+            }
+            for graph_iri in actual:
+                if not graph_iri.startswith(prefix):
+                    report.foreign_graphs.append(f"{ns.name}: {graph_iri}")
+                    continue
+                if graph_iri in expected:
+                    continue
+                try:
+                    await self._store.delete_graph(graph_iri, dataset=dataset)
+                    report.graphs_removed.append(graph_iri)
+                except SparqlStoreError as exc:
+                    report.failures.append(f"{ns.name}: {graph_iri} の削除に失敗 ({exc})")
 
         # マニフェスト(versions/<ns>/_state.json)を PostgreSQL から再生成する
         # (ADR-0010 決定7)。マニフェストは射影であり正本ではないため、

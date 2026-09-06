@@ -72,6 +72,9 @@ class FakeStore(SparqlStore):
             raise SparqlStoreError("グラフの削除に失敗しました(テスト)")
         self.graphs.pop((dataset, graph_iri), None)
 
+    async def list_graphs(self, dataset: str) -> list[str]:
+        return sorted(iri for (ds, iri) in self.graphs if ds == dataset)
+
     async def list_datasets(self) -> list[str]:
         return list(self.datasets)
 
@@ -352,3 +355,129 @@ async def test_reconcile_regenerates_manifest_from_postgres(prepared: Prepared) 
     manifest = await _manifest(blob, "retail-core")
     assert manifest["current"] == v1.version
     assert manifest["versions"] == [{"version": v1.version, "status": "approved"}]
+
+
+# ---- P1-17: reject の名前付きグラフ削除が失敗したときの回収 ----
+#
+# reject は `delete_graph` の失敗を握り潰して成功を返す(不変条件3と同じ扱い)。
+# その結果、却下された版の名前付きグラフが残留し、`GRAPH` 句を明示した
+# レビュア・監査経路から見え続ける。`draft` は `unprojected()` の対象外
+# (ADR-0010 決定5)なので、以前の reconcile はこれを回収できなかった。
+# ADR-0010 の補記1で「グラフ単位の残留検出」を追加した。
+
+
+async def test_reconcile_removes_named_graph_left_by_failed_reject(prepared: Prepared) -> None:
+    """reject 時の delete_graph が失敗して残った名前付きグラフを reconcile が外す。"""
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    submitted = await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    assert ("retail-core", submitted.graph_iri) in store.graphs
+
+    # 削除が必ず失敗するストアで却下する(Fuseki の一時障害を模す)。
+    failing = FakeStore(fail_delete=True)
+    failing.datasets = ["retail-core"]
+    failing.graphs = dict(store.graphs)
+    svc_failing = ProjectionService(
+        session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
+    )
+    rejected = await svc_failing.reject(
+        namespace="retail-core", version=draft.version, actor="bob", reason="用語が不足"
+    )
+    assert rejected.status is OntologyVersionStatus.DRAFT
+    # 削除に失敗したので残留している(これが P1-17 の状態)。
+    assert ("retail-core", submitted.graph_iri) in failing.graphs
+
+    # reconcile が回収する。
+    recovered = FakeStore()
+    recovered.datasets = ["retail-core"]
+    recovered.graphs = dict(failing.graphs)
+    svc_recover = ProjectionService(
+        session=session, blob=blob, store=recovered, graph_iri_base="urn:ontology:graph"
+    )
+    report = await svc_recover.reconcile()
+
+    assert ("retail-core", submitted.graph_iri) not in recovered.graphs
+    assert report.graphs_removed == [submitted.graph_iri]
+    assert report.failures == []
+
+
+async def test_reconcile_keeps_named_graphs_of_in_review_and_approved(prepared: Prepared) -> None:
+    """draft でない版の名前付きグラフは reconcile が消さない。"""
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    v1 = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=v1.version, actor="alice")
+    approved = await svc.approve(namespace="retail-core", version=v1.version, actor="bob")
+
+    v2 = await svc.publish(
+        namespace="retail-core", turtle=TTL + "\n<urn:x> <urn:y> <urn:z> .\n", actor="alice"
+    )
+    in_review = await svc.submit(namespace="retail-core", version=v2.version, actor="alice")
+
+    store.datasets = ["retail-core"]
+    before = set(store.graphs)
+    report = await svc.reconcile()
+
+    assert set(store.graphs) == before
+    assert ("retail-core", approved.graph_iri) in store.graphs
+    assert ("retail-core", in_review.graph_iri) in store.graphs
+    assert report.graphs_removed == []
+
+
+async def test_reconcile_reports_graphs_outside_our_iri_prefix_without_deleting(
+    prepared: Prepared,
+) -> None:
+    """自分たちの IRI 接頭辞に一致しないグラフは報告するだけで消さない。
+
+    orphan_datasets / orphan_blobs と同じ保守的な方針。`GRAPH_IRI_BASE` を
+    変更した後や、利用者が持ち込んだストアに他の用途のグラフがある場合に、
+    それを勝手に消してはいけない。
+    """
+    session, blob = prepared
+    store = FakeStore()
+    store.datasets = ["retail-core"]
+    store.graphs[("retail-core", "https://other.example/graph/1")] = "# 他の用途"
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+
+    report = await svc.reconcile()
+
+    assert ("retail-core", "https://other.example/graph/1") in store.graphs
+    assert report.foreign_graphs == ["retail-core: https://other.example/graph/1"]
+    assert report.graphs_removed == []
+
+
+async def test_reconcile_reports_graph_removal_failure_without_aborting(
+    prepared: Prepared,
+) -> None:
+    """残留グラフの削除に失敗しても reconcile 全体は止まらず、失敗として報告する。"""
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    submitted = await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    await svc.reject(namespace="retail-core", version=draft.version, actor="bob", reason="x")
+
+    failing = FakeStore(fail_delete=True)
+    failing.datasets = ["retail-core"]
+    failing.graphs[("retail-core", submitted.graph_iri)] = TTL
+    svc_failing = ProjectionService(
+        session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
+    )
+    report = await svc_failing.reconcile()
+
+    assert report.graphs_removed == []
+    assert any(submitted.graph_iri in f for f in report.failures)
+    # マニフェストの再生成(reconcile の後段)まで到達していること。
+    manifest = await _manifest(blob, "retail-core")
+    assert manifest["versions"] == []

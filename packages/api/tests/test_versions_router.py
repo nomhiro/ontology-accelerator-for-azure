@@ -53,6 +53,9 @@ class _NullStore(SparqlStore):
     async def delete_graph(self, graph_iri: str, *, dataset: str) -> None:
         return None
 
+    async def list_graphs(self, dataset: str) -> list[str]:
+        return []
+
     async def list_datasets(self) -> list[str]:
         return []
 
