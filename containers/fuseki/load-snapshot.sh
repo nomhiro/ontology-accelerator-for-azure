@@ -149,6 +149,8 @@ fetch_manifest() {
 #   - in-review: 名前付きグラフのみ
 #   - superseded: SUPERSEDED_RETAIN が 0 以外なら名前付きグラフのみ。既定 0 では読み込まない
 #   - マニフェストに載っていない版(draft の可能性): 読み込まない
+# 読み込まない場合、projection_targets は `skip:<理由>` を返す(P1-22)。
+# build_namespace_tdb はその理由をログに出す。
 # マニフェストが取得できない・不正な名前空間は、**黙って全件承認済みとして
 # 扱わず**、この名前空間を丸ごとスキップする(修正5。推測は Critical
 # (P1-C1)を再来させる)。1 つの名前空間の設定不備が他の名前空間を巻き込んで
@@ -217,10 +219,22 @@ build_namespace_tdb() {
             targets="named default"
         fi
 
-        if [ -z "${targets}" ]; then
-            log "読み込む対象ではないためスキップします(マニフェストの状態による。superseded かつ SUPERSEDED_RETAIN=0、またはマニフェストに無い版) [${namespace}]: ${version}"
-            continue
-        fi
+        # projection_targets は必ず "named" / "named default" / "skip:<理由>"
+        # のいずれかを返す(P1-22)。理由をそのままログに出すことで、
+        # 「なぜこの版が読み込まれなかったか」がログから追える。
+        case "${targets}" in
+            skip:*)
+                log "読み込む対象ではないためスキップします(理由: ${targets#skip:}) [${namespace}]: ${version}"
+                continue
+                ;;
+            named | 'named default') ;;
+            *)
+                # 呼び出し規約の違反。推測して読み込むより、この版を諦めて
+                # 異常だと言う(空文字を含む予期しない出力がここに来る)。
+                log "projection_targets が予期しない値を返しました('${targets}')。この版はスキップします [${namespace}]: ${version}"
+                continue
+                ;;
+        esac
 
         log "読み込み [${namespace}]: $(basename "${ttl}") -> ${graph_iri}"
         "${JENA_HOME}/bin/tdb2.tdbloader" \

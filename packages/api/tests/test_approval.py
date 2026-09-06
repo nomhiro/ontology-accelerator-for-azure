@@ -481,3 +481,84 @@ async def test_reconcile_reports_graph_removal_failure_without_aborting(
     # マニフェストの再生成(reconcile の後段)まで到達していること。
     manifest = await _manifest(blob, "retail-core")
     assert manifest["versions"] == []
+
+
+# ---- P1-19: ローダにスキップされた名前空間を運用者が API から検出できる ----
+#
+# ローダはマニフェストが取得できない・不正な名前空間を丸ごとスキップする
+# (1 件の設定不備が他の名前空間を巻き込んで全滅させないため)。しかし
+# スキップされた名前空間のデータセットは存在するが空になるため、
+# エージェントから見ると「データが無い」と区別がつかない。気づく手段が
+# ローダのログしかなかった。
+#
+# reconcile は正本(PostgreSQL)がどの版の射影を求めているかを知っているので、
+# **ストアに実際にあるグラフと突き合わせれば、ローダと一切協調せずに検出できる**。
+
+
+async def test_reconcile_reports_graphs_the_loader_should_have_loaded(
+    prepared: Prepared,
+) -> None:
+    """承認済みの版のグラフがストアに無いことを reconcile が報告する。
+
+    ローダが名前空間をスキップした後の状態(データセットはあるが空)を模す。
+    `projected_at` は過去に射影したときのまま残るため `unprojected()` では
+    拾えず、この突き合わせが唯一の検出手段になる。
+    """
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    approved = await svc.approve(namespace="retail-core", version=draft.version, actor="bob")
+
+    # 再構築でスキップされた状態を作る(データセットはあるがグラフが無い)。
+    store.graphs.clear()
+    store.default_graphs.clear()
+    store.datasets = ["retail-core"]
+
+    report = await svc.reconcile()
+
+    assert report.missing_graphs == [f"retail-core: {approved.graph_iri} (approved)"]
+    # `projected_at` が残っているため、バージョン単位の回収は動かない
+    # (= 報告が唯一の検出手段であることの確認)。
+    assert report.versions_projected == []
+    assert report.failures == []
+
+
+async def test_reconcile_does_not_report_missing_superseded_graphs(
+    prepared: Prepared,
+) -> None:
+    """`superseded` のグラフが無いのは正常(SUPERSEDED_RETAIN=0 の既定)。
+
+    ローダは既定で superseded を読み込まないため、これを報告すると
+    正常な構成で毎回ノイズが出て、本当の異常が埋もれる。
+    """
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    v1 = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=v1.version, actor="alice")
+    await svc.approve(namespace="retail-core", version=v1.version, actor="bob")
+
+    v2 = await svc.publish(
+        namespace="retail-core", turtle=TTL + "<urn:x> <urn:y> <urn:z> .\n", actor="alice"
+    )
+    await svc.submit(namespace="retail-core", version=v2.version, actor="alice")
+    approved = await svc.approve(namespace="retail-core", version=v2.version, actor="bob")
+
+    # v1 は superseded になっている。両方のグラフを消す。
+    versions = {
+        v.version: v.status for v in await VersionRepository(session).list_for("retail-core")
+    }
+    assert versions[v1.version] is OntologyVersionStatus.SUPERSEDED
+    store.graphs.clear()
+    store.datasets = ["retail-core"]
+
+    report = await svc.reconcile()
+
+    # 承認済み現行版だけが報告される。superseded は報告しない。
+    assert report.missing_graphs == [f"retail-core: {approved.graph_iri} (approved)"]

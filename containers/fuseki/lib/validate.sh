@@ -172,7 +172,18 @@ manifest_status_for_version() {
 # 呼び出し側は文字列全体の一致で見分ける):
 #   "named default"  … 名前付きグラフと既定グラフの両方へ読み込む
 #   "named"          … 名前付きグラフのみへ読み込む
-#   ""(空)            … 読み込まない(この版は丸ごとスキップする)
+#   "skip:<理由>"    … 読み込まない(この版は丸ごとスキップする)。理由の値:
+#                        superseded-retain-0   … superseded かつ SUPERSEDED_RETAIN=0
+#                        not-in-manifest       … マニフェストに載っていない(draft の可能性)
+#                        unknown-status-<状態> … ローダが知らない状態
+#
+# **スキップは空文字ではなく理由付きで返す(P1-22)。** 振り分けをこの関数に
+# 切り出した結果、呼び出し元(build_namespace_tdb)に判断が無くなり、
+# 「superseded だからスキップした」と「マニフェストに無いからスキップした」を
+# 区別する情報がその場から失われた。旧コードは理由別にログを出していた。
+# 判断を 1 箇所に保ったまま呼び出し元が理由をログに出せるようにする。
+# **空文字は返さない。** 空文字を返すと、呼び出し元でうっかり未設定の変数と
+# 区別が付かなくなり、「静かに読み込まれない」状態に戻る。
 projection_targets() {
     manifest="$1"
     version="$2"
@@ -197,15 +208,21 @@ projection_targets() {
             ;;
         superseded)
             if [ "${retain}" = "0" ]; then
-                printf ''
+                printf 'skip:superseded-retain-0'
             else
                 printf 'named'
             fi
             ;;
-        *)
+        '')
             # マニフェストに載っていない版(draft の可能性)。読み込まない
             # (ADR-0010 決定5。推測は Critical(P1-C1)を再来させる)。
-            printf ''
+            printf 'skip:not-in-manifest'
+            ;;
+        *)
+            # ローダが知らない状態。将来 API 側が新しい状態を導入したときに、
+            # 黙って読み込まないのではなく状態名を添えて言えるようにする
+            # (「静かに間違う」を避ける。推測して読み込むことは絶対にしない)。
+            printf 'skip:unknown-status-%s' "${status}"
             ;;
     esac
 }

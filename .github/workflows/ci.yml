@@ -208,3 +208,9 @@ jobs:
       # それだけを直接 sh で実行してテストする(Task 7 レビュー修正1)。
       - name: 検証関数のテストを実行する
         run: sh containers/fuseki/lib/validate.test.sh
+      # ローダ本体の制御フロー(マニフェストが取得できない・不正な名前空間を
+      # スキップし、他の名前空間の読み込みは継続する)に対するテスト(P1-21)。
+      # curl と tdb2.tdbloader をスタブに差し替えてスクリプトを丸ごと実行する。
+      # jq は ubuntu-latest に標準で入っている。
+      - name: ローダの制御フローのテストを実行する
+        run: sh containers/fuseki/load-snapshot.test.sh

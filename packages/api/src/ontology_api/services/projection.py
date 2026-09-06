@@ -149,6 +149,27 @@ class ReconcileReport:
     # 別用途のグラフがこれに当たる。**報告するが削除しない**
     # (orphan_datasets と同じ保守的な方針)。
     foreign_graphs: list[str] = field(default_factory=list)
+    # 正本が射影を求めているのにストアに無い名前付きグラフ(P1-19)。
+    #
+    # **主な発生源はローダによる名前空間のスキップである。** ローダは
+    # マニフェストが取得できない・不正な名前空間を丸ごとスキップする
+    # (1 件の設定不備が他の名前空間を全滅させないため)。その結果
+    # データセットは存在するが空になり、**エージェントから見ると
+    # 「データが無い」と区別がつかない**。気づく手段がローダのログしか
+    # なかった(P1-19)。
+    #
+    # `projected_at` は過去に射影したときのまま残るため `unprojected()` では
+    # 拾えない。ここが唯一の検出手段になる。**自動復旧はしない**
+    # (`projected_at` が非 NULL の版を再射影してよいかは別の判断であり、
+    # `SUPERSEDED_RETAIN` の保持ポリシーとの関係も未決。`P1-25` で扱う)。
+    # ただし reconcile はこの後マニフェストを正本から再生成するため、
+    # スキップの原因がマニフェストの欠落・破損であれば**次の再構築では
+    # 直っている**。運用者はこの報告を見て再構築を促せばよい。
+    #
+    # `superseded` は既定(`SUPERSEDED_RETAIN=0`)でローダが読み込まないため
+    # **報告しない**。報告すると正常な構成で毎回ノイズが出て、本当の異常が
+    # 埋もれる。
+    missing_graphs: list[str] = field(default_factory=list)
 
 
 def _next_version(previous: OntologyVersion | None) -> str:
@@ -601,11 +622,22 @@ class ProjectionService:
             except SparqlStoreError as exc:
                 report.failures.append(f"{ns.name}: 名前付きグラフ一覧の取得に失敗 ({exc})")
                 continue
+            ns_versions = await versions.list_for(ns.name)
             expected = {
                 version.graph_iri
-                for version in await versions.list_for(ns.name)
+                for version in ns_versions
                 if version.status is not OntologyVersionStatus.DRAFT
             }
+            # 欠落の検出は `superseded` を除いた集合で行う(P1-19)。
+            # `superseded` は既定でローダが読み込まないため、無いのが正常。
+            must_exist = {
+                version.graph_iri: version.status.value
+                for version in ns_versions
+                if version.status
+                in (OntologyVersionStatus.IN_REVIEW, OntologyVersionStatus.APPROVED)
+            }
+            for graph_iri in sorted(set(must_exist) - set(actual)):
+                report.missing_graphs.append(f"{ns.name}: {graph_iri} ({must_exist[graph_iri]})")
             for graph_iri in actual:
                 if not graph_iri.startswith(prefix):
                     report.foreign_graphs.append(f"{ns.name}: {graph_iri}")

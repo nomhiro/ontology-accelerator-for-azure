@@ -198,12 +198,23 @@ else
         projection_targets "${two_approved}" "2.1.0" "0" "named"
     check_eq3 "in-review → named" \
         projection_targets "${manifest_ok}" "2.1.0" "0" "named"
-    check_eq3 "superseded かつ SUPERSEDED_RETAIN=0 → 読み込まない" \
-        projection_targets "${manifest_ok}" "1.0.0" "0" ""
     check_eq3 "superseded かつ SUPERSEDED_RETAIN=2 → named" \
         projection_targets "${manifest_ok}" "1.0.0" "2" "named"
-    check_eq3 "マニフェストに載っていない版(draft の可能性) → 読み込まない" \
-        projection_targets "${manifest_ok}" "9.9.9" "0" ""
+
+    # ---- スキップの理由を出力に含める (P1-22) ----
+    # 振り分けを純粋関数に切り出した結果、build_namespace_tdb に判断が無くなり、
+    # 「superseded だからスキップ」と「マニフェストに無いからスキップ」を
+    # 区別する情報がその場から失われた。判断を1箇所に保ったまま呼び出し元が
+    # 理由をログに出せるよう、スキップは空文字ではなく `skip:<理由>` を返す。
+    check_eq3 "superseded かつ SUPERSEDED_RETAIN=0 → 理由付きでスキップ" \
+        projection_targets "${manifest_ok}" "1.0.0" "0" "skip:superseded-retain-0"
+    check_eq3 "マニフェストに載っていない版(draft の可能性) → 理由付きでスキップ" \
+        projection_targets "${manifest_ok}" "9.9.9" "0" "skip:not-in-manifest"
+    # ローダが知らない状態が将来のマニフェストに現れたとき、黙って読み込まない
+    # のではなく「知らない状態だから読み込まなかった」と言えること。
+    unknown_status='{"schema":1,"namespace":"x","current":null,"versions":[{"version":"1.0.0","status":"quarantined"}],"generated_at":"t"}'
+    check_eq3 "ローダが知らない状態 → 状態名を含む理由付きでスキップ" \
+        projection_targets "${unknown_status}" "1.0.0" "0" "skip:unknown-status-quarantined"
 fi
 
 if [ "${failures}" -gt 0 ]; then
