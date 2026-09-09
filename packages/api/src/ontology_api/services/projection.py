@@ -53,6 +53,11 @@ from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
 from ontology_api.services.authorization import TwoPersonApprovalError
 from ontology_core.blob import BlobStoreError, OntologyBlobStore
+from ontology_core.deprecation import (
+    DeprecationProblem,
+    check_deprecation,
+    has_blocking,
+)
 from ontology_core.diff import DiffError, OntologyDiff, diff_ontologies
 from ontology_core.graphs import dataset_name, version_graph_iri
 from ontology_core.models import OntologyVersion, OntologyVersionStatus
@@ -78,6 +83,20 @@ class UnknownNamespaceError(Exception):
 
 class UnknownVersionError(Exception):
     """存在しない (名前空間, バージョン) の組を指定したことを表す。"""
+
+
+class DeprecationViolationError(Exception):
+    """廃止のライフサイクルに反しているため承認できない(ADR-0017 決定2)。
+
+    **`ShaclViolationError` と分けている。** どちらも 422 だが、運用者が
+    取るべき対処が違う — SHACL 違反は制約を満たすようデータを直す話で、
+    こちらは「削除ではなく廃止する」「後継か理由を書く」という縮め方の話
+    である。同じ例外に混ぜると、報告を読んでも何を直すか分からない。
+    """
+
+    def __init__(self, message: str, *, problems: list[DeprecationProblem]) -> None:
+        super().__init__(message)
+        self.problems = problems
 
 
 class ShaclViolationError(Exception):
@@ -567,6 +586,40 @@ class ProjectionService:
         # 別スレッドへ逃がす。イベントループを塞ぐと他のリクエストが進めない。
         return await asyncio.to_thread(validate_turtle_with_shacl, turtle)
 
+    async def check_deprecation_lifecycle(
+        self, *, namespace: str, version: str, base: OntologyVersion | None
+    ) -> list[DeprecationProblem]:
+        """廃止のライフサイクルに関する問題を列挙する(`P2B-03`、ADR-0017)。
+
+        **状態を変えない。** レビュー画面と `approve` の両方から呼ぶ。
+
+        Raises:
+            UnknownVersionError: 版が無いとき。
+            BlobStoreError: 正本から TTL を読めなかったとき。**「問題なし」に
+                しない**(検証できなかったことと適合を混同しない)。
+            DeprecationCheckError: Turtle を解析できなかったとき。同上。
+        """
+        current = await VersionRepository(self._session).get(namespace, version)
+        if current is None:
+            raise UnknownVersionError(f"'{namespace}@{version}' が見つかりません")
+        turtle = await self._blob.get_version(current.blob_path)
+        base_turtle = None if base is None else await self._blob.get_version(base.blob_path)
+        return await asyncio.to_thread(check_deprecation, turtle, base_turtle=base_turtle)
+
+    async def current_approved(self, *, namespace: str, excluding: str) -> OntologyVersion | None:
+        """現在の `approved` 版を返す(自分自身は除く)。
+
+        承認の基準(ADR-0016 決定2 / ADR-0017 決定4)を 1 か所で決める。
+        """
+        return next(
+            (
+                v
+                for v in await VersionRepository(self._session).list_for(namespace)
+                if v.status is OntologyVersionStatus.APPROVED and v.version != excluding
+            ),
+            None,
+        )
+
     async def compute_diff(
         self, *, namespace: str, base: OntologyVersion, target: OntologyVersion
     ) -> OntologyDiff:
@@ -683,14 +736,26 @@ class ProjectionService:
                 report=shacl_report.shapes_report or shacl_report.data_report,
             )
 
-        previous_approved = next(
-            (
-                v
-                for v in await versions.list_for(namespace)
-                if v.status is OntologyVersionStatus.APPROVED and v.version != version
-            ),
-            None,
+        previous_approved = await self.current_approved(namespace=namespace, excluding=version)
+
+        # ---- 廃止のライフサイクル(P2B-03、ADR-0017 決定2・4) ----
+        # **状態を変える前に検査する**(SHACL 検証と同じ理由)。
+        #
+        # ブロックするのは「IRI の削除」と「後継も理由も無い廃止」だけである。
+        # 生きている用語からの廃止済み用語への参照は**報告に留める** —
+        # SHACL の形状やマッピングが正当に参照するため。
+        #
+        # ADR-0016 決定6 は削除のブロックを P2B-03 に送った。**廃止の経路が
+        # 無い状態で削除を禁じると、縮める正当な手段が 1 つも無くなる**ため
+        # である。その順序の依存がここで解ける。
+        deprecation_problems = await self.check_deprecation_lifecycle(
+            namespace=namespace, version=version, base=previous_approved
         )
+        if has_blocking(deprecation_problems):
+            raise DeprecationViolationError(
+                f"'{namespace}@{version}' は廃止のライフサイクルに反しているため承認できません",
+                problems=[p for p in deprecation_problems if p.blocking],
+            )
 
         now = datetime.now(UTC)
         updated = await versions.set_status(

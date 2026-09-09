@@ -137,6 +137,13 @@ def _forward_headers(ctx: Context[Any, Any]) -> dict[str, str]:
     return {"Authorization": authorization}
 
 
+#: Core API が廃止済み用語を載せてくるヘッダ(ADR-0017 決定3)。
+#: `ontology_api.routers.sparql.DEPRECATED_TERMS_HEADER` と同じ値。
+#: **import しないのは、MCP が Core API のコードに依存しないため**である
+#: (HTTP 境界を越えて型を共有しない。ADR-0012 の分離を保つ)。
+_DEPRECATED_TERMS_HEADER = "X-Ontology-Deprecated-Terms"
+
+
 def _api_client(headers: dict[str, str] | None = None) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=_settings.core_api_url,
@@ -173,6 +180,13 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
     Returns:
         SPARQL Results JSON 形式の結果。
 
+        **`deprecation_warnings` が付いていたら必ず読むこと。** 結果に現れた
+        用語のうち、**廃止済み(`owl:deprecated`)のもの**の IRI が入る。
+        廃止された用語は「もう使うな」という意味であり、後継が定義されている
+        ことが多い。回答にその用語を使う場合は、廃止されている旨を添えるか、
+        `term_owner` で責任者に確認すべき対象として示すのが正確である。
+        廃止が無い場合このキーは付かない。
+
     Raises:
         ToolError: クエリが読み取り専用の条件を満たさないとき、または
             呼び出し元のトークンが無い・検証を通らないとき。
@@ -193,7 +207,24 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
         )
         response.raise_for_status()
         result: dict[str, Any] = response.json()
-        return result
+
+    # ---- 廃止された用語の警告(P2B-03、ADR-0017 決定3) ----
+    #
+    # **エージェントにはヘッダではなく本文で渡す。** Core API は標準の
+    # SPARQL Results JSON を保つためヘッダに載せるが(ADR-0001 の
+    # 「SPARQL 1.1 Protocol をハード境界にする」)、**エージェントはヘッダを
+    # 見ない**。見えなければ廃止された用語を自信を持って使ってしまう。
+    # 「AI に正しいコンテキストを渡す」ことがこの製品の目的なので、
+    # ここで届かないなら警告を作る意味がない。
+    #
+    # ツール結果の形はこの製品が定義するものであり、SPARQL の protocol では
+    # ないため、キーを 1 つ足しても矛盾しない(`head` / `results` は
+    # そのまま残るので、標準の形として読む側も壊れない)。
+    header = response.headers.get(_DEPRECATED_TERMS_HEADER, "")
+    deprecated = [part.strip() for part in header.split(",") if part.strip()]
+    if deprecated:
+        result["deprecation_warnings"] = deprecated
+    return result
 
 
 @mcp.tool()

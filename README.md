@@ -49,7 +49,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
   | 操作 | 必要なロール |
   |---|---|
-  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 用語の責任者の参照 | `data-analyst` |
+  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 廃止の検査 / 用語の責任者の参照 | `data-analyst` |
   | `publish` / `submit` | `data-steward` |
   | `approve` / `reject` | `maintainer` |
   | 用語の責任者の付与・取り消し | `maintainer` |
@@ -67,7 +67,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 371 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 416 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -167,8 +167,8 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
 
-現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、そして意味的差分です。
-**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、廃止のライフサイクル(`P2B-03`)、アクセスログと健全性指標(`P2B-05` / `P2B-06`)です。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、そして廃止のライフサイクルです。
+**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、アクセスログと健全性指標(`P2B-05` / `P2B-06`)、保持ポリシー(`P2B-02`)です。
 監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
@@ -372,6 +372,58 @@ just check-questions my.questions.yaml my-namespace     # 自分の名前空間�
 
 `superseded`（別の版の承認による自動遷移）の理由はシステムが書きます。**`diff`（意味的差分）は `approve` の記録に入ります**（下記「意味的差分を見る」）。最初の承認では基準が無いため `null` です。
 
+#### オントロジーを縮める(廃止のライフサイクル)
+
+**用語を削除することはできません。** 現行の承認済み版にあった用語を消した版は、`approve` が **422** で拒否します（[ADR-0009](docs/adr/0009-ontology-operations.md) 決定3・[ADR-0017](docs/adr/0017-deprecation-lifecycle.md)）。追加しかできないオントロジーは必ず腐るため、**縮める手段は用意されていますが、それは削除ではなく廃止です。**
+
+```turtle
+# 正しい縮め方: 残したまま廃止し、後継を示す
+ex:Customer a owl:Class ;
+    rdfs:label "顧客" ;
+    owl:deprecated true ;
+    dcterms:isReplacedBy ex:Party .
+```
+
+**後継が無い廃止も正当です**（間違って作った用語、統合されずに消える概念）。その場合は理由を書いてください。**後継か理由のどちらかが必要**で、両方は要りません。
+
+```turtle
+ex:Bogus a owl:Class ;
+    owl:deprecated true ;
+    rdfs:comment "誤って作成したため廃止。後継はありません" .
+```
+
+承認前に検査できます。
+
+```bash
+curl "$API/namespaces/retail-core/versions/2.0.0/deprecations" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{ "base_version": "1.0.0", "blocking": false,
+  "problems": [ { "kind": "references-deprecated",
+                  "term": "https://example.com/ontology/retail#Order",
+                  "blocking": false, "message": "...",
+                  "referenced": "https://example.com/ontology/retail#Customer" } ] }
+```
+
+**ブロックするのは 2 つだけです。**
+
+| 検査 | 扱い | 従う手段 |
+|---|---|---|
+| `removed`（IRI の削除） | **422 で拒否** | 削除せず `owl:deprecated` を立てる |
+| `no-successor-or-reason`（後継も理由も無い廃止） | **422 で拒否** | どちらかを書く |
+| `references-deprecated`（生きている用語が廃止済みを参照） | **報告のみ** | 後継へ張り替える（そのままでも承認できます） |
+
+**最後をブロックしないのは、SHACL の形状やマッピングが廃止された用語を正当に参照するから**です。旧データを検証する形状や旧→新のマッピングを禁止してしまうためです。`dcterms:replaces` と `rdfs:seeAlso` による参照は歴史的参照として最初から問題に数えません。
+
+**クエリの結果に廃止済みの用語が現れたら警告します。** 置き場所は層によって違います。
+
+- **Core API**: `X-Ontology-Deprecated-Terms` **レスポンスヘッダ**。本文は標準の SPARQL Results JSON のままです（[ADR-0001](docs/adr/0001-rdf-store-selection.md) の「SPARQL 1.1 Protocol をハード境界にする」を守るため、本文に独自のキーを混ぜません）
+- **MCP**: ツール結果の**本文**に `deprecation_warnings` が付きます。**エージェントはヘッダを見ない**ので、ここで届かなければ廃止された用語を自信を持って使ってしまいます
+
+**廃止された用語は引き続き引けます。** 廃止は「もう使うな」であって「無かったことにする」ではありません。過去のデータを解釈するために IRI は残り続けます（SNOMED CT や GO が IRI を削除・再利用しないのと同じ理由です）。
+
 #### 意味的差分を見る
 
 **承認すると、前の `approved` 版との意味的差分が `audit_events.diff` に記録されます**（[ADR-0016](docs/adr/0016-semantic-diff.md)）。承認前にレビューするための口も別にあります。
@@ -398,7 +450,7 @@ curl -G "$API/namespaces/retail-core/versions/2.0.0/diff" \
 
 **`removed_terms` と `deprecated_terms` は別物です。** [ADR-0009](docs/adr/0009-ontology-operations.md) 決定3 は「オントロジーは縮められなければならない。ただし IRI を削除も再利用もしない」と定めています。**廃止（`owl:deprecated true` を付ける）が正しい縮め方で、削除は規律違反です。** `has_removed_terms` が `true` なら規律違反が起きています。
 
-**ただし削除は承認をブロックしません。** 廃止の仕組み（`P2B-03`）が未実装の段階で削除をブロックすると、縮める正当な手段が 1 つも無くなるためです。現時点では**報告するだけ**です。
+**削除は承認をブロックします**（[ADR-0017](docs/adr/0017-deprecation-lifecycle.md)）。差分自体は報告に留まりますが、`approve` は 422 で拒否します。詳しくは上の「オントロジーを縮める」を参照してください。
 
 **`triple_status` を必ず見てください。** 空白ノードが 300 個を超える版では、トリプル単位の差分と `modified_terms` が得られません（`skipped-too-many-blank-nodes` になり、`modified_terms` は `null`）。**「差分が無い」と「計算できなかった」を混同しないため**に、空の一覧を返さずに `null` にしています。`added_terms` / `removed_terms` は空白ノードの数に関係なく常に厳密です。
 
@@ -643,7 +695,7 @@ AWS 版は Apache-2.0 で公開されており、フォークすることも法�
 - [`docs/architecture.md`](docs/architecture.md) — アーキテクチャ、グラフ永続化設計、Azure サービスマッピング、認証・認可・セキュリティ
 - [`docs/cost-estimate.md`](docs/cost-estimate.md) — 月額費用試算と単価の出典・計算式
 - [`docs/third-party-licenses.md`](docs/third-party-licenses.md) — 第三者コンポーネントのライセンス
-- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0015)。**却下した代替案とその理由**を残しています
+- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0017)。**却下した代替案とその理由**を残しています
 
 ## コントリビューション
 

@@ -30,7 +30,7 @@
 5. **名前空間名はセキュリティ境界。** Fuseki のデータセット名・Blob パス・グラフ IRI に使う。外部入力は必ず `validate_namespace_name` を通す
 6. **DSN にパスワードを埋め込まない。** Entra トークンは期限切れするため `connect_args["password"]` に callable を渡して接続ごとに評価させる
 7. **オントロジーは不変リビジョン。** 公開済みの版を書き換えない。削除もしない（[ADR-0006](docs/adr/0006-ontology-versioning-and-audit.md)）
-8. **オントロジーは縮められなければならない。** 廃止を追加と同格に扱う。IRI を削除も再利用もしない（[ADR-0009](docs/adr/0009-ontology-operations.md)）
+8. **オントロジーは縮められなければならない。** 廃止を追加と同格に扱う。IRI を削除も再利用もしない（[ADR-0009](docs/adr/0009-ontology-operations.md)）。**現行版にあった用語を消した版は `approve` が 422 で拒否する**（[ADR-0017](docs/adr/0017-deprecation-lifecycle.md) 決定2）。縮めるときは `owl:deprecated true` + 後継（`dcterms:isReplacedBy`）か理由を書いて残す
 9. `AUTH_MODE=disabled` はローカル開発専用。デプロイ環境で使ってはならない
 10. **`projected_at` は書き込み経路の知識であり、ストアの現在の状態ではない。** ストアは再構築可能な派生物なので、PostgreSQL の列から「ストアが今それを保持している」ことは主張できない。それに答えられるのはストア自身だけである（[ADR-0013](docs/adr/0013-reconcile-repairs-observed-divergence.md)）
 11. **権限の既定は「拒否」。暗黙のフォールバックを作らない。** ロール付与が 1 件も無い名前空間は「誰も権限を持たない」として扱う。「付与が無ければ全員に許可」は**「強制していない」を「強制している」と誤認させる**ため、この製品では最も避けたい形である。既存デプロイの移行はマイグレーションで明示的に行う（[ADR-0014](docs/adr/0014-namespace-rbac.md)）
@@ -65,7 +65,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 371 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 416 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数

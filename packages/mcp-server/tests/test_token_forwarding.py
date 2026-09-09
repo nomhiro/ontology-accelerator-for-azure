@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import httpx
 import pytest
@@ -233,6 +233,9 @@ async def test_sparql_query_sends_the_authorization_header(
     sent: dict[str, Any] = {}
 
     class _FakeResponse:
+        # `sparql_query` は廃止の警告のためにヘッダを読む(P2B-03、ADR-0017)。
+        headers: ClassVar[dict[str, str]] = {}
+
         def raise_for_status(self) -> None:
             return None
 
@@ -390,3 +393,97 @@ async def test_term_owner_requires_a_token(monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(ToolError):
         await server.term_owner("retail-core", "https://e.example/#A", _ctx({}))
     assert verifier.calls == []
+
+
+async def test_sparql_query_surfaces_deprecation_warnings_in_the_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2B-03: 廃止の警告を**本文**でエージェントへ渡す(ADR-0017 決定3)。
+
+    Core API は標準の SPARQL Results JSON を保つためヘッダに載せるが
+    (ADR-0001 の「SPARQL 1.1 Protocol をハード境界にする」)、**エージェントは
+    ヘッダを見ない**。見えなければ廃止された用語を自信を持って使ってしまう。
+    「AI に正しいコンテキストを渡す」ことがこの製品の目的なので、ここで
+    届かないなら警告を作る意味がない。
+    """
+    _use_auth_mode(monkeypatch, AuthMode.ENTRA)
+    _use_verifier(monkeypatch, _FakeVerifier())
+
+    class _FakeResponse:
+        headers: ClassVar[dict[str, str]] = {
+            "X-Ontology-Deprecated-Terms": "https://e.example/#Old, https://e.example/#Gone"
+        }
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"head": {"vars": ["s"]}, "results": {"bindings": []}}
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            return None
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, path: str, json: dict[str, Any]) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    result = await server.sparql_query(
+        "retail-core", "SELECT ?s WHERE { ?s ?p ?o }", _ctx({"authorization": "Bearer t"})
+    )
+
+    assert result["deprecation_warnings"] == [
+        "https://e.example/#Old",
+        "https://e.example/#Gone",
+    ]
+    # **標準の形を壊さない。** `head` / `results` はそのまま残る。
+    assert result["results"] == {"bindings": []}
+    assert result["head"] == {"vars": ["s"]}
+
+
+async def test_sparql_query_omits_the_key_when_nothing_is_deprecated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """廃止が無いときにキーを付けない。
+
+    **空のリストを付けると、エージェントは「警告の仕組みがある」ことと
+    「警告が無い」ことを区別できるが、毎回ノイズが乗る。** 付けない方を選ぶ。
+    """
+    _use_auth_mode(monkeypatch, AuthMode.ENTRA)
+    _use_verifier(monkeypatch, _FakeVerifier())
+
+    class _FakeResponse:
+        headers: ClassVar[dict[str, str]] = {}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"results": {"bindings": []}}
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            return None
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, path: str, json: dict[str, Any]) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    result = await server.sparql_query(
+        "retail-core", "SELECT ?s WHERE { ?s ?p ?o }", _ctx({"authorization": "Bearer t"})
+    )
+    assert "deprecation_warnings" not in result

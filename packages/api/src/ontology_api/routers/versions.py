@@ -18,6 +18,7 @@ from ontology_api.services.authorization import (
 from ontology_api.services.projection import (
     AutoVersionError,
     ConcurrentUpdateError,
+    DeprecationViolationError,
     InvalidTransitionError,
     ProjectionService,
     PublishOutcome,
@@ -27,14 +28,10 @@ from ontology_api.services.projection import (
     UnknownVersionError,
 )
 from ontology_core.blob import BlobStoreError
+from ontology_core.deprecation import DeprecationCheckError
 from ontology_core.diff import DiffError
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
-from ontology_core.models import (
-    AuditEvent,
-    NamespaceRole,
-    OntologyVersion,
-    OntologyVersionStatus,
-)
+from ontology_core.models import AuditEvent, NamespaceRole, OntologyVersion
 from ontology_core.shacl import ShaclReport, ShaclValidationError
 from ontology_core.turtle import TurtleSyntaxError
 
@@ -372,6 +369,14 @@ async def approve_version(
         # すれば解決するが、四眼原則違反は「別の人に承認してもらう」しかない。
         # 同じ 403 に混ぜると、ロールを足して解決しようとして解決しない。
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except DeprecationViolationError as exc:
+        # P2B-03: 廃止のライフサイクル違反(ADR-0017 決定2)。**SHACL 違反とは
+        # 別の例外にしている** — どちらも 422 だが、運用者が取るべき対処が
+        # 違う(制約を満たすようデータを直す話と、縮め方の話)。
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="\n".join([str(exc), *(p.message for p in exc.problems)]),
+        ) from exc
     except ShaclViolationError as exc:
         # P2A-05: 形式的に決定可能な違反なので承認を止める(ADR-0009 決定1)。
         # 状態は変えていない(検証は遷移より前にある)。
@@ -379,11 +384,11 @@ async def approve_version(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="\n".join(part for part in (str(exc), exc.report) if part).strip(),
         ) from exc
-    except (BlobStoreError, ShaclValidationError) as exc:
+    except (BlobStoreError, ShaclValidationError, DeprecationCheckError) as exc:
         # 「確かめられなかった」を違反として扱わない。
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"SHACL 検証を実行できませんでした: {exc}",
+            detail=f"承認前の検証を実行できませんでした: {exc}",
         ) from exc
     except UnknownVersionError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -391,6 +396,93 @@ async def approve_version(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get(
+    "/namespaces/{namespace}/versions/{version}/deprecations",
+    summary="廃止のライフサイクルを検査する(状態は変えない)",
+)
+async def check_version_deprecations(
+    namespace: str,
+    version: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    store: StoreDep,
+    settings: SettingsDep,
+    base: Annotated[
+        str | None,
+        Query(description="削除の判定に使う基準の版。省略時は現在の `approved` 版"),
+    ] = None,
+) -> dict[str, Any]:
+    """廃止に関する問題を列挙する。**状態は変えない**(`P2B-03`、ADR-0017)。
+
+    承認前にレビュー画面がこれを呼ぶための口である。`approve` は同じ検査を
+    行い、**`blocking` が `true` の問題があれば 422 で拒否する**。
+
+    ブロックするのは 2 つだけである(ADR-0017 決定2)。
+
+    - **`removed`**: IRI が削除された。削除ではなく `owl:deprecated` を立てる
+    - **`no-successor-or-reason`**: 廃止に後継も理由も無い
+
+    **`references-deprecated`(生きている用語が廃止済みを参照)はブロックしない。**
+    SHACL の形状やマッピングが廃止された用語を正当に参照するためである。
+    """
+    try:
+        validate_namespace_name(namespace)
+        validate_version(version)
+        if base is not None:
+            validate_version(base)
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await _require(
+        session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
+    )
+
+    service = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+    )
+    versions = VersionRepository(session)
+    if base is None:
+        base_row = await service.current_approved(namespace=namespace, excluding=version)
+    else:
+        base_row = await versions.get(namespace, base)
+        if base_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"基準の版 '{namespace}@{base}' が見つかりません",
+            )
+
+    try:
+        problems = await service.check_deprecation_lifecycle(
+            namespace=namespace, version=version, base=base_row
+        )
+    except UnknownVersionError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except (BlobStoreError, DeprecationCheckError) as exc:
+        # **「問題なし」にしない。** 検証できなかったことと適合を混同しない。
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"廃止の検査を実行できませんでした: {exc}",
+        ) from exc
+
+    return {
+        "namespace": namespace,
+        "version": version,
+        "base_version": None if base_row is None else base_row.version,
+        "blocking": any(p.blocking for p in problems),
+        "problems": [
+            {
+                "kind": p.kind.value,
+                "term": p.term,
+                "blocking": p.blocking,
+                "message": p.message,
+                "referenced": p.referenced,
+            }
+            for p in problems
+        ],
+    }
 
 
 @router.get(
@@ -438,6 +530,9 @@ async def diff_version(
         session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
     )
 
+    service = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+    )
     versions = VersionRepository(session)
     target = await versions.get(namespace, version)
     if target is None:
@@ -447,14 +542,7 @@ async def diff_version(
         )
 
     if base is None:
-        base_row = next(
-            (
-                v
-                for v in await versions.list_for(namespace)
-                if v.status is OntologyVersionStatus.APPROVED and v.version != version
-            ),
-            None,
-        )
+        base_row = await service.current_approved(namespace=namespace, excluding=version)
     else:
         base_row = await versions.get(namespace, base)
         if base_row is None:
@@ -468,9 +556,6 @@ async def diff_version(
         # 答えるべき事実である(最初の版では必ずこうなる)。
         return {"namespace": namespace, "version": version, "base_version": None, "diff": None}
 
-    service = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
-    )
     try:
         diff = await service.compute_diff(namespace=namespace, base=base_row, target=target)
     except DiffError as exc:

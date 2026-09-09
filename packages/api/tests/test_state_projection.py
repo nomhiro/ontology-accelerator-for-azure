@@ -29,6 +29,30 @@ _BASE = f"http://localhost:{_PORT}"
 TTL_V1 = "@prefix ex: <https://e.example/#> .\nex:A a ex:Class .\n"
 TTL_V2 = "@prefix ex: <https://e.example/#> .\nex:B a ex:Class .\n"
 
+# `P1-C1` の実証に使う 2 版。**V2 は V1 の IRI を削除しない。**
+#
+# 以前は V1 が `ex:A`、V2 が `ex:B` だけを持つ形だったが、`P2B-03`
+# (ADR-0017 決定2)で **IRI の削除が承認をブロックするようになった**ため、
+# この形では approve が通らない。
+#
+# 削除ではなく**廃止**して残す形に変え、判別は「同じ用語に新旧の定義が
+# 同居するか」で行う。これは `P1-C1` で実際に報告された不具合
+# (「GRAPH 句なしのクエリで矛盾する定義が同時に返る」)そのものなので、
+# 以前の「主語の数」で見る形より判別力が強い。
+_LIFECYCLE_HEAD = (
+    "@prefix ex: <https://e.example/#> .\n"
+    "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+    "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+    "@prefix dcterms: <http://purl.org/dc/terms/> .\n"
+)
+LIFECYCLE_V1 = _LIFECYCLE_HEAD + 'ex:A a ex:Class ; rdfs:label "旧" .\n'
+LIFECYCLE_V2 = (
+    _LIFECYCLE_HEAD
+    + 'ex:A a ex:Class ; rdfs:label "新" ; owl:deprecated true ;\n'
+    + "    dcterms:isReplacedBy ex:B .\n"
+    + "ex:B a ex:Class .\n"
+)
+
 
 @pytest.fixture
 async def store() -> AsyncIterator[FusekiStore]:
@@ -46,6 +70,19 @@ async def store() -> AsyncIterator[FusekiStore]:
 async def _default_graph_subjects(store: FusekiStore, dataset: str) -> list[str]:
     result = await store.query("SELECT ?s WHERE { ?s ?p ?o }", dataset=dataset)
     return [b["s"]["value"] for b in result["results"]["bindings"]]
+
+
+async def _default_graph_labels(store: FusekiStore, dataset: str, subject: str) -> list[str]:
+    """既定グラフでこの主語に付いているラベルを返す。
+
+    **`P1-C1` の判別に使う。** 既定グラフが全版の和集合になっていると、
+    同じ用語に旧版と新版のラベルが**両方**現れる。
+    """
+    result = await store.query(
+        "SELECT ?l WHERE { <" + subject + "> <http://www.w3.org/2000/01/rdf-schema#label> ?l }",
+        dataset=dataset,
+    )
+    return sorted(b["l"]["value"] for b in result["results"]["bindings"])
 
 
 async def _named_graph_subjects(store: FusekiStore, dataset: str, graph_iri: str) -> list[str]:
@@ -82,21 +119,26 @@ async def test_p1_c1_two_approved_versions_default_graph_returns_exactly_one(
     session: AsyncSession, blob_store: OntologyBlobStore, store: FusekiStore, ns: str
 ) -> None:
     """必須テスト1(P1-C1 の実証): 2 版を approved にした状態(1 つは
-    superseded になる)で、GRAPH 句なしのクエリが 1 件だけ返る。
+    superseded になる)で、**同じ用語の新旧の定義が同時に返らない**。
 
     修正前は publish が承認状態に関わらずそのまま射影し、既定グラフが
-    unionDefaultGraph で全版の和集合になっていたため 2 件返っていた
+    unionDefaultGraph で全版の和集合になっていたため、`GRAPH` 句なしの
+    クエリで矛盾する定義が同時に返っていた
     (backlog.md P1-C1 の実測: 2026-09-01)。
+
+    **判別は同じ主語のラベルの数で行う。** `P2B-03` で IRI の削除が承認を
+    ブロックするようになったため(ADR-0017 決定2)、「V2 が V1 の用語を
+    持たない」形はもう作れない。和集合になっていればラベルが 2 つ現れる。
     """
     svc = ProjectionService(
         session=session, blob=blob_store, store=store, graph_iri_base="urn:ontology:graph"
     )
 
-    v1 = await svc.publish(namespace=ns, turtle=TTL_V1, actor="alice")
+    v1 = await svc.publish(namespace=ns, turtle=LIFECYCLE_V1, actor="alice")
     v1 = await svc.submit(namespace=ns, version=v1.version, actor="alice")
     v1 = await svc.approve(namespace=ns, version=v1.version, actor="bob")
 
-    v2 = await svc.publish(namespace=ns, turtle=TTL_V2, actor="alice")
+    v2 = await svc.publish(namespace=ns, turtle=LIFECYCLE_V2, actor="alice")
     v2 = await svc.submit(namespace=ns, version=v2.version, actor="alice")
     v2 = await svc.approve(namespace=ns, version=v2.version, actor="bob")
 
@@ -104,9 +146,12 @@ async def test_p1_c1_two_approved_versions_default_graph_returns_exactly_one(
     assert v1_after is not None
     assert v1_after.status is OntologyVersionStatus.SUPERSEDED
 
-    subjects = await _default_graph_subjects(store, ns)
-    assert len(subjects) == 1
-    assert subjects == ["https://e.example/#B"]
+    labels = await _default_graph_labels(store, ns, "https://e.example/#A")
+    assert labels == ["新"], f"既定グラフに新旧の定義が同居している: {labels}"
+    assert sorted(set(await _default_graph_subjects(store, ns))) == [
+        "https://e.example/#A",
+        "https://e.example/#B",
+    ]
 
 
 async def test_p1_15_in_review_visible_only_via_graph_clause(

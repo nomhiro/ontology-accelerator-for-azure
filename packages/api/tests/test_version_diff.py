@@ -46,10 +46,18 @@ _HEAD = """
 @prefix ex: <https://e.example/#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
 """
 _V1 = _HEAD + 'ex:Product a owl:Class ; rdfs:label "商品" .\nex:Customer a owl:Class .\n'
 _V2 = _HEAD + 'ex:Product a owl:Class ; rdfs:label "製品" .\nex:Customer a owl:Class .\n'
 _V3 = _HEAD + 'ex:Product a owl:Class ; rdfs:label "製品" .\n'  # Customer を削除
+# **正しい縮め方**(ADR-0009 決定3): 削除ではなく廃止して残す。
+_V_DEPRECATED = (
+    _HEAD
+    + 'ex:Product a owl:Class ; rdfs:label "製品" .\n'
+    + "ex:Customer a owl:Class ; owl:deprecated true ;\n"
+    + "    dcterms:isReplacedBy ex:Product .\n"
+)
 
 
 class _NullStore(SparqlStore):
@@ -187,20 +195,47 @@ async def test_IRI_の削除が差分に現れる(
 ) -> None:
     """**ADR-0009 決定3 の規律違反はここで見える。**
 
-    ただし**承認はブロックしない**(ADR-0016 決定6)。廃止の仕組み(`P2B-03`)が
-    無い状態で削除をブロックすると、縮める正当な手段が 1 つも無くなる。
+    **`P2B-03`(ADR-0017 決定2)で承認がブロックされるようになった。**
+    `P2B-09` の時点では「報告するだけ」だったが、それは廃止の仕組みが
+    無い状態で削除を禁じると縮める正当な手段が 1 つも無くなるからで、
+    廃止の経路ができた時点で強制に変えると ADR-0016 決定6 に書いてある。
+
+    差分そのものは `deprecations` の口で承認前に見える(下の
+    `test_廃止して残せば承認できる` が正しい縮め方を示している)。
     """
+    from ontology_api.services.projection import DeprecationViolationError
+
     await _setup(session)
     await _publish(session, blob_store, settings, version="1.0.0", turtle=_V1)
     await _approve(session, blob_store, version="1.0.0")
     await _publish(session, blob_store, settings, version="2.0.0", turtle=_V3)
+
+    with pytest.raises(DeprecationViolationError) as exc:
+        await _approve(session, blob_store, version="2.0.0")
+    assert any("Customer" in p.message for p in exc.value.problems)
+
+
+@pytest.mark.integration
+async def test_廃止して残せば承認できる(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """**これが「縮める正当な手段」である**(ADR-0009 決定3、ADR-0017)。
+
+    削除は拒否されるが、`owl:deprecated` を立てて残せば通る。差分では
+    `deprecated_terms` に入り、`removed_terms` には入らない。
+    """
+    await _setup(session)
+    await _publish(session, blob_store, settings, version="1.0.0", turtle=_V1)
+    await _approve(session, blob_store, version="1.0.0")
+    await _publish(session, blob_store, settings, version="2.0.0", turtle=_V_DEPRECATED)
     approved = await _approve(session, blob_store, version="2.0.0")
 
-    assert approved.version == "2.0.0", "削除があっても承認は通る(報告するだけ)"
+    assert approved.version == "2.0.0"
     diff = await _diff_of_approval(session, "2.0.0")
     assert diff is not None
-    assert diff["removed_terms"] == ["https://e.example/#Customer"]
-    assert diff["has_removed_terms"] is True
+    assert diff["removed_terms"] == [], "廃止を削除として報告してはいけない"
+    assert diff["deprecated_terms"] == ["https://e.example/#Customer"]
+    assert diff["has_removed_terms"] is False
 
 
 @pytest.mark.integration
@@ -221,10 +256,16 @@ async def test_差分の計算に失敗しても承認は成功する(
     calls = {"n": 0}
     original = blob_store.get_version
 
+    # `approve` は Blob を 4 回読む: SHACL 検証(1)、廃止の検査(2: 対象と基準)、
+    # 差分(2: 対象と基準)。**差分の取得だけを落とす**ため、4 回目以降で失敗させる。
+    #
+    # **回数に依存するのは脆いが、ここで検証したいのは「差分の失敗が承認を
+    # 止めないこと」**であり、SHACL 検証や廃止の検査を落とすとそちらの
+    # 経路(502 / 422)に入ってしまい、検証したいものが検証できない。
+    # 呼び出し回数が変わったらこのコメントごと更新する。
     async def flaky(path: str) -> str:
-        # SHACL 検証(1 回目)は通し、差分の取得(2 回目以降)で落とす。
         calls["n"] += 1
-        if calls["n"] >= 2:
+        if calls["n"] >= 4:
             raise BlobStoreError("到達できません")
         return await original(path)
 
