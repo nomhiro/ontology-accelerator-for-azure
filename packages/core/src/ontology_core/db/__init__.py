@@ -7,6 +7,7 @@ from ontology_core.db.tables import (
     NamespaceRoleRow,
     NamespaceRow,
     OntologyVersionRow,
+    TermOwnerRow,
 )
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "NamespaceRoleRow",
     "NamespaceRow",
     "OntologyVersionRow",
+    "TermOwnerRow",
     "create_engine_and_factory",
     "session_scope",
 ]

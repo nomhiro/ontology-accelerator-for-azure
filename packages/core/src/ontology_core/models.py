@@ -76,6 +76,52 @@ class NamespaceRoleAssignment(BaseModel):
     granted_by: str
 
 
+class TermOwner(BaseModel):
+    """用語単位の責任者(ADR-0015 決定1)。
+
+    **`namespace_roles` の `owner` ロールとは別の概念である。** ロールは
+    「何ができるか」(権限)、責任者は「誰が説明責任を負うか」である。
+    名前空間単位の責任者は `owner` ロールが担う(ADR-0014)。用語単位こそが、
+    権限では表現できない粒度である。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    term_iri: str = Field(description="責任の対象となる用語の絶対 IRI")
+    principal_id: str = Field(description="Entra のオブジェクト ID")
+    assigned_at: datetime
+    assigned_by: str
+
+
+class OwnerResolutionSource(StrEnum):
+    """問い合わせ先をどこから解決したか(ADR-0015 決定2)。
+
+    **代替で解決したことを必ず見せる。** 見えなければ `P2B-06` の
+    健全性指標が「責任者が未設定の用語」を数えられない。
+    """
+
+    TERM_OWNER = "term-owner"
+    NAMESPACE_OWNERS = "namespace-owners"
+    UNRESOLVED = "unresolved"
+
+
+class OwnerResolution(BaseModel):
+    """「この用語は誰に聞けばよいか」の答え(ADR-0015 決定2)。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    term_iri: str
+    source: OwnerResolutionSource
+    principal_ids: tuple[str, ...] = Field(
+        default=(),
+        description="問い合わせ先の Entra オブジェクト ID。"
+        "`term-owner` なら 1 件、`namespace-owners` なら 1 件以上、"
+        "`unresolved` なら 0 件",
+    )
+
+
 class Namespace(BaseModel):
     """オントロジーを隔離する単位。
 

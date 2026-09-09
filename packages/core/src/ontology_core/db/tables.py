@@ -78,6 +78,41 @@ class NamespaceRoleRow(Base):
     granted_by: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
+class TermOwnerRow(Base):
+    """用語単位の責任者(ADR-0015 決定1)。
+
+    **`namespace_roles` とは別のテーブルである。** ロールは権限、責任者は
+    説明責任で、概念が違う(ADR-0014 が用語単位を ADR-0015 に送った)。
+
+    `(namespace, term_iri)` を一意にする。1 つの用語に責任者は 1 人である
+    (説明責任が分散するとその意味を失う。ADR-0015 決定1)。
+
+    **用語が実在するかは検査しない**(ADR-0015 決定4)。ストアは再構築可能な
+    射影であって正本ではないため、存在確認は正本への書き込みを射影の可用性に
+    依存させる(不変条件2・3 が禁じている向き)。
+    """
+
+    __tablename__ = "term_owners"
+    __table_args__ = (
+        UniqueConstraint("namespace", "term_iri", name="uq_term_owners_ns_term"),
+        Index("ix_term_owners_namespace", "namespace"),
+        # 責任者ごとの逆引き(ADR-0015 の未解決事項)に備える。今は使わないが、
+        # 後から張るとテーブルが育ってから ALTER することになる。
+        Index("ix_term_owners_principal", "principal_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(
+        ForeignKey("namespaces.name", ondelete="CASCADE"), nullable=False
+    )
+    term_iri: Mapped[str] = mapped_column(String(1024), nullable=False)
+    principal_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    assigned_by: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
 class OntologyVersionRow(Base):
     """オントロジーの不変リビジョン。
 

@@ -49,9 +49,10 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
   | 操作 | 必要なロール |
   |---|---|
-  | SPARQL 読み取り / 版の一覧 / 決定記録 / SHACL 検証 | `data-analyst` |
+  | SPARQL 読み取り / 版の一覧 / 決定記録 / SHACL 検証 / 用語の責任者の参照 | `data-analyst` |
   | `publish` / `submit` | `data-steward` |
   | `approve` / `reject` | `maintainer` |
+  | 用語の責任者の付与・取り消し | `maintainer` |
   | 名前空間の削除 / ロールの付与・取り消し | `owner` |
   | 名前空間の作成 / `POST /admin/reconcile` | `platform-admin`(Entra アプリロール) |
 
@@ -66,7 +67,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 268 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 311 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -166,7 +167,7 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
 
-現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、そして名前空間ごとの RBAC と四眼原則の強制です。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、そして用語単位の責任者です。
 **未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、意味的差分(`P2B-09`)です。
 監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
@@ -371,6 +372,52 @@ just check-questions my.questions.yaml my-namespace     # 自分の名前空間�
 
 `superseded`（別の版の承認による自動遷移）の理由はシステムが書きます。`diff`（意味的差分）は未実装で `null` のままです（Phase 2 の `P2B-09`）。
 
+#### 「この用語は誰に聞けばよいか」を記録して解決する
+
+**用語ごとに責任者を置けます**（[ADR-0015](docs/adr/0015-term-owners.md)、[ADR-0009](docs/adr/0009-ontology-operations.md) 決定4）。`created_by` / `approved_by` は「その時の行為者」であって現在の責任者ではありません。差分レビューのルーティング先と、健全性指標（`P2B-06`）の「責任者が未設定の用語」の原資料になります。
+
+```bash
+# 責任者を割り当てる(maintainer が必要。冪等)
+curl -X PUT "$API/namespaces/retail-core/term-owners" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"term_iri": "https://example.com/ontology/retail#Product",
+       "principal_id": "<Entra のオブジェクト ID>"}'
+
+# 一覧する(data-analyst で読める)
+curl "$API/namespaces/retail-core/term-owners" -H "Authorization: Bearer $TOKEN"
+
+# 「この用語は誰に聞けばよいか」を解決する
+curl -G "$API/namespaces/retail-core/term-owners/resolve" \
+  --data-urlencode "term_iri=https://example.com/ontology/retail#Product" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 外す(maintainer が必要。設定が無ければ 404)
+curl -X DELETE -G "$API/namespaces/retail-core/term-owners" \
+  --data-urlencode "term_iri=https://example.com/ontology/retail#Product" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**責任者は権限ではありません。** 責任者に指定されただけでは何の操作も許されません。名前空間単位の責任者は RBAC の `owner` ロールが担い、用語単位だけがこの仕組みです（権限では表現できない粒度がここにあります）。
+
+**解決には順にフォールバックします。** 用語の責任者 → 名前空間の `owner` → 解決不能。**どれで解決したかは `source` で返ります。**
+
+```json
+{ "namespace": "retail-core",
+  "term_iri": "https://example.com/ontology/retail#Product",
+  "source": "namespace-owners",
+  "principal_ids": ["..."] }
+```
+
+**`source` を必ず見てください。** `namespace-owners` は「その用語に責任者がいない」という意味です。問い合わせ先が返ってきたことだけで満足すると、責任者が未設定であることを見落とします。
+
+権限に暗黙のフォールバックを作らないと決めた（[ADR-0014](docs/adr/0014-namespace-rbac.md) 決定6）のに、ここではフォールバックする理由は**安全側の向きが逆だから**です。権限は「無いなら拒否」が安全側ですが、ルーティングは「無いなら上位に回す」が安全側です — 誰にも届かない問い合わせは放置され、放置されたことも分かりません。
+
+**用語が実在するかは検査しません。** トリプルストアは再構築可能な射影であって正本ではないため、存在確認は正本への書き込みを射影の可用性に依存させてしまいます。また、まだ承認されていない版で定義される用語に先に責任者を決めておくことは自然に起こります。**その代わり、責任者を外すときに設定が無ければ 404 を返します** — IRI のタイプミスに気づける唯一の経路です。
+
+**`base_iri` 配下でない IRI にも責任者を置けます。** 外部語彙への `skos:closeMatch` を張ったとき、そのマッピングの妥当性について説明責任を負うのは張った側だからです。
+
+**エージェント（MCP）にはまだ出していません。** `P2B-11`（監査を読み出す API）と合わせて設計します。
+
 #### `POST /admin/reconcile` の報告の読み方
 
 トリプルストアは正本ではなく**再構築可能な射影**です（[ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md)）。`reconcile` は正本（PostgreSQL + Blob）を基準にストアの状態を揃えます。**背景では動きません** — 運用者が明示的に叩いたときだけ実行されます（[ADR-0013](docs/adr/0013-reconcile-repairs-observed-divergence.md) 決定6）。
@@ -520,7 +567,7 @@ AWS 版は Apache-2.0 で公開されており、フォークすることも法�
 - [`docs/architecture.md`](docs/architecture.md) — アーキテクチャ、グラフ永続化設計、Azure サービスマッピング、認証・認可・セキュリティ
 - [`docs/cost-estimate.md`](docs/cost-estimate.md) — 月額費用試算と単価の出典・計算式
 - [`docs/third-party-licenses.md`](docs/third-party-licenses.md) — 第三者コンポーネントのライセンス
-- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0011)
+- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0015)。**却下した代替案とその理由**を残しています
 
 ## コントリビューション
 
