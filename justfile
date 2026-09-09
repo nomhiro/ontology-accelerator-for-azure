@@ -57,6 +57,12 @@ test:
 test-integration:
     uv run pytest -m integration
 
+# 想定質問(Competency Questions)をローカルの Fuseki に対して検証する
+# (ADR-0009 決定6)。要: just up してサンプルが射影済みであること。
+# CI では packages/api/tests/test_competency_run.py が同じ質問を回す。
+check-questions questions="samples/retail-core.questions.yaml" dataset="retail-core":
+    uv run python scripts/check-questions.py {{questions}} {{dataset}}
+
 # Bicep をビルドして構文を検証する
 lint-infra:
     az bicep build --file infra/main.bicep --stdout

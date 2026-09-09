@@ -263,6 +263,41 @@ MCP は受け取ったトークンを**自分で検証してから** Core API �
 
 `AUTH_MODE=disabled`(ローカル開発専用)では検証も転送も行いません。
 
+#### 想定質問（Competency Questions）で「目的を果たしているか」を判定する
+
+**「このオントロジーは○○に答えられなければならない」を SPARQL として書き、CI で回します**（[ADR-0009](docs/adr/0009-ontology-operations.md) 決定6）。品質スコア型の評価は採りません — 点数が下がった理由が行動に結びつかないからです。想定質問なら、落ちたときに何を直すべきかが自明です。
+
+```yaml
+# samples/retail-core.questions.yaml
+questions:
+  - id: cq-01-order-to-customer
+    question: 注文から、その注文を出した顧客へ辿れるか
+    expect: ask_true
+    sparql: |
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX retail: <https://example.com/ontology/retail#>
+      ASK { ?p rdfs:domain retail:Order ; rdfs:range retail:Customer . }
+```
+
+```bash
+just check-questions                                    # 同梱サンプルに対して
+just check-questions my.questions.yaml my-namespace     # 自分の名前空間に対して
+```
+
+**判定モードが 3 つあるのは、スキーマだけのオントロジーには行を返す質問が書けないからです。**
+
+| `expect` | 意味 | 主な用途 |
+|---|---|---|
+| `ask_true` | ASK が true | **語彙の表現力**。「その問いに答えるための語彙と関係が存在するか」 |
+| `non_empty` | SELECT が 1 行以上 | **データ検索**。実データがある場合（Ontop 連携後） |
+| `empty` | SELECT が 0 行 | **規約の遵守**。「ラベルの無いクラスが無いこと」 |
+
+`empty` は決定1 の「合意済みの規約（命名規則、必須項目）はテストとして機械が実行する」をそのまま満たします。想定質問と規約チェックを同じ仕組みで書けます。
+
+**想定質問は読み取り専用に強制されます。** SPARQL Update と `SERVICE` 句はファイルの読み込み時に拒否されます。
+
+現時点ではリポジトリ内の質問ファイルを CI で回すところまでです。デプロイ済みの名前空間に質問を紐づける仕組み（承認をブロックするかを含む）は Phase 2 の `P2B-14` です。
+
 #### 「なぜそう決めたか」を記録して読み出す
 
 **publish / submit / approve の body に `reason` を渡してください。** `audit_events` に記録され、`GET /namespaces/{ns}/versions/{v}/decisions` で起きた順に読み出せます（[ADR-0009](docs/adr/0009-ontology-operations.md) 決定7）。

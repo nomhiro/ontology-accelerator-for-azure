@@ -1,0 +1,152 @@
+# samples/retail-core.ttl に対する想定質問(Competency Questions)。
+#
+# ADR-0009 決定6: 「このオントロジーは○○に答えられなければならない」を
+# SPARQL テストとして書き、CI で回す。オントロジーが目的を果たしているかを
+# 主観なしに判定できる。
+#
+# **このサンプルはスキーマだけでインスタンスデータを含まない。** そのため
+# ここで検査できるのは「その問いに答えるための語彙と関係が存在するか」
+# (`expect: ask_true`)と、「規約が守られているか」(`expect: empty`)である。
+# 実データに対する検索(`expect: non_empty`)は Ontop 経由の連邦クエリ
+# (Phase 3)が入ってから書ける。
+#
+# 実行方法:
+#   just check-questions          # ローカルの Fuseki に対して
+# CI では packages/api/tests/test_competency.py が実 Fuseki に対して回す。
+
+questions:
+  # ---- 語彙の表現力: この問いに答えるための道具が揃っているか ----
+
+  - id: cq-01-order-to-customer
+    question: 注文から、その注文を出した顧客へ辿れるか
+    expect: ask_true
+    sparql: |
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX retail: <https://example.com/ontology/retail#>
+      ASK {
+        ?p rdfs:domain retail:Order ;
+           rdfs:range  retail:Customer .
+      }
+
+  - id: cq-02-order-to-product
+    question: 注文から、その注文に含まれる商品へ辿れるか
+    expect: ask_true
+    sparql: |
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX retail: <https://example.com/ontology/retail#>
+      ASK {
+        ?p rdfs:domain retail:Order ;
+           rdfs:range  retail:Product .
+      }
+
+  # 「ロットのリコールで影響を受ける顧客」(ADR-0009 決定6 の例)に答えるには、
+  # 商品 → 注文 → 顧客の 2 ホップが辿れる必要がある。実データが無くても、
+  # **その経路が語彙として存在するか**は今この場で検査できる。
+  - id: cq-03-recall-impact-path
+    question: 商品から注文を経て顧客へ至る経路が定義されているか(リコール影響範囲の前提)
+    expect: ask_true
+    sparql: |
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX retail: <https://example.com/ontology/retail#>
+      ASK {
+        ?toProduct  rdfs:domain retail:Order ; rdfs:range retail:Product .
+        ?toCustomer rdfs:domain retail:Order ; rdfs:range retail:Customer .
+      }
+
+  - id: cq-04-order-time
+    question: 注文がいつ行われたかを表現できるか(期間で絞り込む前提)
+    expect: ask_true
+    sparql: |
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
+      PREFIX retail: <https://example.com/ontology/retail#>
+      ASK {
+        ?p rdfs:domain retail:Order ;
+           rdfs:range  xsd:dateTime .
+      }
+
+  - id: cq-05-product-identity
+    question: 商品を一意に識別する手段があるか
+    expect: ask_true
+    sparql: |
+      PREFIX owl:  <http://www.w3.org/2002/07/owl#>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX retail: <https://example.com/ontology/retail#>
+      ASK {
+        ?p a owl:FunctionalProperty ;
+           rdfs:domain retail:Product .
+      }
+
+  - id: cq-06-order-status-vocabulary
+    question: 注文の状態を統制語彙で表現できるか
+    expect: ask_true
+    sparql: |
+      PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+      ASK {
+        ?scheme a skos:ConceptScheme .
+        ?concept skos:inScheme ?scheme ;
+                 skos:prefLabel ?label .
+      }
+
+  # ---- 規約の遵守: ADR-0009 決定1 の「合意済みの規約はテストが実行する」 ----
+
+  - id: rule-01-classes-have-labels
+    question: すべてのクラスに日本語ラベルが付いているか
+    expect: empty
+    sparql: |
+      PREFIX owl:  <http://www.w3.org/2002/07/owl#>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      SELECT ?class WHERE {
+        ?class a owl:Class .
+        FILTER NOT EXISTS { ?class rdfs:label ?label . FILTER(lang(?label) = "ja") }
+      }
+
+  - id: rule-02-properties-have-labels
+    question: すべてのプロパティに日本語ラベルが付いているか
+    expect: empty
+    sparql: |
+      PREFIX owl:  <http://www.w3.org/2002/07/owl#>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      SELECT ?property WHERE {
+        { ?property a owl:ObjectProperty } UNION { ?property a owl:DatatypeProperty }
+        FILTER NOT EXISTS { ?property rdfs:label ?label . FILTER(lang(?label) = "ja") }
+      }
+
+  - id: rule-03-properties-have-domain-and-range
+    question: すべてのプロパティに domain と range が指定されているか
+    expect: empty
+    sparql: |
+      PREFIX owl:  <http://www.w3.org/2002/07/owl#>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      SELECT ?property WHERE {
+        { ?property a owl:ObjectProperty } UNION { ?property a owl:DatatypeProperty }
+        FILTER(NOT EXISTS { ?property rdfs:domain ?d } || NOT EXISTS { ?property rdfs:range ?r })
+      }
+
+  # ObjectProperty の range が owl:Class として宣言されていること。
+  # 宣言されていないクラスを指していると、そのクラスについて何も言えない。
+  - id: rule-04-object-property-ranges-are-declared
+    question: オブジェクトプロパティの range が宣言済みのクラスを指しているか
+    expect: empty
+    sparql: |
+      PREFIX owl:  <http://www.w3.org/2002/07/owl#>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      SELECT ?property ?range WHERE {
+        ?property a owl:ObjectProperty ;
+                  rdfs:range ?range .
+        FILTER NOT EXISTS { ?range a owl:Class }
+      }
+
+  # SHACL の制約が対象にしているクラスが宣言されていること。
+  # 宣言されていないクラスを対象にした制約は、どのデータにも当たらない。
+  - id: rule-05-shacl-targets-are-declared
+    question: SHACL の対象クラスが宣言済みのクラスか
+    expect: empty
+    sparql: |
+      PREFIX owl: <http://www.w3.org/2002/07/owl#>
+      PREFIX sh:  <http://www.w3.org/ns/shacl#>
+      SELECT ?shape ?target WHERE {
+        ?shape a sh:NodeShape ;
+               sh:targetClass ?target .
+        FILTER NOT EXISTS { ?target a owl:Class }
+      }

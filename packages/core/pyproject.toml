@@ -10,6 +10,10 @@ dependencies = [
     "pydantic-settings>=2.7",
     "httpx>=0.28",
     "rdflib>=7.1",
+    # 想定質問ファイル(samples/*.questions.yaml)の読み込み。ADR-0009 決定6。
+    # **推移的に入っていることに頼らない。** 実行時に import するので明示する
+    # (azure-core[aio] を明示したのと同じ理由)。
+    "pyyaml>=6.0",
     "azure-identity>=1.19",
     # azure.identity.aio.DefaultAzureCredential(dependencies.py の blob_store で使用)
     # は aiohttp ベースの非同期トランスポートを要求する。現状は
