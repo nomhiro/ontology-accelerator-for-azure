@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -52,6 +53,7 @@ from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
 from ontology_api.services.authorization import TwoPersonApprovalError
 from ontology_core.blob import BlobStoreError, OntologyBlobStore
+from ontology_core.diff import DiffError, OntologyDiff, diff_ontologies
 from ontology_core.graphs import dataset_name, version_graph_iri
 from ontology_core.models import OntologyVersion, OntologyVersionStatus
 from ontology_core.shacl import ShaclReport, validate_turtle_with_shacl
@@ -565,18 +567,70 @@ class ProjectionService:
         # 別スレッドへ逃がす。イベントループを塞ぐと他のリクエストが進めない。
         return await asyncio.to_thread(validate_turtle_with_shacl, turtle)
 
+    async def compute_diff(
+        self, *, namespace: str, base: OntologyVersion, target: OntologyVersion
+    ) -> OntologyDiff:
+        """2 つの版の意味的差分を返す(`P2B-09`、ADR-0016)。
+
+        **`asyncio.to_thread` に出す。** 空白ノードの正規化は最大で数秒
+        CPU を使う(ADR-0016 決定5 の実測)。SHACL 検証と同じ扱いにして
+        イベントループを塞がない。
+
+        Raises:
+            DiffError: どちらかの Turtle が解析できないとき。
+            BlobStoreError: Blob へ到達できないとき。
+        """
+        del namespace  # 呼び出し側の可読性のために受け取るが、Blob パスで足りる
+        base_ttl = await self._blob.get_version(base.blob_path)
+        target_ttl = await self._blob.get_version(target.blob_path)
+        return await asyncio.to_thread(diff_ontologies, base_ttl, target_ttl)
+
+    async def _diff_summary_for_audit(
+        self, *, namespace: str, base: OntologyVersion | None, target: OntologyVersion
+    ) -> str | None:
+        """監査に載せる差分の要約(JSON)を返す。失敗しても `None` を返す。
+
+        **差分の計算に失敗しても承認を失敗させない**(ADR-0016 決定「差分の
+        計算に失敗したら承認を失敗させる」を却下)。差分は説明のための記述的な
+        メタデータであって承認の前提条件ではない。Blob への到達不能で承認が
+        止まるのは、不変条件3(射影の失敗は正本への書き込みを失敗させない)と
+        同じ向きの誤りである。
+
+        基準が無い場合(最初の承認)は `None` を返す。「何も無かったところに
+        全部追加された」という差分は情報量が無い(ADR-0016 決定2)。
+        """
+        if base is None:
+            return None
+        try:
+            diff = await self.compute_diff(namespace=namespace, base=base, target=target)
+        except (DiffError, BlobStoreError):
+            logger.exception(
+                "'%s@%s' と '%s' の差分を計算できませんでした。diff は null のまま記録します",
+                namespace,
+                target.version,
+                base.version,
+            )
+            return None
+        summary = diff.summary()
+        summary["base_version"] = base.version
+        return json.dumps(summary, ensure_ascii=False)
+
     async def approve(
         self, *, namespace: str, version: str, actor: str, reason: str = ""
     ) -> OntologyVersion:
         """`in-review` を `approved` にする。前の `approved` は自動で `superseded`
         にする(ADR-0010 決定3)。既定グラフ + 名前付きグラフへ射影する(決定5・6)。
 
-        Phase 1 では権限を強制しない(ADR-0010「承認の権限を Phase 1 では
-        強制できない」)。四眼原則(提案者と承認者を別人にする)と責任者のみが
-        承認できるという制約は、名前空間 RBAC(P2A-06)と責任者(P2B-04)に
-        依存するため Phase 2 で対応する。認証済みの呼び出し元は誰でも
-        approve でき、`approved_by` には実際に呼び出した主体が記録される
-        (記録は正しいが、強制は無い)。
+        処理の順序には理由がある。
+
+        1. **四眼原則**(P2A-06、ADR-0014 決定4)。状態を変える前に判定する
+        2. **SHACL 検証**(P2A-05)。**位置が本質** — 承認後の検証は意味が無い
+        3. 状態遷移と前の版の `superseded`
+        4. **意味的差分**(P2B-09、ADR-0016)。承認の可否に影響しないので
+           状態遷移の後でよい。失敗しても承認は失敗させない
+        5. マニフェストの更新と射影
+
+        呼び出し元のロール判定(`maintainer` 以上)はルータで行う。
         """
         versions = VersionRepository(self._session)
         current = await versions.get(namespace, version)
@@ -647,6 +701,19 @@ class ProjectionService:
             approved_at=now,
             reset_projected=True,
         )
+        # ---- 意味的差分(P2B-09、ADR-0016) ----
+        #
+        # **基準は「この承認によって superseded になる版」である**(決定2)。
+        # publish 時ではなく approve 時に計算するのは、draft が数週間放置され
+        # うるため — publish 時点の「現行」は承認時点の「現行」と違う。
+        #
+        # **状態遷移の後に置いてよい。** SHACL 検証と違い、差分は承認の可否に
+        # 影響しない(決定6: 報告するだけでブロックしない)ので、前段に置く
+        # 理由が無い。
+        diff_summary = await self._diff_summary_for_audit(
+            namespace=namespace, base=previous_approved, target=updated
+        )
+
         audit = AuditRepository(self._session)
         await audit.record(
             namespace=namespace,
@@ -654,6 +721,7 @@ class ProjectionService:
             actor=actor,
             subject=f"{namespace}@{version}",
             reason=reason,
+            diff=diff_summary,
         )
 
         if previous_approved is not None:

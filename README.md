@@ -49,7 +49,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
   | 操作 | 必要なロール |
   |---|---|
-  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / SHACL 検証 / 用語の責任者の参照 | `data-analyst` |
+  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 用語の責任者の参照 | `data-analyst` |
   | `publish` / `submit` | `data-steward` |
   | `approve` / `reject` | `maintainer` |
   | 用語の責任者の付与・取り消し | `maintainer` |
@@ -67,7 +67,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 333 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 371 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -167,8 +167,8 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
 
-現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、そして用語単位の責任者です。
-**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、意味的差分(`P2B-09`)です。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、そして意味的差分です。
+**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、廃止のライフサイクル(`P2B-03`)、アクセスログと健全性指標(`P2B-05` / `P2B-06`)です。
 監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
@@ -370,7 +370,41 @@ just check-questions my.questions.yaml my-namespace     # 自分の名前空間�
 
 **エージェントは MCP の `version_decisions` ツールで同じ記録を読めます。** `sparql_query` が返すのは定義そのもので、その定義を誰が承認したか・なぜそう決めたかは含まれません。答えの根拠を示す必要があるときに使います。
 
-`superseded`（別の版の承認による自動遷移）の理由はシステムが書きます。`diff`（意味的差分）は未実装で `null` のままです（Phase 2 の `P2B-09`）。
+`superseded`（別の版の承認による自動遷移）の理由はシステムが書きます。**`diff`（意味的差分）は `approve` の記録に入ります**（下記「意味的差分を見る」）。最初の承認では基準が無いため `null` です。
+
+#### 意味的差分を見る
+
+**承認すると、前の `approved` 版との意味的差分が `audit_events.diff` に記録されます**（[ADR-0016](docs/adr/0016-semantic-diff.md)）。承認前にレビューするための口も別にあります。
+
+```bash
+# 現在の approved 版との差分(状態は変わりません。data-analyst で読めます)
+curl "$API/namespaces/retail-core/versions/2.0.0/diff" -H "Authorization: Bearer $TOKEN"
+
+# 基準を明示する
+curl -G "$API/namespaces/retail-core/versions/2.0.0/diff" \
+  --data-urlencode "base=1.0.0" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{ "namespace": "retail-core", "version": "2.0.0", "base_version": "1.0.0",
+  "diff": { "empty": false, "triple_status": "exact",
+            "added_terms": ["https://example.com/ontology/retail#Shipment"],
+            "removed_terms": [], "deprecated_terms": [],
+            "modified_terms": ["https://example.com/ontology/retail#Product"],
+            "has_removed_terms": false, "truncated": false } }
+```
+
+**接頭辞・トリプルの順序・空白ノードのラベルの違いは差分になりません。** テキスト差分ではこれが守れないため、rdflib の正規化を使っています。
+
+**`removed_terms` と `deprecated_terms` は別物です。** [ADR-0009](docs/adr/0009-ontology-operations.md) 決定3 は「オントロジーは縮められなければならない。ただし IRI を削除も再利用もしない」と定めています。**廃止（`owl:deprecated true` を付ける）が正しい縮め方で、削除は規律違反です。** `has_removed_terms` が `true` なら規律違反が起きています。
+
+**ただし削除は承認をブロックしません。** 廃止の仕組み（`P2B-03`）が未実装の段階で削除をブロックすると、縮める正当な手段が 1 つも無くなるためです。現時点では**報告するだけ**です。
+
+**`triple_status` を必ず見てください。** 空白ノードが 300 個を超える版では、トリプル単位の差分と `modified_terms` が得られません（`skipped-too-many-blank-nodes` になり、`modified_terms` は `null`）。**「差分が無い」と「計算できなかった」を混同しないため**に、空の一覧を返さずに `null` にしています。`added_terms` / `removed_terms` は空白ノードの数に関係なく常に厳密です。
+
+正規化のコストは空白ノードの数だけで決まります（トリプル総数はほとんど効きません）。実測で 2 グラフの差分が 300 個で 2〜4.5 秒、500 個で 8 秒、1,000 個で 42 秒です。SHACL の property shape は 1 つずつ空白ノードを作ります。
+
+**監査に保存されるのは要約です。** 版は Blob に不変で残るため、厳密な差分はいつでも再計算できます（監査行に全トリプルを積むと行が非有界に育ちます）。用語の一覧は 50 件で切り、切った場合は `truncated` が `true` になります。
 
 #### 監査証跡を照会する
 

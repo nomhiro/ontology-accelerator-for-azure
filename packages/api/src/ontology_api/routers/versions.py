@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Response, status
+from typing import Annotated, Any
+
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, SettingsDep, StoreDep
@@ -25,8 +27,14 @@ from ontology_api.services.projection import (
     UnknownVersionError,
 )
 from ontology_core.blob import BlobStoreError
+from ontology_core.diff import DiffError
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
-from ontology_core.models import AuditEvent, NamespaceRole, OntologyVersion
+from ontology_core.models import (
+    AuditEvent,
+    NamespaceRole,
+    OntologyVersion,
+    OntologyVersionStatus,
+)
 from ontology_core.shacl import ShaclReport, ShaclValidationError
 from ontology_core.turtle import TurtleSyntaxError
 
@@ -333,13 +341,16 @@ async def approve_version(
     settings: SettingsDep,
     payload: TransitionRequest | None = None,
 ) -> OntologyVersion:
-    """ADR-0010 決定1・3・5・6。
+    """ADR-0010 決定1・3・5・6。**`maintainer` 以上が必要**(ADR-0014 決定2)。
 
-    **Phase 1 では権限を強制しない。** 四眼原則(提案者と承認者を別人にする)と
-    「責任者のみが承認できる」制約は、名前空間 RBAC(`P2A-06`)と責任者
-    (`P2B-04`)に依存するため Phase 2 で対応する(ADR-0010)。認証済みの
-    呼び出し元は誰でも approve できる。`approved_by` には実際に呼び出した
-    主体が記録される(記録は正しいが、強制は無い)。README にも明記している。
+    四眼原則が有効な名前空間では、その版を publish した主体は approve できない
+    (**409**。ADR-0014 決定4)。SHACL 違反は **422**、検証を実行できなかった
+    場合は **502**(「制約を満たしている」と「確かめられなかった」を混同しない)。
+
+    承認時に**意味的差分**を計算し、`audit_events.diff` に要約を記録する
+    (`P2B-09`、ADR-0016)。基準は前の `approved` 版である。**差分の計算に
+    失敗しても承認は失敗しない**(差分は記述的なメタデータであって承認の
+    前提条件ではない)。
     """
     validate_namespace_name(namespace)
     validate_version(version)
@@ -380,6 +391,105 @@ async def approve_version(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get(
+    "/namespaces/{namespace}/versions/{version}/diff",
+    summary="2 つの版の意味的差分を計算する(状態は変えない)",
+)
+async def diff_version(
+    namespace: str,
+    version: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    store: StoreDep,
+    settings: SettingsDep,
+    base: Annotated[
+        str | None,
+        Query(
+            description="基準にする版。省略時は現在の `approved` 版"
+            "(= この版を承認したときに `superseded` になる版)",
+        ),
+    ] = None,
+) -> dict[str, Any]:
+    """`data-analyst` が必要。**状態を変えずに差分だけを返す**(ADR-0016 決定2)。
+
+    **保存された差分は決定についての事実、この口はその場で決定するための道具**
+    である。役割が違うので別に用意している。
+
+    基準を省略すると現在の `approved` 版を使う。基準が無い(最初の版)場合は
+    `base_version` が `null` で `diff` も `null` を返す — 「何も無かった
+    ところに全部追加された」という差分は情報量が無い。
+
+    **接頭辞・トリプルの順序・空白ノードのラベルの違いは差分にならない。**
+    ただし空白ノードが多い版では、トリプル単位の差分と `modified_terms` が
+    得られない(`triple_status` を見ること。ADR-0016 決定5)。
+    """
+    try:
+        validate_namespace_name(namespace)
+        validate_version(version)
+        if base is not None:
+            validate_version(base)
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await _require(
+        session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
+    )
+
+    versions = VersionRepository(session)
+    target = await versions.get(namespace, version)
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"'{namespace}@{version}' が見つかりません",
+        )
+
+    if base is None:
+        base_row = next(
+            (
+                v
+                for v in await versions.list_for(namespace)
+                if v.status is OntologyVersionStatus.APPROVED and v.version != version
+            ),
+            None,
+        )
+    else:
+        base_row = await versions.get(namespace, base)
+        if base_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"基準の版 '{namespace}@{base}' が見つかりません",
+            )
+
+    if base_row is None:
+        # **404 にしない。** 「基準が無い」はエラーではなく、この API が
+        # 答えるべき事実である(最初の版では必ずこうなる)。
+        return {"namespace": namespace, "version": version, "base_version": None, "diff": None}
+
+    service = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+    )
+    try:
+        diff = await service.compute_diff(namespace=namespace, base=base_row, target=target)
+    except DiffError as exc:
+        # 「差分が無い」と混同させない(ADR-0016)。空の差分を返さない。
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except BlobStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"差分を計算できませんでした(正本の TTL を取得できません): {exc}",
+        ) from exc
+
+    return {
+        "namespace": namespace,
+        "version": version,
+        "base_version": base_row.version,
+        "diff": diff.summary(),
+    }
 
 
 @router.post(

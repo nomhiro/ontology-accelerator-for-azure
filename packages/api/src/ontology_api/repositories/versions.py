@@ -193,8 +193,21 @@ class AuditRepository:
         self._session = session
 
     async def record(
-        self, *, namespace: str, action: str, actor: str, subject: str, reason: str = ""
+        self,
+        *,
+        namespace: str,
+        action: str,
+        actor: str,
+        subject: str,
+        reason: str = "",
+        diff: str | None = None,
     ) -> None:
+        """決定記録を 1 件書く。
+
+        `diff` は意味的差分の**要約**の JSON(`P2B-09`、ADR-0016 決定7)。
+        全トリプルは載せない — 版は Blob に不変で残るので厳密な差分は
+        いつでも再計算できるし、載せると監査行が非有界に育つ。
+        """
         self._session.add(
             AuditEventRow(
                 namespace=namespace,
@@ -202,6 +215,7 @@ class AuditRepository:
                 actor=actor,
                 subject=subject,
                 reason=reason,
+                diff=diff,
             )
         )
         await self._session.flush()
