@@ -114,6 +114,8 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 
 **SQLAlchemy の `session.execute()` の戻り値に `rowcount` は無い（mypy strict）。** `rowcount` は `CursorResult` にしか無く、`execute()` の宣言型はそれより広い `Result[Any]` である。DELETE の件数が欲しいときは `cast` で型を潰すのではなく、**存在確認してから削除する**（1 クエリ増えるが意図が読める。`RoleRepository.revoke` がこの形）。
 
+**`io.open(path, "w", ...)` は引数を検証する前にファイルを切り詰める。** 不正な `newline` を渡すと `ValueError` になるが、**その時点でファイルは既に 0 バイトになっている**（実際に既存のテストファイルを消した。コミット済みだったので復元できた）。生成スクリプトでファイルを書き換えるときは、**開く前に引数を確定させる**か、一時ファイルに書いて差し替える。
+
 **FastAPI の `Query(...)` を既定値の位置に書くと、ハンドラを直接呼ぶテストで `Query` オブジェクトが値として流れ込む。** `limit: int = Query(default=50)` の既定値は `50` ではなく `Query` インスタンスである。FastAPI 経由なら解決されるので、**HTTP で叩くテストだけでは気づけない**。このリポジトリのルータのテストはハンドラを直接呼ぶため必ず踏む。`limit: Annotated[int, Query(...)] = 50` と書けば既定値は素の値になる。
 
 **rdflib の空白ノードの正規化は空白ノードの数だけで決まり、急激に伸びる。** トリプル総数はほとんど効かない。実測で 2 グラフの差分が空白ノード 300 個で 2〜4.5 秒、500 個で 8 秒、1,000 個で 42 秒（`graph_diff`）。SHACL の property shape は 1 つずつ空白ノードを作るので実用規模で数千に達しうる。**上限（`ontology_core.diff.MAX_BLANK_NODES`）を超えたら計算せず、「計算できなかった」と返す**（[ADR-0016](docs/adr/0016-semantic-diff.md) 決定5）。なお `graph_diff` は引数を内部で `to_canonical_graph` に通すので、外から `to_isomorphic` を挟む必要は無い。
