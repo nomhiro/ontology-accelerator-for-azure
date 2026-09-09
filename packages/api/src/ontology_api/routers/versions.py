@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, SettingsDep, StoreDep
@@ -12,6 +12,7 @@ from ontology_api.services.projection import (
     ConcurrentUpdateError,
     InvalidTransitionError,
     ProjectionService,
+    PublishOutcome,
     ReconcileReport,
     UnknownNamespaceError,
     UnknownVersionError,
@@ -65,7 +66,7 @@ class RejectRequest(BaseModel):
 @router.post(
     "/namespaces/{namespace}/versions",
     status_code=status.HTTP_201_CREATED,
-    summary="オントロジーを新しいバージョンとして公開する",
+    summary="オントロジーを新しいバージョンとして公開する(同一内容の再投入は 200)",
 )
 async def publish_version(
     namespace: str,
@@ -75,8 +76,16 @@ async def publish_version(
     blob: BlobDep,
     store: StoreDep,
     settings: SettingsDep,
+    response: Response,
 ) -> OntologyVersion:
-    """正本に書いてからストアへ射影する。"""
+    """正本に書いてからストアへ射影する。
+
+    **同一内容の再投入は 200 を返す(201 ではない)。** `publish` は冪等で、
+    `content_hash` が一致すれば既存の版をそのまま返す。新規作成していないのに
+    201 Created を返すのは HTTP の意味としてずれている(P1-26)。ルートの
+    `status_code` は新規作成の既定値として 201 のままにし、再利用のときだけ
+    ここで 200 に落とす。
+    """
     service = ProjectionService(
         session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
     )
@@ -87,13 +96,21 @@ async def publish_version(
         # 「たまたま検証されている」だけの経路であり、名前空間名がセキュリティ境界
         # であることの明示的な契約にはならない。パスパラメータの入口で検証する。
         validate_namespace_name(namespace)
-        return await service.publish(
+        published, outcome = await service.publish_with_outcome(
             namespace=namespace,
             turtle=payload.turtle,
             actor=principal.object_id or principal.subject,
             version=payload.version,
             base_version=payload.base_version,
         )
+        # **両方を明示的に設定する。** ルートの `status_code=201` は
+        # OpenAPI の既定値として残すが、実際のコードはここで決める。
+        # そうしないとハンドラの契約がフレームワークの既定に依存し、
+        # 関数を直接呼ぶテストで検証できない。
+        response.status_code = (
+            status.HTTP_200_OK if outcome is PublishOutcome.REUSED else status.HTTP_201_CREATED
+        )
+        return published
     except UnknownNamespaceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except NamespaceNameError as exc:

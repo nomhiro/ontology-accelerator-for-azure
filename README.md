@@ -227,6 +227,7 @@ azd up          # just deploy でも同じ
 
 ```
 POST /namespaces/{ns}/versions                    正本(Blob + PostgreSQL)に draft として記録する。Fuseki には一切射影しない
+                                                    201=新規作成 / 200=同一内容の再投入(冪等)
 POST /namespaces/{ns}/versions/{v}/submit          draft → in-review。名前付きグラフへ射影する(GRAPH 句を書けばレビュアが見える)
 POST /namespaces/{ns}/versions/{v}/approve         in-review → approved。既定グラフ + 名前付きグラフへ射影する。
                                                     同じ名前空間の前の approved 版は自動で superseded になる

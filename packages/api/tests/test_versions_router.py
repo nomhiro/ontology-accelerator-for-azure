@@ -9,7 +9,7 @@ M-1: `_next_version` が自動採番できない版に遭遇したときに `Aut
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
@@ -89,6 +89,7 @@ async def test_publish_version_maps_auto_version_error_to_422(
         blob=blob_store,
         store=store,
         settings=settings,
+        response=Response(),
     )
 
     # 以後 version 省略の publish は 500 ではなく 422 になる。
@@ -101,6 +102,7 @@ async def test_publish_version_maps_auto_version_error_to_422(
             blob=blob_store,
             store=store,
             settings=settings,
+            response=Response(),
         )
 
     assert exc_info.value.status_code == 422
@@ -139,6 +141,7 @@ async def test_publish_version_maps_turtle_syntax_error_to_422(
             blob=blob_store,
             store=store,
             settings=settings,
+            response=Response(),
         )
 
     assert exc_info.value.status_code == 422
@@ -182,6 +185,7 @@ async def test_submit_approve_reject_router_status_codes(
         blob=blob_store,
         store=store,
         settings=settings,
+        response=Response(),
     )
 
     # draft を approve しようとすると 409。
@@ -315,6 +319,7 @@ async def test_publish_version_maps_concurrent_update_error_to_409(
         blob=blob_store,
         store=store,
         settings=settings,
+        response=Response(),
     )
     # bob が先に公開する。
     await publish_version(
@@ -325,6 +330,7 @@ async def test_publish_version_maps_concurrent_update_error_to_409(
         blob=blob_store,
         store=store,
         settings=settings,
+        response=Response(),
     )
 
     blobs_before = sorted(await blob_store.list_versions(name))
@@ -339,6 +345,7 @@ async def test_publish_version_maps_concurrent_update_error_to_409(
             blob=blob_store,
             store=store,
             settings=settings,
+            response=Response(),
         )
 
     assert exc_info.value.status_code == 409
@@ -346,3 +353,104 @@ async def test_publish_version_maps_concurrent_update_error_to_409(
     # 正本は増えていない(検査が Blob への書き込みより前にあること)。
     assert sorted(await blob_store.list_versions(name)) == blobs_before
     assert len(await VersionRepository(session).list_for(name)) == versions_before
+
+
+async def test_publish_version_returns_200_when_content_is_unchanged(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """P1-26: 同一内容の再投入は 201 ではなく 200 を返す。
+
+    `ProjectionService.publish` は同一内容(`content_hash` が一致)の再投入で
+    **既存の版をそのまま返す**(冪等。意図した設計)。しかしルータの
+    `status_code` が 201 に固定されていたため、**新規作成していないのに
+    201 Created が返っていた**。クライアントが 201 を「新しい版ができた」と
+    解釈すると版番号を取り違える余地がある。
+
+    POSIX 経路の検証(P1-14)で `postdeploy.sh` を 2 回目として実行したとき、
+    名前空間は 409、submit / approve は 409 なのに publish だけ 201 だったことで
+    気づいた。
+    """
+    from ontology_api.repositories.versions import VersionRepository
+
+    name = "ver-idempotent"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri=f"https://e.example/{name}#",
+        created_by="t",
+    )
+    await session.commit()
+    store = _NullStore()
+
+    first_response = Response()
+    first = await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=TTL),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+        response=first_response,
+    )
+    assert first_response.status_code == 201
+
+    # 同じ本文をもう一度。新しい版は作られない。
+    second_response = Response()
+    second = await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=TTL),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+        response=second_response,
+    )
+
+    assert second_response.status_code == 200
+    assert second.version == first.version
+    assert len(await VersionRepository(session).list_for(name)) == 1
+
+
+async def test_publish_version_returns_201_for_a_new_version(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """内容が変われば新規作成なので 201 のまま。"""
+    name = "ver-new-201"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri=f"https://e.example/{name}#",
+        created_by="t",
+    )
+    await session.commit()
+    store = _NullStore()
+
+    r1 = Response()
+    await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=TTL),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+        response=r1,
+    )
+    r2 = Response()
+    await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=TTL + "ex:B a ex:Class .\n"),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+        response=r2,
+    )
+
+    assert r1.status_code == 201
+    assert r2.status_code == 201

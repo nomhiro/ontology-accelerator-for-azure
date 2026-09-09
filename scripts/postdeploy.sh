@@ -196,8 +196,9 @@ import json, sys
 ttl = open('${SAMPLE}', encoding='utf-8').read()
 sys.stdout.write(json.dumps({'turtle': ttl, 'version': '${VERSION}'}))
 ")"
-# 409 は同じ版が既にある場合（繰り返し実行しても失敗させない）。
-call POST "/namespaces/${NS}/versions" "201 409" "${payload}"
+# 200 は同一内容の再投入（冪等。P1-26）。409 は同じ版番号が別内容で使われて
+# いる場合。どちらも繰り返し実行で失敗させない。
+call POST "/namespaces/${NS}/versions" "201 200 409" "${payload}"
 call POST "/namespaces/${NS}/versions/${VERSION}/submit"  "200 409"
 call POST "/namespaces/${NS}/versions/${VERSION}/approve" "200 409"
 

@@ -42,6 +42,7 @@ import hashlib
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -106,6 +107,18 @@ def _build_manifest(namespace: str, versions: list[OntologyVersion]) -> dict[str
         "versions": [{"version": v.version, "status": v.status.value} for v in included],
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+
+
+class PublishOutcome(StrEnum):
+    """`publish` が新規作成したのか、既存の版を再利用したのか(P1-26)。
+
+    HTTP の意味を正しくするために必要になった。同一内容(`content_hash` が
+    一致)の再投入は既存の版をそのまま返す冪等な操作なので、**201 Created では
+    なく 200 OK** を返すべきである。
+    """
+
+    CREATED = "created"
+    REUSED = "reused"
 
 
 class AutoVersionError(Exception):
@@ -230,6 +243,31 @@ class ProjectionService:
         version: str | None = None,
         base_version: str | None = None,
     ) -> OntologyVersion:
+        """オントロジーを新しいバージョンとして公開する(版だけを返す)。
+
+        **`publish_with_outcome` の薄いラッパである。** 新規作成か再利用かを
+        知る必要があるのは HTTP のステータスコードを決めるルータだけなので、
+        既存の呼び出し(テストを含め 50 箇所以上)を巻き込まないよう、
+        単純な戻り値の版を残している。
+        """
+        published, _ = await self.publish_with_outcome(
+            namespace=namespace,
+            turtle=turtle,
+            actor=actor,
+            version=version,
+            base_version=base_version,
+        )
+        return published
+
+    async def publish_with_outcome(
+        self,
+        *,
+        namespace: str,
+        turtle: str,
+        actor: str,
+        version: str | None = None,
+        base_version: str | None = None,
+    ) -> tuple[OntologyVersion, PublishOutcome]:
         """オントロジーを新しいバージョンとして公開する。
 
         同一内容(content_hash が一致)の再投入は既存のバージョンを返す(冪等)。
@@ -249,7 +287,8 @@ class ProjectionService:
         versions = VersionRepository(self._session)
         content_hash = hashlib.sha256(turtle.encode("utf-8")).hexdigest()
         if (existing := await versions.find_by_hash(namespace, content_hash)) is not None:
-            return existing
+            # 冪等な一致。**新規作成していない**ので REUSED を返す(P1-26)。
+            return existing, PublishOutcome.REUSED
 
         # ---- 基準バージョンの検査(P1-13) ----
         #
@@ -307,6 +346,7 @@ class ProjectionService:
         # 1 リクエスト内の唯一の DB 操作だったため rollback() で足りたが、
         # ここは事情が違う)。
         recorded: OntologyVersion
+        outcome = PublishOutcome.CREATED
         try:
             async with self._session.begin_nested():
                 recorded = await versions.record(
@@ -334,6 +374,9 @@ class ProjectionService:
                 # 回復できないので、そのまま呼び出し元に伝える。
                 raise
             recorded = conflict
+            # 競合に負けた側。**自分はこの版を作っていない**ので REUSED に
+            # する(P1-26)。勝った側が 201 を受け取り、負けた側は 200 を受け取る。
+            outcome = PublishOutcome.REUSED
             # `resolved` と `graph_iri` も勝った側の値に揃える(final-fix-brief.md
             # 修正2(a) / I-2)。揃えないと、この後の put_graph が負けた側の
             # ローカル変数のまま(=自分が使おうとした版の graph_iri)呼ばれてしまい、
@@ -374,7 +417,7 @@ class ProjectionService:
         # マニフェストの `versions` に含めない(_build_manifest 参照)。
         await self._refresh_manifest(namespace)
 
-        return recorded
+        return recorded, outcome
 
     async def _refresh_manifest(self, namespace: str) -> None:
         """PostgreSQL の現在の状態からマニフェストを作り直して Blob へ書く。

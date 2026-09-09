@@ -176,7 +176,8 @@ Invoke-Api -Method POST -Path "/namespaces" -Expected 201, 409 -Body $nsBody
 Write-Host "postdeploy: サンプルを公開します"
 $ttl = Get-Content -Path $sample -Raw -Encoding UTF8
 $pubBody = @{ turtle = $ttl; version = $version } | ConvertTo-Json -Compress
-Invoke-Api -Method POST -Path "/namespaces/$ns/versions" -Expected 201, 409 -Body $pubBody
+# 200 は同一内容の再投入（冪等。P1-26）。409 は同じ版番号が別内容の場合。
+Invoke-Api -Method POST -Path "/namespaces/$ns/versions" -Expected 201, 200, 409 -Body $pubBody
 Invoke-Api -Method POST -Path "/namespaces/$ns/versions/$version/submit"  -Expected 200, 409
 Invoke-Api -Method POST -Path "/namespaces/$ns/versions/$version/approve" -Expected 200, 409
 
