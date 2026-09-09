@@ -17,26 +17,48 @@
 # **取得に失敗したら失敗させる。** 名前が解決できないまま Entra 管理者登録が
 # 空文字列で作られると、後続の postdeploy（bootstrap-db.py・マイグレーション）が
 # 分かりにくい形で失敗する。
+#
+# **失敗の理由を捨てないこと（P1-14）。** `az ad signed-in-user show` は
+# 「サービスプリンシパルでログインしている」以外の理由でも失敗する（`az login`
+# の期限切れ、トークンキャッシュが読めない等）。以前は失敗の理由を
+# `2>/dev/null` で捨てて「サービスプリンシパルとして解決します」と表示して
+# いたため、**認証の問題を型の問題として誤って報告していた**（POSIX 経路の
+# 検証中に、実際にこの誤報を踏んだ）。両方の経路の理由を保持して、
+# どちらも失敗したときにまとめて出す。
 set -eu
 
+work="$(mktemp -d)"
+trap 'rm -rf "${work}"' EXIT
+
 # 通常は運用者本人が `az login` している（User）。
-principal_name="$(az ad signed-in-user show --query userPrincipalName -o tsv 2>/dev/null || true)"
+principal_name="$(az ad signed-in-user show --query userPrincipalName -o tsv 2>"${work}/user.err" || true)"
 principal_type="User"
 
 if [ -z "${principal_name}" ]; then
     # サービスプリンシパルでログインしている場合（CI からの無人デプロイ等）。
     # `az ad signed-in-user show` はユーザーログインでないと失敗するため、
     # サインイン中のアプリID から表示名を解決する。
-    echo "preprovision: signed-in user が見つかりません。サービスプリンシパルとして解決します"
-    app_id="$(az account show --query user.name -o tsv)"
-    principal_name="$(az ad sp show --id "${app_id}" --query displayName -o tsv)"
+    echo "preprovision: signed-in user として解決できませんでした。サービスプリンシパルとして解決します"
+    app_id="$(az account show --query user.name -o tsv 2>>"${work}/sp.err" || true)"
+    if [ -n "${app_id}" ]; then
+        principal_name="$(az ad sp show --id "${app_id}" --query displayName -o tsv 2>>"${work}/sp.err" || true)"
+    fi
     principal_type="ServicePrincipal"
 fi
 
-[ -n "${principal_name}" ] || {
-    echo "preprovision: デプロイ実行者の Entra 表示名を解決できません" >&2
+if [ -z "${principal_name}" ]; then
+    {
+        echo "preprovision: デプロイ実行者の Entra 表示名を解決できません"
+        echo "preprovision: **両方の経路が失敗しました。** 型（User / ServicePrincipal）の"
+        echo "              問題ではなく認証の問題である可能性が高いので、まず"
+        echo "              'az login' が有効か（トークンが期限切れでないか）を確認してください。"
+        echo "--- az ad signed-in-user show の出力 ---"
+        cat "${work}/user.err" 2>/dev/null || true
+        echo "--- サービスプリンシパルとしての解決の出力 ---"
+        cat "${work}/sp.err" 2>/dev/null || true
+    } >&2
     exit 1
-}
+fi
 
 echo "preprovision: AZURE_PRINCIPAL_NAME=${principal_name} を設定します"
 azd env set AZURE_PRINCIPAL_NAME "${principal_name}"

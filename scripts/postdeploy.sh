@@ -180,7 +180,18 @@ call POST "/namespaces" "201 409" \
 # publish は draft を作るだけで射影しない。approve で初めて既定グラフに載る
 # （ADR-0010 決定1・5）。
 echo "postdeploy: サンプルを公開します"
-payload="$(python -c "
+# **`python` ではなく `uv run python` を使う（P1-14）。**
+# 多くの現代的な Linux ディストリビューションは `python` を PATH に置かず
+# `python3` しか無い（Python 3 が既定になった時点で、各ディストリが
+# 無印の `python` の提供をやめた）。実測で Azure Linux 3.0
+# (mcr.microsoft.com/azure-cli) には `python` が無く、素の `python -c` は
+# `command not found` になる。
+#
+# `python3` に変えるのではなく `uv run python` にするのは、このスクリプトが
+# 既に `uv run` に依存している（bootstrap-db.py・マイグレーション）ためで、
+# **同じ前提で動く経路に揃える**方が壊れにくい。`uv` が動くなら必ず動く。
+# `uv run` の進捗は stderr に出るので `$(...)` の取り込みは汚れない。
+payload="$(uv run python -c "
 import json, sys
 ttl = open('${SAMPLE}', encoding='utf-8').read()
 sys.stdout.write(json.dumps({'turtle': ttl, 'version': '${VERSION}'}))

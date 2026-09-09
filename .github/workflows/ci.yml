@@ -22,6 +22,7 @@ jobs:
       web: ${{ steps.filter.outputs.web }}
       infra: ${{ steps.filter.outputs.infra }}
       containers: ${{ steps.filter.outputs.containers }}
+      shell: ${{ steps.filter.outputs.shell }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -52,6 +53,16 @@ jobs:
             containers:
               - 'containers/**'
               - 'packages/*/Dockerfile'
+              - '.github/workflows/ci.yml'
+            # シェルスクリプトの検査。**`scripts/**` を含める。**
+            # 以前は `shell` ジョブが `containers` フィルタで動いていたため、
+            # `scripts/*.sh` だけを変更しても shellcheck が一度も走らなかった。
+            # その結果、`postdeploy.sh` の素の `python` 呼び出し（`python` を
+            # PATH に置かない Linux で command not found になる）が CI を
+            # すり抜けていた（P1-14 で実測して発覚）。
+            shell:
+              - 'scripts/**'
+              - 'containers/**'
               - '.github/workflows/ci.yml'
 
   python:
@@ -195,12 +206,16 @@ jobs:
 
   shell:
     needs: changes
-    if: needs.changes.outputs.containers == 'true'
+    if: needs.changes.outputs.shell == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: シェルスクリプトを検査する
-        run: shellcheck containers/fuseki/*.sh containers/fuseki/lib/*.sh
+        run: shellcheck scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh
+      # 静的解析では拾えない移植性の検査（素の `python` 呼び出しなど）。
+      # 詳細は scripts/lint-shell.sh の冒頭コメント。
+      - name: シェルスクリプトの移植性を検査する
+        run: sh scripts/lint-shell.sh
       # 名前空間名・バージョン文字列の検証関数(validate_namespace /
       # validate_version_file)に対するテスト。load-snapshot.sh 本体は Blob 一覧
       # の取得や TDB2 の構築など副作用のあるコードを含むため source してテスト

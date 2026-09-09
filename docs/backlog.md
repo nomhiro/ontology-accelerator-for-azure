@@ -720,9 +720,65 @@
 
 ### `P1-14` POSIX 経路での `azd up` の通し確認
 
-- **状態**: 未着手
+- **状態**: **完了**（2026-09-09。POSIX で実機に対して `postdeploy.sh` を通し、**実バグ 2 件と CI の穴 1 件**を発見して修正）
 - **優先**: 低
 - **内容**: 実機検証は Windows（pwsh）経路のみ。POSIX 経路で `azd up` を通した人がいない。`scripts/postprovision.sh` の実行ビット欠落は修正済みだが、それは既知のブロッカーを除去したにすぎない
+- **やったこと（2026-09-09）**: Linux コンテナ（`mcr.microsoft.com/azure-cli` +
+  uv）にリポジトリをマウントし、**実際にデプロイ済みの Azure 環境に対して**
+  `scripts/postdeploy.sh` を実行した。結果は終了コード 0
+  - 実物を叩いた部分: uv による Linux 上の venv 構築と依存解決 /
+    `bootstrap-db.py pre`・`post` → 実 PostgreSQL（冪等。ロール既存を検出）/
+    `alembic upgrade head` を `MIGRATION_ROLE=ontology_owner` で → 実 PostgreSQL
+    （アドバイザリロックの取得・解放も含む）/ Core API への publish・submit・
+    approve と発見確認 → 実 API（201/409/409。**繰り返し実行しても失敗しない**
+    ことも同時に確認）
+  - **`az` だけはスタブにした。** Windows の Azure CLI のトークンキャッシュは
+    DPAPI で暗号化されていて（`msal_token_cache.bin` の先頭が
+    `01 00 00 00 D0 8C 9D DF`）**Linux から復号できない**ため。az が返すはずの
+    値（ARM 操作の成否とアクセストークン）は Windows 側で取得したものを注入した。
+    ファイアウォール規則は Windows 側で先に開けた
+  - **したがって「POSIX で `azd up` を通した」とは言えない。** azd 自身の
+    provision / deploy の実行は Windows 上である（Docker Desktop の WSL 統合が
+    無効で、有効化には GUI 操作と Docker の再起動が必要だったため踏み込まなかった）。
+    **OS 依存のロジックはすべてフックスクリプトの中にあり、そこは POSIX で
+    実行して確認した**という位置づけ。完全な POSIX `azd up` には対話的な
+    `az login` が 1 回必要
+- **見つけた不具合 1（修正済み）: `postdeploy.sh` が素の `python` を呼んでいた**
+  - **多くの現代的な Linux には `python` が無く `python3` しかない**（Python 3 が
+    既定になった時点で各ディストリが無印の `python` の提供をやめた）。
+    実測で Azure Linux 3.0 には無く、`python: command not found` になった
+  - 該当は 1 箇所（サンプル投入時の JSON 組み立て）。他はすべて `uv run python`
+    だったため、**同じ前提に揃える**方針で `uv run python -c` にした
+    （`python3` に変えるのではなく。uv が動くなら必ず動く）
+  - **Windows 経路では起きない**（PowerShell 版は `Get-Content` で読む）。
+    「1 つの経路で確認して両方に一般化する」失敗の実例そのもの
+- **見つけた不具合 2（修正済み）: `preprovision` が認証の失敗を型の問題として誤報していた**
+  - `az ad signed-in-user show` の失敗理由を `2>/dev/null` で捨てて
+    「サービスプリンシパルとして解決します」と表示していた。しかしこのコマンドは
+    **`az login` の期限切れやトークンキャッシュが読めない等でも失敗する**。
+    検証中に実際にこの誤報を踏んだ（真の理由は
+    `User '...' does not exist in MSAL token cache. Run 'az login'.`）
+  - 両方の経路の標準エラーを保持し、どちらも失敗したときに
+    「型の問題ではなく認証の問題である可能性が高い」と添えて両方出すようにした。
+    `.sh` / `.ps1` の両方を直し、Linux で誤報が直っていることと正常系
+    （`#EXT#` を含むゲスト UPN の解決）の両方を実行して確認した
+- **見つけた穴 3（修正済み）: `scripts/*.sh` が CI で一度も検査されていなかった**
+  - `shell` ジョブは `containers` フィルタで起動し、検査対象も
+    `containers/fuseki/*.sh` だけだった。**`scripts/*.sh` だけを変更しても
+    shellcheck が走らなかった**ため、不具合 1 が CI をすり抜けていた
+  - `shell` フィルタ（`scripts/**` + `containers/**`）を新設し、shellcheck の
+    対象に `scripts/*.sh` を追加した
+  - あわせて **`scripts/lint-shell.sh`（新規）** を作った。shellcheck は素の
+    `python` 呼び出しを検出しない（構文としては正しい）ため、機械的な検査として
+    残す。**変異テストで有効性を確認済み**（`uv run python` を `python` に
+    戻すと落ちる）
+- **副産物の罠 2 件**（`CLAUDE.md` に追記）: コメント行を静的解析ツールの名前だけで
+  始めると、ツール自身がディレクティブとして解釈して失敗する（SC1072/SC1073。
+  2 回踏んだ）/ Windows の Azure CLI のトークンキャッシュは DPAPI 暗号化で
+  Linux から使えない
+- **見つけたが直していない（範囲外）**: 同一内容の再 publish が **201 Created** を
+  返す。冪等な扱い（既存の版をそのまま返す）としては正しいが、既存リソースに
+  対して 201 は HTTP の意味としてはずれている。`P1-26` に記録した
 - **出典**: Task 8 レビュー I-3。「1 つの経路で確認して両方に一般化する」失敗を避けるため明示
 
 ---
@@ -799,6 +855,24 @@
 - **完了条件**: 上記3点を ADR で決め、決めた方針を実装する
 - **出典**: 2026-09-06 の `P1-19` 実装時に分離
 - **関連**: `P1-19`、`P1-17`、[ADR-0010 補記1](adr/0010-approval-and-projection.md)
+
+### `P1-26` 同一内容の再 publish が 201 Created を返す
+
+- **状態**: 未着手
+- **優先**: 低
+- **Phase**: 1（`P1-14` の検証中に発見）
+- **内容**: `POST /namespaces/{ns}/versions` に同一内容（`content_hash` が一致）を
+  再投入すると、`ProjectionService.publish` は既存の版をそのまま返す（冪等。
+  意図した設計）。しかしルータの `status_code` が `201` に固定されているため、
+  **新規作成していないのに 201 Created が返る**
+- **なぜ気づいたか**: POSIX 経路で `postdeploy.sh` を 2 回目として実行したとき、
+  名前空間は 409、submit / approve は 409 なのに publish だけ 201 だった
+- **実害**: 小さい。クライアントが 201 を「新しい版ができた」と解釈すると、
+  版番号を取り違える余地がある（応答本文には正しい既存の版が入っている）
+- **完了条件**: 冪等な一致のときは 200 を返す（新規作成のときだけ 201）。
+  FastAPI では `response.status_code` を動的に設定するか、`Response` を
+  注入して書き換える。`postdeploy.{sh,ps1}` の期待コードも合わせる
+- **出典**: 2026-09-09 の `P1-14` 実機検証
 
 ### ADR-0009 が未決として残した問い
 

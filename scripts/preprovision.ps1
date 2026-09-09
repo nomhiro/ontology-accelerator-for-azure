@@ -9,23 +9,47 @@
 #     （UPN または表示名）が必要だが、azd はこれを自動的には環境変数にしない
 #     （AZURE_PRINCIPAL_ID はオブジェクトIDで、azd が自動的に解決する）
 #   - 取得に失敗したら失敗させる（空文字列で登録すると後続が分かりにくく壊れる）
+#   - **失敗の理由を捨てない**（P1-14）。`az ad signed-in-user show` は
+#     「サービスプリンシパルでログインしている」以外の理由でも失敗するため、
+#     理由を捨てると認証の問題を型の問題として誤報する
 
 $ErrorActionPreference = "Stop"
 
 # 通常は運用者本人が az login している（User）。
-$principalName = (az ad signed-in-user show --query userPrincipalName -o tsv 2>$null)
+$userError = az ad signed-in-user show --query userPrincipalName -o tsv 2>&1
+$principalName = if ($LASTEXITCODE -eq 0) { ($userError | Out-String).Trim() } else { "" }
 $principalType = "User"
-if ($LASTEXITCODE -ne 0 -or -not $principalName) {
+$spError = ""
+
+if (-not $principalName) {
     # サービスプリンシパルでログインしている場合（CI からの無人デプロイ等）。
-    Write-Host "preprovision: signed-in user が見つかりません。サービスプリンシパルとして解決します"
-    $appId = az account show --query user.name -o tsv
-    if ($LASTEXITCODE -ne 0 -or -not $appId) { throw "az account show に失敗しました" }
-    $principalName = az ad sp show --id $appId --query displayName -o tsv
-    if ($LASTEXITCODE -ne 0 -or -not $principalName) { throw "az ad sp show に失敗しました" }
+    Write-Host "preprovision: signed-in user として解決できませんでした。サービスプリンシパルとして解決します"
+    $appIdOutput = az account show --query user.name -o tsv 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $appId = ($appIdOutput | Out-String).Trim()
+        $spOutput = az ad sp show --id $appId --query displayName -o tsv 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $principalName = ($spOutput | Out-String).Trim()
+        } else {
+            $spError = ($spOutput | Out-String).Trim()
+        }
+    } else {
+        $spError = ($appIdOutput | Out-String).Trim()
+    }
     $principalType = "ServicePrincipal"
 }
 
-if (-not $principalName) { throw "デプロイ実行者の Entra 表示名を解決できません" }
+if (-not $principalName) {
+    Write-Host "preprovision: デプロイ実行者の Entra 表示名を解決できません" -ForegroundColor Red
+    Write-Host "preprovision: 両方の経路が失敗しました。型(User / ServicePrincipal)の問題ではなく" -ForegroundColor Red
+    Write-Host "              認証の問題である可能性が高いので、まず 'az login' が有効か" -ForegroundColor Red
+    Write-Host "              (トークンが期限切れでないか)を確認してください。" -ForegroundColor Red
+    Write-Host "--- az ad signed-in-user show の出力 ---"
+    Write-Host ($userError | Out-String)
+    Write-Host "--- サービスプリンシパルとしての解決の出力 ---"
+    Write-Host $spError
+    throw "デプロイ実行者の Entra 表示名を解決できません"
+}
 
 Write-Host "preprovision: AZURE_PRINCIPAL_NAME=$principalName を設定します"
 azd env set AZURE_PRINCIPAL_NAME $principalName
