@@ -28,6 +28,7 @@ def _to_model(row: NamespaceRow) -> Namespace:
         base_iri=row.base_iri,
         created_at=row.created_at,
         created_by=row.created_by,
+        require_two_person_approval=row.require_two_person_approval,
     )
 
 
@@ -45,6 +46,7 @@ class NamespaceRepository:
         description: str,
         base_iri: str,
         created_by: str,
+        require_two_person_approval: bool = True,
     ) -> Namespace:
         """名前空間を作る。
 
@@ -68,6 +70,7 @@ class NamespaceRepository:
             description=description,
             base_iri=base_iri,
             created_by=created_by,
+            require_two_person_approval=require_two_person_approval,
         )
         self._session.add(row)
         try:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +33,12 @@ async def test_create_then_get(session: AsyncSession) -> None:
 
 async def test_create_is_rejected_when_duplicated(session: AsyncSession) -> None:
     repo = NamespaceRepository(session)
-    kwargs = dict(display_name="x", description="", base_iri="https://e.example/#", created_by="t")
+    kwargs: dict[str, Any] = {
+        "display_name": "x",
+        "description": "",
+        "base_iri": "https://e.example/#",
+        "created_by": "t",
+    }
     await repo.create(name="dup", **kwargs)
 
     with pytest.raises(NamespaceExistsError):
@@ -48,7 +55,12 @@ async def test_create_is_rejected_when_precheck_race_slips_through(
     難しいため、事前チェックがすり抜けた状況を monkeypatch で直接再現する。
     """
     repo = NamespaceRepository(session)
-    kwargs = dict(display_name="x", description="", base_iri="https://e.example/#", created_by="t")
+    kwargs: dict[str, Any] = {
+        "display_name": "x",
+        "description": "",
+        "base_iri": "https://e.example/#",
+        "created_by": "t",
+    }
     await repo.create(name="raced", **kwargs)
     await session.commit()
 

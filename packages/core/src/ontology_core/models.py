@@ -24,6 +24,28 @@ class NamespaceRole(StrEnum):
     DATA_STEWARD = "data-steward"
     DATA_ANALYST = "data-analyst"
 
+    @property
+    def rank(self) -> int:
+        """順序。**上位は下位のすべてを含む**(ADR-0014 決定2)。
+
+        ロールを増やすほど「誰が何をできるか」を人が把握できなくなるため、
+        4 段の順序付きに保つ。順序があれば「上位は下位を含む」の一言で
+        説明できる。
+        """
+        return _NAMESPACE_ROLE_RANK[self]
+
+    def covers(self, required: NamespaceRole) -> bool:
+        """このロールが `required` を満たすか。"""
+        return self.rank >= required.rank
+
+
+_NAMESPACE_ROLE_RANK: dict[NamespaceRole, int] = {
+    NamespaceRole.DATA_ANALYST: 0,
+    NamespaceRole.DATA_STEWARD: 1,
+    NamespaceRole.MAINTAINER: 2,
+    NamespaceRole.OWNER: 3,
+}
+
 
 class PlatformRole(StrEnum):
     """テナント全体に対するロール。"""
@@ -42,6 +64,18 @@ class OntologyVersionStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class NamespaceRoleAssignment(BaseModel):
+    """名前空間へのロール付与(ADR-0014)。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    principal_id: str = Field(description="Entra のオブジェクト ID")
+    role: NamespaceRole
+    granted_at: datetime
+    granted_by: str
+
+
 class Namespace(BaseModel):
     """オントロジーを隔離する単位。
 
@@ -58,6 +92,8 @@ class Namespace(BaseModel):
     base_iri: str = Field(description="このオントロジーが発行する IRI の接頭辞")
     created_at: datetime
     created_by: str
+    # 四眼原則(ADR-0014 決定4)。既定は有効。
+    require_two_person_approval: bool = True
 
 
 class OntologyVersion(BaseModel):

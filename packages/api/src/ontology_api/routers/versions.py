@@ -7,6 +7,12 @@ from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, SettingsDep, StoreDep
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
+from ontology_api.services.authorization import (
+    PermissionDeniedError,
+    TwoPersonApprovalError,
+    require_namespace_role,
+    require_platform_admin,
+)
 from ontology_api.services.projection import (
     AutoVersionError,
     ConcurrentUpdateError,
@@ -20,11 +26,27 @@ from ontology_api.services.projection import (
 )
 from ontology_core.blob import BlobStoreError
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
-from ontology_core.models import AuditEvent, OntologyVersion
+from ontology_core.models import AuditEvent, NamespaceRole, OntologyVersion
 from ontology_core.shacl import ShaclReport, ShaclValidationError
 from ontology_core.turtle import TurtleSyntaxError
 
 router = APIRouter(tags=["versions"])
+
+
+async def _require(
+    session: SessionDep, *, namespace: str, principal: CurrentPrincipal, required: NamespaceRole
+) -> None:
+    """名前空間ロールを要求する。足りなければ 403 にする(ADR-0014 決定2)。
+
+    各ハンドラで同じ try/except を書くと、**足す操作を追加したときに権限
+    チェックを書き忘れる**。1 か所にまとめて呼び出しを 1 行にする。
+    """
+    try:
+        await require_namespace_role(
+            session, namespace=namespace, principal=principal, required=required
+        )
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
 # 受け付ける Turtle の最大長(文字数)。
@@ -114,6 +136,9 @@ async def publish_version(
         # 「たまたま検証されている」だけの経路であり、名前空間名がセキュリティ境界
         # であることの明示的な契約にはならない。パスパラメータの入口で検証する。
         validate_namespace_name(namespace)
+        await _require(
+            session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_STEWARD
+        )
         published, outcome = await service.publish_with_outcome(
             namespace=namespace,
             turtle=payload.turtle,
@@ -161,11 +186,13 @@ async def list_versions(
     名前空間名はセキュリティ境界(`packages/api/tests/test_isolation.py`)
     なので、パスパラメータの入口では一貫して検証する。
     """
-    del principal
     try:
         validate_namespace_name(namespace)
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await _require(
+        session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
+    )
     return await VersionRepository(session).list_for(namespace)
 
 
@@ -191,13 +218,15 @@ async def list_version_decisions(
     汎用の監査照会(名前空間全体・期間・実行者での絞り込み、ページング)は
     `P2B-11` で別に用意する。ここは 1 つの版に限る。
     """
-    del principal
     try:
         validate_namespace_name(namespace)
         validate_version(version)
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    await _require(
+        session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
+    )
     if await VersionRepository(session).get(namespace, version) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -231,13 +260,15 @@ async def validate_version_shacl(
     **検証できなかった場合は 502 にする。** 「制約を満たしている」と
     「確かめられなかった」を混同すると、壊れた定義を通してしまう。
     """
-    del principal
     service = ProjectionService(
         session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
     )
     try:
         validate_namespace_name(namespace)
         validate_version(version)
+        await _require(
+            session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
+        )
         return await service.validate_shacl(namespace=namespace, version=version)
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -271,6 +302,9 @@ async def submit_version(
         session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
     )
     try:
+        await _require(
+            session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_STEWARD
+        )
         return await service.submit(
             namespace=namespace,
             version=version,
@@ -313,12 +347,20 @@ async def approve_version(
         session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
     )
     try:
+        await _require(
+            session, namespace=namespace, principal=principal, required=NamespaceRole.MAINTAINER
+        )
         return await service.approve(
             namespace=namespace,
             version=version,
             actor=principal.object_id or principal.subject,
             reason=(payload.reason if payload is not None else ""),
         )
+    except TwoPersonApprovalError as exc:
+        # **`PermissionDeniedError`(403)と分ける。** 権限不足ならロールを付与
+        # すれば解決するが、四眼原則違反は「別の人に承認してもらう」しかない。
+        # 同じ 403 に混ぜると、ロールを足して解決しようとして解決しない。
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ShaclViolationError as exc:
         # P2A-05: 形式的に決定可能な違反なので承認を止める(ADR-0009 決定1)。
         # 状態は変えていない(検証は遷移より前にある)。
@@ -361,6 +403,9 @@ async def reject_version(
         session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
     )
     try:
+        await _require(
+            session, namespace=namespace, principal=principal, required=NamespaceRole.MAINTAINER
+        )
         return await service.reject(
             namespace=namespace,
             version=version,
@@ -385,9 +430,13 @@ async def reconcile(
 ) -> ReconcileReport:
     """レプリカ再作成後や射影失敗後の回復に使う。
 
-    Phase 2 で platform-admin ロールを要求するようにする。
+    **`platform-admin` が必要**(ADR-0014 決定2)。名前空間をまたいでストアの
+    状態を書き換える操作なので、単一の名前空間のロールでは判定できない。
     """
-    del principal
+    try:
+        require_platform_admin(principal)
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     service = ProjectionService(
         session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
     )

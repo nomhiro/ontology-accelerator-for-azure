@@ -157,16 +157,26 @@ function Invoke-Api {
     }
     Write-Host "postdeploy: $Method $Path -> $($res.StatusCode)（期待: $($Expected -join ' ')）" -ForegroundColor Red
     if ($res.Content) { Write-Host ($res.Content.Substring(0, [Math]::Min(600, $res.Content.Length))) }
+    if ([int]$res.StatusCode -eq 403) {
+        # **原因が設定側にあることを言い切る**(P2A-06、ADR-0014)。
+        # トークンは取れているのに 403 なので「認証の失敗」と読み違えやすい。
+        Write-Host "postdeploy: 403 は権限不足です。名前空間の作成には Entra の 'platform-admin' アプリロールが必要です。" -ForegroundColor Yellow
+        Write-Host "postdeploy: README の「必要な Azure 権限と Entra ID の前提」を参照してください(割り当て直後はトークンを取り直す必要があります)。" -ForegroundColor Yellow
+    }
     throw "$Method $Path が失敗しました"
 }
 
 # ---- 名前空間（409 は既存。azd up を繰り返しても失敗させない）----
 Write-Host "postdeploy: 名前空間 $ns を作成します"
+# **同梱サンプルの名前空間だけ四眼原則を無効にする**(P2A-06、ADR-0014 決定4)。
+# 運用者 1 人のデプロイで publish → submit → approve を通すため。
+# 実運用の名前空間では既定(有効)のままにする。
 $nsBody = @{
     name         = $ns
     display_name = "小売ドメイン"
     description  = "同梱サンプル。Scan → Model のフロー(Phase 2)で置き換えられる想定"
     base_iri     = "https://example.com/ontology/retail#"
+    require_two_person_approval = $false
 } | ConvertTo-Json -Compress
 Invoke-Api -Method POST -Path "/namespaces" -Expected 201, 409 -Body $nsBody
 

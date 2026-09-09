@@ -39,6 +39,12 @@ TTL = "@prefix ex: <https://e.example/#> .\nex:A a ex:Class .\n"
 # (packages/core/tests/test_turtle.py で実測済み)。P1-C2 のブリーフの例そのもの。
 BROKEN_TTL = "@prefix ex: <http://e/> . ex:A a"
 _PRINCIPAL = Principal.local_dev()
+# 四眼原則(ADR-0014 決定4)があるため、承認は publish と別の主体で行う。
+# **既定を緩めるのではなく、正しく別人にする。** platform-admin でも
+# 四眼原則は飛び越えられない(決定5)。
+_APPROVER = Principal(
+    subject="approver", object_id="approver-oid", platform_roles=("platform-admin",)
+)
 
 
 class _NullStore(SparqlStore):
@@ -202,7 +208,7 @@ async def test_submit_approve_reject_router_status_codes(
         await approve_version(
             namespace=name,
             version=published.version,
-            principal=_PRINCIPAL,
+            principal=_APPROVER,
             session=session,
             blob=blob_store,
             store=store,
@@ -237,14 +243,17 @@ async def test_submit_approve_reject_router_status_codes(
     approved = await approve_version(
         namespace=name,
         version=published.version,
-        principal=_PRINCIPAL,
+        principal=_APPROVER,
         session=session,
         blob=blob_store,
         store=store,
         settings=settings,
     )
     assert approved.status.value == "approved"
-    assert approved.approved_by == (_PRINCIPAL.object_id or _PRINCIPAL.subject)
+    # **承認者は publish した主体とは別人である**(四眼原則。ADR-0014 決定4)。
+    # `approved_by` に実際に承認した主体が記録されることを確認する。
+    assert approved.approved_by == (_APPROVER.object_id or _APPROVER.subject)
+    assert approved.created_by != approved.approved_by
 
     # approved を submit しようとすると 409。
     with pytest.raises(HTTPException) as exc_info:
@@ -511,7 +520,7 @@ async def test_list_version_decisions_returns_the_why(
         namespace=name,
         version=published.version,
         payload=TransitionRequest(reason="想定質問を満たす"),
-        principal=_PRINCIPAL,
+        principal=_APPROVER,
         session=session,
         blob=blob_store,
         store=store,
@@ -652,7 +661,7 @@ ex:p1 a ex:Product .
         await approve_version(
             namespace=name,
             version=published.version,
-            principal=_PRINCIPAL,
+            principal=_APPROVER,
             session=session,
             blob=blob_store,
             store=store,

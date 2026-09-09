@@ -12,8 +12,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ontology_api.dependencies import CurrentPrincipal, SettingsDep, StoreDep
+from ontology_api.dependencies import CurrentPrincipal, SessionDep, SettingsDep, StoreDep
+from ontology_api.services.authorization import PermissionDeniedError, require_namespace_role
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
+from ontology_core.models import NamespaceRole
 from ontology_core.sparql.client import SparqlStoreError
 from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query
 
@@ -35,6 +37,7 @@ async def run_query(
     namespace: str,
     payload: SparqlQueryRequest,
     principal: CurrentPrincipal,
+    session: SessionDep,
     settings: SettingsDep,
     store: StoreDep,
 ) -> dict[str, Any]:
@@ -51,12 +54,23 @@ async def run_query(
     (`packages/api/tests/test_isolation.py` が実証している境界そのもの)、
     パスパラメータとして受け取る入口では必ず検証する。
     """
-    del principal  # Phase 2 で名前空間ごとの認可に使う
-
     try:
         validate_namespace_name(namespace)
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # 読み取りにも権限が必要(ADR-0014 決定2: `data-analyst` 以上)。
+    # **エージェント経路もここを通る。** MCP は呼び出し元のトークンを転送する
+    # ので(ADR-0012)、エージェントの識別子でこの判定が効く。
+    try:
+        await require_namespace_role(
+            session,
+            namespace=namespace,
+            principal=principal,
+            required=NamespaceRole.DATA_ANALYST,
+        )
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     try:
         ensure_agent_safe_query(payload.query, allow_service=settings.sparql_allow_service)

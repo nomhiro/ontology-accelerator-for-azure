@@ -167,14 +167,26 @@ call() {
     echo "postdeploy: ${method} ${path} -> ${code}（期待: ${expected}）" >&2
     head -c 600 "${tmp}" >&2; echo >&2
     rm -f "${tmp}"
+    if [ "${code}" = "403" ]; then
+        # **原因が設定側にあることを言い切る**(P2A-06、ADR-0014)。
+        # トークンは取れているのに 403 なので「認証の失敗」と読み違えやすい。
+        echo "postdeploy: 403 は権限不足です。名前空間の作成には Entra の" >&2
+        echo "postdeploy: 'platform-admin' アプリロールが必要です。README の" >&2
+        echo "postdeploy: 「必要な Azure 権限と Entra ID の前提」を参照してください" >&2
+        echo "postdeploy: (割り当て直後はトークンを取り直す必要があります)" >&2
+    fi
     return 1
 }
 
 # ---- 名前空間 ----
 # 409 は既に存在する場合。azd up を繰り返しても失敗しないようにする。
-echo "postdeploy: 名前空間 ${NS} を作成します"
+# **同梱サンプルの名前空間だけ四眼原則を無効にする**(P2A-06、ADR-0014 決定4)。
+# 運用者 1 人のデプロイで publish → submit → approve を通すため。
+# 「デモのために既定を緩める」のではなく「デモの名前空間だけを緩める」。
+# 実運用の名前空間では既定(有効)のままにする。
+echo "postdeploy: 名前空間 ${NS} を作成します(四眼原則は無効。同梱サンプルのため)"
 call POST "/namespaces" "201 409" \
-    '{"name":"'"${NS}"'","display_name":"小売ドメイン","description":"同梱サンプル。Scan → Model のフロー(Phase 2)で置き換えられる想定","base_iri":"https://example.com/ontology/retail#"}'
+    '{"name":"'"${NS}"'","display_name":"小売ドメイン","description":"同梱サンプル。Scan → Model のフロー(Phase 2)で置き換えられる想定","base_iri":"https://example.com/ontology/retail#","require_two_person_approval":false}'
 
 # ---- 公開 → 提出 → 承認 ----
 # publish は draft を作るだけで射影しない。approve で初めて既定グラフに載る

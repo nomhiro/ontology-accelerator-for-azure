@@ -40,12 +40,33 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **エージェント(`GRAPH` 句なしのクエリ)は常に承認済みの現行版だけを見ます。**
   レビュアは `GRAPH` 句で審査中(`in-review`)の版を検証できます。
   `draft` は Blob と PostgreSQL にのみ存在し、Fuseki には一切現れません。
-- **Phase 1 では承認に権限を強制しません。** 名前空間 RBAC(`P2A-06`)と責任者
-  (`P2B-04`)が未実装のため、**認証済みの呼び出し元は誰でも submit/approve/reject
-  を実行できます。** `approved_by` には実際に呼び出した主体が記録されますが、
-  「責任者だけが承認できる」「提案者と承認者を別人にする(四眼原則)」は強制されません。
-  権限の強制は Phase 2 で対応します（[`docs/backlog.md`](docs/backlog.md) の `P2B-13`）
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 131 件: unit 77 件 + integration 54 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- **名前空間ごとの権限が強制されます(ADR-0014)。** 認証済みであることは
+  「何をしてよいか」を意味しません。名前空間ごとにロールを付与し、API が強制します。
+
+  ```
+  data-analyst  <  data-steward  <  maintainer  <  owner        (上位は下位を含む)
+  ```
+
+  | 操作 | 必要なロール |
+  |---|---|
+  | SPARQL 読み取り / 版の一覧 / 決定記録 / SHACL 検証 | `data-analyst` |
+  | `publish` / `submit` | `data-steward` |
+  | `approve` / `reject` | `maintainer` |
+  | 名前空間の削除 / ロールの付与・取り消し | `owner` |
+  | 名前空間の作成 / `POST /admin/reconcile` | `platform-admin`(Entra アプリロール) |
+
+  **付与が 1 件も無い名前空間は「誰も権限を持たない」として扱います。**
+  「付与が無ければ全員に許可」のような暗黙のフォールバックは作りません
+  (「強制していない」を「強制している」と誤認させるため)。名前空間を作った主体は
+  同じトランザクションで自動的に `owner` になります。
+- **四眼原則が名前空間ごとに設定できます。既定は有効です。**
+  有効な名前空間では、**その版を `publish` した主体はその版を `approve` できません**
+  (HTTP 409)。`platform-admin` もここは飛び越えられません — 管理者が自分の提案を
+  自分で承認できてしまうと、四眼原則が「管理者以外への制約」に成り下がるためです。
+  **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
+  (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
+  **実運用の名前空間では有効のままにしてください。**
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 243 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -64,10 +85,10 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
 ### 未実装・未検証
 
-- **名前空間ごとの認可はまだ強制されません。** 認証(誰であるか)は Entra ID で検証され、MCP 経路でも呼び出し元の識別子が Core API まで届きます(ADR-0012)。しかし「誰がどの名前空間に何をしてよいか」は判定していません(Phase 2 の `P2A-06`)
-- **Scan / Model の機能は存在しません** — オントロジーの自動生成、スキーマ発見は Phase 2 です。承認フロー自体は上記の通り最小実装がありますが、権限の強制(責任者のみ・四眼原則)は Phase 2 です
+- **Scan / Model の機能は存在しません** — オントロジーの自動生成、スキーマ発見は Phase 2 です
+- **ロールの付与は API のみです。** Web の管理画面はまだありません(`PUT /namespaces/{ns}/roles`)。
+  また、責任者(オーナーシップとエスカレーション、`P2B-04`)は RBAC とは別のレイヤで未実装です
 - MCP サーバーはツール定義まで。Ontop 連邦クエリ・ベクトル検索・OWL 推論は Phase 3〜4 です
-- 名前空間ごとの RBAC は強制されていません(Phase 2)
 
 つまり現時点の価値は、**設計ドキュメントと、その設計が成立することを確認できる最小の骨格**です。
 
@@ -145,8 +166,8 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
 
-上記のうち Phase 1 で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、そして submit/approve/reject による最小の承認フロー(権限強制なし)です。
-**未実装のもの**は、SHACL 検証(Phase 2)、R2RML による連邦クエリ(Phase 3)、承認の権限強制(責任者のみ・四眼原則、Phase 2)、PROV-O による監査証跡の標準語彙での表現(Phase 2)、LLM によるオントロジー生成(Phase 2)です。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、そして名前空間ごとの RBAC と四眼原則の強制です。
+**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、意味的差分(`P2B-09`)です。
 監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
@@ -248,7 +269,27 @@ POST /namespaces/{ns}/versions/{v}/validate       この版を SHACL で検証�
 
 **エージェント(`GRAPH` 句を書かないクエリ)は常に承認済みの現行版だけを見ます。** `draft` は Blob と PostgreSQL にのみ存在し、Fuseki には一切現れません。レビュアは `GRAPH` 句で `in-review` の版を検証してから approve してください。
 
-**Phase 1 では承認に権限を強制しません。** `submit` / `approve` / `reject` は認証済みの呼び出し元なら誰でも実行できます(責任者のみ・四眼原則は Phase 2)。`approve` した主体は `approved_by` に正しく記録されます。「記録は正しいが、強制は無い」状態であることに注意してください。
+**この操作には権限が必要です([ADR-0014](docs/adr/0014-namespace-rbac.md))。** `publish` / `submit` は `data-steward` 以上、`approve` / `reject` は `maintainer` 以上です。足りなければ **403** を返します。
+
+**四眼原則が有効な名前空間では、その版を `publish` した主体は `approve` できません。** その場合は **409** を返します。403 と分けているのは**運用者が取るべき対処が違う**ためです — 権限不足はロールを付与すれば解決しますが、四眼原則違反は「別の人に承認してもらう」しかありません。同じ 403 に混ぜると、ロールを足して解決しようとして解決しません。
+
+提案者は「その版を `publish` した主体」で判定します。`submit` は「レビューに出す」という事務的な操作でありうる(他人の `draft` を代わりに submit することは自然に起こる)ため、内容の責任は publish 側にあります。
+
+```bash
+# 名前空間ごとのロールを付与する(owner が必要)
+curl -X PUT "$API/namespaces/retail-core/roles" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"principal_id": "<Entra のオブジェクト ID>", "role": "maintainer"}'
+
+# 付与を一覧する
+curl "$API/namespaces/retail-core/roles" -H "Authorization: Bearer $TOKEN"
+
+# 取り消す(最後の owner は取り消せない。409)
+curl -X DELETE "$API/namespaces/retail-core/roles/<オブジェクト ID>" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**`principal_id` は Entra のオブジェクト ID です。** UPN や表示名ではありません(UPN は変わりうるし、ゲストの `#EXT#` 形式は書き換えの罠があります)。
 
 #### MCP から Core API への認証
 
@@ -383,6 +424,36 @@ azd down --purge   # just destroy でも同じ
 
 - **サブスクリプションに対する権限**: リソースグループの作成とロール割り当てを行うため、`Contributor` に加えて `User Access Administrator`(または `Owner`)相当が必要です。Managed Identity へのロール割り当てを IaC が行います
 - **Entra ID App 登録**: 人間の認可コードフロー、およびエージェントの client credentials フローのために App 登録が必要です。テナントで App 登録が禁止されている場合、テナント管理者への依頼が必要になります
+- **`platform-admin` アプリロールが必要です([ADR-0014](docs/adr/0014-namespace-rbac.md) 決定2・3)。** 名前空間の作成と `POST /admin/reconcile` はこのロールを要求します。**`azd up` の `postdeploy` は同梱サンプルの名前空間を作るため、これが無いと 403 で止まります。**
+
+  アプリ登録に `appRoles` を 1 件定義し、`azd up` を実行する運用者(または CI のサービスプリンシパル)に割り当ててください。
+
+  ```bash
+  APP_ID=<アプリ登録の appId>
+  ROLE_ID=$(uv run python -c "import uuid; print(uuid.uuid4())")
+
+  # 1) アプリロールを定義する
+  #    appRoles は複合プロパティなので、既存の定義があれば含めて丸ごと送ること
+  az ad app update --id "$APP_ID" --set appRoles="[{
+    \"id\": \"$ROLE_ID\",
+    \"allowedMemberTypes\": [\"User\", \"Application\"],
+    \"value\": \"platform-admin\",
+    \"displayName\": \"Platform administrator\",
+    \"description\": \"名前空間の作成と reconcile を行える\",
+    \"isEnabled\": true
+  }]"
+
+  # 2) 運用者に割り当てる(サービスプリンシパル側のオブジェクト ID が必要)
+  SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
+  USER_OID=$(az ad signed-in-user show --query id -o tsv)
+  az rest --method POST \
+    --url "https://graph.microsoft.com/v1.0/users/$USER_OID/appRoleAssignments" \
+    --body "{\"principalId\":\"$USER_OID\",\"resourceId\":\"$SP_OID\",\"appRoleId\":\"$ROLE_ID\"}"
+  ```
+
+  **ロールはトークンの `roles` クレームで届きます。** 割り当て直後は既存のトークンに反映されないため、`az account get-access-token` を取り直してください。`AUTH_MODE=disabled`(ローカル開発)では `Principal.local_dev()` が `platform-admin` を持つので開発は止まりません。
+
+  **名前空間を作った主体は自動的にその名前空間の `owner` になります。** そのため運用者は作成後、追加の付与なしに publish / approve まで行えます(同梱サンプルは四眼原則を無効で作るため approve も通ります)。
 - **App 登録権限がない場合**: `AUTH_MODE=disabled` の **ローカル専用 dev モード**を用意しています。認証を完全に無効化するため、**ローカル開発以外では絶対に使用しないでください**。Azure へデプロイした環境でこのモードを有効にしてはいけません
 - **PostgreSQL の権限分離([ADR-0011](docs/adr/0011-database-privilege-separation.md))**: API / MCP / Fuseki が共有する UAMI は PostgreSQL の Entra 管理者ではなく、テーブルの所有権も DDL 権限も持たない非管理者ロールです。侵害されても `azure_pg_admin` 権限は奪われず、`audit_events`(監査証跡)の `DELETE` もできません(追記専用)。テーブルの所有者は専用ロール `ontology_owner`(`NOLOGIN`)で、Entra 管理者は**デプロイを実行する運用者**(`azd up` を実行するユーザー、または CI のサービスプリンシパル)が務めます
   - **無人の CI/CD では動きません。** マイグレーション(`alembic upgrade head`)は `postdeploy` フックで運用者自身が `ontology_owner` として実行します。運用者のマシンから PostgreSQL に届くよう、`postdeploy` が一時的なファイアウォール規則を作って最後に削除します(常時開けたままにはしません)。`publicNetworkAccess: Disabled` の `production` プロファイルでこの経路は成立しないため、VNet 内で実行されるマイグレーション経路は Phase 4 で設計します

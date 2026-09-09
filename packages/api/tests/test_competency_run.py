@@ -72,7 +72,8 @@ async def approved_sample(
         namespace=name, turtle=turtle, actor="t", reason="想定質問テストのため"
     )
     await svc.submit(namespace=name, version=draft.version, actor="t")
-    await svc.approve(namespace=name, version=draft.version, actor="t")
+    # 四眼原則(ADR-0014)があるため承認は別の主体で行う。
+    await svc.approve(namespace=name, version=draft.version, actor="reviewer")
     return name
 
 

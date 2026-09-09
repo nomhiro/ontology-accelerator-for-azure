@@ -113,8 +113,8 @@ reconcile                      -> 孤児ゼロ
 - 顧客 DB 接続とスキーマ自動発見（scan-job）
 - LLM によるオントロジー候補生成
 - Web でのレビュー・承認フロー（グラフ可視化を含む）
-- pyshacl による SHACL 検証
-- 名前空間 RBAC の強制
+- pyshacl による SHACL 検証 — **完了**（2026-09-09。`P2A-05`）
+- 名前空間 RBAC の強制 — **完了**（2026-09-09。`P2A-06`、[ADR-0014](adr/0014-namespace-rbac.md)。四眼原則を含む）
 - 監査証跡の PROV-O 表現（[ADR-0006](adr/0006-ontology-versioning-and-audit.md)）
 
 ### 柱 B: 運用し続けられる
@@ -128,8 +128,8 @@ reconcile                      -> 孤児ゼロ
 - 廃止のライフサイクル（`owl:deprecated` + 後継への参照。IRI は削除も再利用もしない）〔決定 3〕
 - 名前空間と用語の責任者〔決定 4〕
 - 健全性指標（未参照の用語、責任者未設定、再承認が古い、SHACL 違反、未射影）〔決定 5〕
-- 想定質問（Competency Questions）を SPARQL テストとして CI で実行〔決定 6〕
-- 「なぜ」を参照時に返す（`reason` / `diff` を書き、読み出す）〔決定 7〕
+- 想定質問（Competency Questions）を SPARQL テストとして CI で実行〔決定 6〕 — **完了**（2026-09-09。`P2B-07`）
+- 「なぜ」を参照時に返す（`reason` / `diff` を書き、読み出す）〔決定 7〕 — **`reason` は完了**（2026-09-09。`P2B-08`。`diff` は `P2B-09`）
 - 意味的差分の計算と差分レビュー〔決定 7〕
 - 領域間マッピング（SKOS `closeMatch` 等）〔決定 8〕
 

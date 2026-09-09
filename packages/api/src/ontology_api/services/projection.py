@@ -50,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
+from ontology_api.services.authorization import TwoPersonApprovalError
 from ontology_core.blob import BlobStoreError, OntologyBlobStore
 from ontology_core.graphs import dataset_name, version_graph_iri
 from ontology_core.models import OntologyVersion, OntologyVersionStatus
@@ -585,6 +586,28 @@ class ProjectionService:
             raise InvalidTransitionError(
                 f"'{namespace}@{version}' は in-review ではないため approve できません"
                 f"(現在の状態: {current.status.value})"
+            )
+
+        # ---- 四眼原則(P2A-06、ADR-0014 決定4) ----
+        #
+        # **提案者は「その版を publish した主体」で判定する**(ADR-0014 の根拠)。
+        # `submit` は「レビューに出す」という事務的な操作でありうる(他人の
+        # draft を代わりに submit することは自然に起こる)ため、内容の責任は
+        # publish 側にある。
+        #
+        # **`platform-admin` もここは飛び越えられない**(決定5)。管理者が自分の
+        # 提案を自分で承認できてしまうと、四眼原則が「管理者以外への制約」に
+        # 成り下がり、規制対応の文脈で意味を失う。そのため呼び出し元は
+        # ロール判定とは独立にこの検査を通る。
+        namespace_row = await NamespaceRepository(self._session).get(namespace)
+        if (
+            namespace_row is not None
+            and namespace_row.require_two_person_approval
+            and current.created_by == actor
+        ):
+            raise TwoPersonApprovalError(
+                f"'{namespace}@{version}' を publish した主体は approve できません"
+                "(四眼原則が有効です)。別の maintainer 以上に承認を依頼してください"
             )
 
         # ---- SHACL 検証(P2A-05、ADR-0005 / ADR-0009 決定1) ----

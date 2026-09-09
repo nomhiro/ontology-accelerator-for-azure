@@ -33,6 +33,8 @@
 8. **オントロジーは縮められなければならない。** 廃止を追加と同格に扱う。IRI を削除も再利用もしない（[ADR-0009](docs/adr/0009-ontology-operations.md)）
 9. `AUTH_MODE=disabled` はローカル開発専用。デプロイ環境で使ってはならない
 10. **`projected_at` は書き込み経路の知識であり、ストアの現在の状態ではない。** ストアは再構築可能な派生物なので、PostgreSQL の列から「ストアが今それを保持している」ことは主張できない。それに答えられるのはストア自身だけである（[ADR-0013](docs/adr/0013-reconcile-repairs-observed-divergence.md)）
+11. **権限の既定は「拒否」。暗黙のフォールバックを作らない。** ロール付与が 1 件も無い名前空間は「誰も権限を持たない」として扱う。「付与が無ければ全員に許可」は**「強制していない」を「強制している」と誤認させる**ため、この製品では最も避けたい形である。既存デプロイの移行はマイグレーションで明示的に行う（[ADR-0014](docs/adr/0014-namespace-rbac.md)）
+12. **`platform-admin` は名前空間の権限を飛び越えるが、四眼原則は飛び越えない。** 管理者が自分の提案を自分で承認できてしまうと、四眼原則が「管理者以外への制約」に成り下がり、規制対応の文脈で意味を失う（ADR-0014 決定5）
 
 ## 開発環境
 
@@ -47,6 +49,7 @@ just dev-api             # Core API 起動
 
 - **ポート 3030 が別プロジェクトと衝突する場合がある。** `FUSEKI_PORT=3131` を環境変数で指定する。テストも同じ変数を読む（`POSTGRES_PORT` / `AZURITE_PORT` も同様）
 - **`just up` は Azurite に Blob コンテナを作る。** これを飛ばすと publish と削除が `ContainerNotFound` で失敗する。名前空間の作成と SPARQL 参照は Blob を触らないため動いてしまい、原因が分かりにくい
+- **`just clean` は PostgreSQL のボリュームごと消す。** 消した後は `just migrate` をやり直す必要がある。さらに `alembic` を素で叩くときは `.env` を読まないので、`POSTGRES_*` を環境変数で明示する（`just migrate` は `--env-file` を使っている）。読み込まれないと既定値で接続を試み、`InvalidPasswordError` になる
 - **`git commit` はインデックス全体をコミットする。** `git add <パス>` で絞っても、他に staged なものがあれば混ざる。**コミット前に `git diff --cached --name-only` で確認する**
 - **PowerShell の `>` は UTF-16LE で書き出す。** ファイル出力はシェルに任せず、生成側の言語で `encoding='utf-8'` を明示する
 - **docker のボリュームを `/lib` にマウントしてはいけない。** Alpine の `/lib` は musl libc 等の
@@ -60,7 +63,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 218 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 243 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -105,6 +108,8 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 ```
 
 **ルータのハンドラ名が、同じモジュールで import している関数を上書きすることがある。** エンドポイント関数を `validate_version` と命名したところ、入口検証に使っている `ontology_core.graphs.validate_version` を隠してしまい、**他のハンドラの検証が黙って効かなくなった**。ハンドラ名は `validate_version_shacl` のように用途を付けて衝突を避ける（回帰テストあり）。
+
+**SQLAlchemy の `session.execute()` の戻り値に `rowcount` は無い（mypy strict）。** `rowcount` は `CursorResult` にしか無く、`execute()` の宣言型はそれより広い `Result[Any]` である。DELETE の件数が欲しいときは `cast` で型を潰すのではなく、**存在確認してから削除する**（1 クエリ増えるが意図が読める。`RoleRepository.revoke` がこの形）。
 
 **PostgreSQL の `now()` はトランザクション開始時刻を返す。** `server_default=now()` の列は、同一トランザクション内で挿入した複数行が**同じ値になる**。時系列で並べたいときは主キーを第二キーに加える（`audit_events` の決定記録の並び順で実際に必要になった）。
 
