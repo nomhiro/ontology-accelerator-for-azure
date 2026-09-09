@@ -17,7 +17,7 @@
 |---|---|
 | ACA Consumption vCPU (active) | `$0.000024 / vCPU秒` |
 | ACA Consumption vCPU (idle) | `$0.000003 / vCPU秒` |
-| ACA Consumption メモリ | `$0.000003 / GiB秒` |
+| ACA Consumption メモリ (active / idle **同単価**) | `$0.000003 / GiB秒` |
 | ACA 無料枠 | **180,000 vCPU秒 + 360,000 GiB秒 / 月**(**サブスクリプション単位でアプリ間共有**) |
 | PostgreSQL Flexible Server B1ms | `$0.026 / 時` |
 | Azure AI Search Basic | `$0.133 / 時` |
@@ -29,6 +29,7 @@
 - 1 か月 = **730 時間 = 2,628,000 秒**(Azure の月額表示に合わせた慣例値)
 - ACA 無料枠は**サブスクリプション単位でアプリ間共有**されるため、複数アプリを同一サブスクリプションで動かす場合、下記の控除は 1 回しか効きません。本試算では常時稼働する Fuseki に対して控除を適用しています
 - ACA の無料枠控除後の秒数に単価を掛けます
+- **idle 割引は vCPU にしか効きません。** メモリは active と idle が同単価です（Retail Prices API で japaneast / eastus / westeurope すべて一致を確認）。本試算がメモリを単一単価で扱っているのはこのためです
 
 ---
 
@@ -146,21 +147,76 @@ ACR Basic は、公開イメージを `ghcr.io` に置く運用にすれば $5 �
 
 ---
 
-## 最大の見積り不確実性: ACA の idle/active 判定
+## ACA の idle/active 判定 — **実測して解消しました**（2026-09-09、`P1-S2`）
 
-> **ACA の idle 単価は active の 1/8 です。Fuseki が常時 active と判定されると vCPU 分が 8 倍になり、1 vCPU 構成で最悪 月 $105 前後まで上振れします。Phase 1 スパイクで idle/active 比率を実測して確定します。**
+**結論: Fuseki は待機時に idle 単価の条件を満たします。** 最も厳しい CPU の条件に対して **約 4 倍の余裕**があり、懸念していた「8 倍に上振れして月 $105 前後」は**起きません**。上の試算（idle 課金前提）はそのまま有効です。
 
-上振れ時の計算(1 vCPU / 2 GiB が常時 active):
+### idle の判定条件（公開仕様）
+
+**既定は active です。** idle 単価が適用されるには、2 段階の条件を両方満たす必要があります。
+
+リビジョン側:
+
+- `minReplicas` > 0 であり、かつ現在ちょうど `minReplicas` までスケールしている
+  （`minReplicas` を超えてスケールすると、**超過分だけでなく稼働中の全レプリカが active 単価**になります）
+
+レプリカ側（**レプリカ単位・秒単位**で以下すべて）:
+
+- レプリカ内の全コンテナが起動済み・稼働中
+- HTTP リクエストを処理していない
+- **0.01 vCPU（= 10,000,000 ナノコア）未満**を使用
+- ネットワーク受信が**毎秒 1,000 バイト未満**
+
+なお 0 レプリカは課金ゼロです。**ACA Jobs とサーバーレス GPU には idle 単価が適用されません**（常に active）。
+
+### 実測（既定構成 = Fuseki 0.5 vCPU / 1 GiB、`minReplicas: 1` / `maxReplicas: 1`）
+
+Azure Monitor の `Microsoft.App/containerapps` メトリクスで、上の述語をそのまま再構成しました。**トラフィックを一切与えない窓を 36 分とり、PT1M 粒度で観測**しています。
+
+| 判定条件 | 対応するメトリクス | 閾値 | 実測 | 判定 |
+|---|---|---|---|---|
+| リビジョンが idle 適格 | `Replicas` | `minReplicas` と一致 | 常に 1 | ✓ |
+| HTTP を処理していない | `Requests` | 0 | 常に 0 | ✓ |
+| 0.01 vCPU 未満 | `UsageNanoCores` | 10,000,000 未満 | 平均 約 210 万（中央値 2,089,675。範囲 1,863,589〜2,505,094） / **最大 267 万（最大 2,670,602）** | ✓（余裕 約 3.7 倍） |
+| 受信 1,000 B/s 未満 | `RxBytes` | 1,000 B/s 未満 | 191〜242 B/s | ✓（余裕 約 4.1 倍） |
+
+参考: `WorkingSetBytes` は 339〜696 MiB（割当 1 GiB）でした。
+
+**Liveness プローブ（`/$/ping` を 30 秒周期）は idle 判定を壊しませんでした。** `RxBytes` の約 200 B/s はほぼこのプローブによるものですが、閾値の 1/4 以下です。
+
+### この実測の限界（明記します）
+
+- **Azure Monitor の最小粒度は PT1M ですが、課金判定は秒単位です。** そのため「1 分間の平均・最大」から秒単位の比率を厳密に出すことはできません。ここでは `maximum`（分内の最大）も閾値を大きく下回っていることを根拠にしています
+- **計測したのは既定構成（0.5 vCPU / 1 GiB）です。** 1 vCPU / 2 GiB の構成は計測していません。ただし idle の閾値は割当に対する比率ではなく **0.01 vCPU という絶対値**であり、待機時の CPU 使用は JVM の常駐処理が支配的で割当サイズにあまり依存しないため、そちらでも満たすと考えられます（未計測であることを明示します）
+- **課金データ（Cost Management）では検証していません。** 理由は下記
+
+### なぜ課金データで測らなかったのか
+
+課金データで idle/active 比率を出すには、**無料枠を使い切るまでデプロイを維持する**必要があります。
 
 ```
-vCPU : 2,448,000 vCPU秒 × $0.000024 (active 単価) = $58.75
-メモリ: 4,896,000 GiB秒 × $0.000003              = $14.69
-Fuseki 小計                                       = $73.44
+無料枠 180,000 vCPU秒 / 360,000 GiB秒（サブスクリプション・暦月あたり）
+
+0.5 vCPU / 1 GiB : 180,000 ÷ 0.5 = 100 時間、360,000 ÷ 1 = 100 時間
+1   vCPU / 2 GiB : 180,000 ÷ 1   =  50 時間、360,000 ÷ 2 =  50 時間
 ```
 
-これに他リソース($29〜34)を加えると **$102〜107** となり、「月 $105 前後」の根拠になります。差額は Fuseki の vCPU 分のみで、`$58.75 − $7.34 = $51.41` です。
+これに Cost Management の反映遅延（**EA / MCA で 8〜24 時間、従量課金で最大 72 時間**）が乗ります。つまり課金データだけで測るなら **稼働 2〜5 日 + 待ち 1〜3 日**が必要で、しかも結果は `azd down --purge` の後に届きます。メトリクスから判定条件を再構成すれば、**費用ほぼゼロ・即日**で同じ問いに答えられます。
 
-**この不確実性を潰すことが Phase 1 の必須スパイクの 1 つです。** 実測値が得られ次第、README とこのドキュメントの数値を実測ベースに置き換えます。
+後日課金側から裏取りする場合は、**1 レプリカ固定で vCPU 割当が既知なら、`Standard vCPU Idle Usage` と `Standard vCPU Active Usage` の `Quantity` の比がそのまま idle 秒 : active 秒になります**（無料枠で `Cost` が 0 でも `Quantity` は残ります）。リソースグループを削除すると RG スコープの照会が失敗しうるため、**サブスクリプションスコープで `ResourceGroup` をディメンションとしてフィルタ**してください。
+
+### 環境レベルのメーターは乗っていません（確認済み）
+
+`Environment Management Hour` / `Environment Private Endpoint` / `Environment Planned Maintenance Hour` は**各 $0.145/時 ≒ 月 $105** です。実測した環境は次のとおりで、いずれも該当しません。
+
+```
+workloadProfiles : Consumption のみ（Dedicated なし）
+vnetConfiguration: なし
+plannedMaintenance: なし
+zoneRedundant   : false
+```
+
+**`production` プロファイル（VNet 統合 + Private Endpoint、Phase 4）ではこれらが乗ります。** 下の production 概算にはこの分を織り込む必要があります（Phase 4 で内訳を確定します）。
 
 ---
 
@@ -177,6 +233,8 @@ Fuseki 1 vCPU  : $51〜61 + $97 = $148〜158
 ## production(参考概算)
 
 AI Search S1(`$324/月`)、PostgreSQL General Purpose、ACA 専用プラン or AKS + Managed Disk、Private Endpoint(約 $7.3/月 × 5 本)等で **月 $700〜1,200 規模**です。
+
+**加えて、環境レベルのメーターが乗ります。** VNet 統合 + Private Endpoint を有効にすると `Environment Management Hour` / `Environment Private Endpoint` が **各 $0.145/時 ≒ 月 $105** で課金されます（minimal 構成では乗らないことを実測で確認済み。上記「環境レベルのメーターは乗っていません」を参照）。
 
 これは概算であり、内訳の確定は **Phase 4** で行います。現時点の数値は「桁を把握する」ためのものとして扱ってください。
 

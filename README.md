@@ -318,7 +318,7 @@ Japan East の retail 価格(USD)に基づく**見積り**です。実際の課�
 | production(参考概算) | **$700〜1,200** |
 | Microsoft Foundry (LLM) | 従量。中規模スキーマ 1 回の帰納で $1〜5 程度 |
 
-> **最大の見積り不確実性**: Azure Container Apps の idle 単価は active の 1/8 です。Fuseki が常時 active と判定されると vCPU 分が 8 倍になり、1 vCPU 構成で最悪 **月 $105 前後**まで上振れします。Phase 1 のスパイクで idle/active 比率を実測して確定します。
+> **idle 課金は実測で確認済みです**（2026-09-09）。Azure Container Apps の idle 単価は active の 1/8 で、Fuseki が常時 active と判定されると 1 vCPU 構成で最悪 月 $105 前後まで上振れする懸念がありました。**実測の結果、Fuseki は待機時に idle の条件（0.01 vCPU 未満・受信 1,000 B/s 未満・リクエスト 0・レプリカ数が `minReplicas` と一致）を約 4 倍の余裕で満たしており、この上振れは起きません。** 判定条件・実測データ・その限界は [`docs/cost-estimate.md`](docs/cost-estimate.md) に記載しています。なお **idle 割引は vCPU にしか効きません**（メモリは active と同単価）。
 
 `azd down --purge` で全リソースを削除できるため、評価後にコストを止められます。
 
@@ -339,7 +339,7 @@ Phase 2 が**2 本柱**（AI が作れる / 運用し続けられる）である
 
 **各 Phase の完了条件と現在の達成状況は [`docs/roadmap.md`](docs/roadmap.md)、残っているタスクは [`docs/backlog.md`](docs/backlog.md) にあります。**
 
-Phase 1 の必須スパイク 3 件のうち、①起動時再構築の所要時間実測は完了（4.6 秒）。②ACA の idle/active 課金比率と③Ontop 配布物のライセンス確認は未実施です。
+Phase 1 の必須スパイク 3 件は**すべて完了しました**。①起動時再構築の所要時間 4.6 秒、②ACA の idle/active 課金比率（Fuseki は待機時に idle の条件を満たす。上記）、③Ontop 配布物のライセンス（公式イメージに JDBC ドライバは同梱されておらず、懸念していたリスクは存在しなかった。[結論](docs/third-party-licenses.md)）。
 
 ---
 
