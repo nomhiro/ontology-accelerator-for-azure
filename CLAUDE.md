@@ -63,12 +63,13 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 243 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 268 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
 sh containers/fuseki/load-snapshot.test.sh     # ローダの制御フロー
 sh scripts/lint-shell.sh                       # シェルの移植性(素の python 等)
+sh scripts/preprovision.test.sh                # provision を止めるゲート(要: uv)
 # shellcheck は CI と同じバージョンを使う(apt 版 0.9.0 と指摘が違うため固定)
 docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
   scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh
@@ -113,9 +114,15 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 
 **PostgreSQL の `now()` はトランザクション開始時刻を返す。** `server_default=now()` の列は、同一トランザクション内で挿入した複数行が**同じ値になる**。時系列で並べたいときは主キーを第二キーに加える（`audit_events` の決定記録の並び順で実際に必要になった）。
 
+**Python の標準出力は Windows では cp932 になる。** `print` に日本語を渡すと cp932 のバイト列が出る一方、周りのシェルスクリプトの `echo` はソースの UTF-8 をそのまま出すため、**同じログに 2 つのエンコーディングが混ざる**。azd のフックのログが読めなくなり、ログを機械的に検査するテストも通らない（実際に踏んだ）。cp932 に無い文字（絵文字・ダッシュ）があると `UnicodeEncodeError` で**スクリプトごと落ちる**。運用者に見せる出力は `ontology_core.console` の `say` / `warn` を使う。
+
+**`set -e` の下では `cmd; rc=$?` が書けない。** `cmd` が非ゼロで終わった時点でスクリプトが終わり、`rc` を読む行に到達しない（実測で確認）。終了コードで分岐したいときは `rc=0; cmd || rc=$?` にする。**「2 なら止める、1 なら続行する」のような多値の分岐**を書くときに必ず踏む。
+
 **シェルスクリプトで素の `python` を呼んではいけない。** 多くの現代的な Linux には `python` が無く `python3` しかない（Python 3 が既定になった時点で各ディストリが無印の提供をやめた）。実測で Azure Linux 3.0 には無い。**`uv run python` を使う**（このリポジトリのスクリプトは既に uv に依存しているため、前提を増やさない）。`scripts/lint-shell.sh` が機械的に検査する。
 
 **コメント行を静的解析ツールの名前だけで始めてはいけない。** `#` の直後にツール名が来ると、ツール自身がディレクティブ指定として解釈して SC1072 / SC1073 で失敗する。説明したいときは「静的解析ツール」と書くか、行頭に別の語を置く（2 回踏んだ）。
+
+**Windows では拡張子の無いスタブが `shutil.which` に拾われない。** `az` をスタブに差し替えてテストするとき、`PATH` の先頭に拡張子なしの `az` を置いても Python 側は `PATHEXT`（`.cmd` / `.exe`）しか見ないため**本物の `az` が呼ばれる**（実際に一度、意図せず実テナントへ読み取りを飛ばした）。sh から呼ぶスクリプトのテストでは拾われるが、Python から呼ぶ場合は `subprocess.run` 自体を差し替えるか `az.cmd` を置く。
 
 **Windows の Azure CLI のトークンキャッシュは Linux から使えない。** `~/.azure/msal_token_cache.bin` は DPAPI 暗号化（先頭が `01 00 00 00 D0 8C 9D DF`）で、Windows ユーザーに紐づく。`~/.azure` をコンテナへ複製すると `az account show`（ローカルのメタデータだけ）は通るのに、**トークンを要求するコマンドはすべて失敗する**ので「az は動いている」と誤解しやすい。Linux 側で az を使うには、そちら側で `az login`（対話的）が別途必要。
 

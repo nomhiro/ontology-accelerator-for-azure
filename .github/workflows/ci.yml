@@ -237,3 +237,17 @@ jobs:
       # jq は ubuntu-latest に標準で入っている。
       - name: ローダの制御フローのテストを実行する
         run: sh containers/fuseki/load-snapshot.test.sh
+      # **uv はここから下だけが必要。** preprovision.test.sh は
+      # check-platform-admin.py（ontology_core を import する）を本物として
+      # 実行する。トークンの解釈こそが検証したい対象なので、そこはスタブに
+      # しない（P2A-09）。
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: 依存関係を入れる
+        run: uv sync --all-packages
+      # provision を止めるかどうかの分岐に対するテスト（P2A-09）。
+      # **止めるべきときに通すと約 11 分と課金を捨て、通すべきときに止めると
+      # 確認の仕組み自体が新しいブロッカーになる。** 両方向を固定する。
+      - name: preprovision のゲートのテストを実行する
+        run: sh scripts/preprovision.test.sh

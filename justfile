@@ -63,6 +63,20 @@ test-integration:
 check-questions questions="samples/retail-core.questions.yaml" dataset="retail-core":
     uv run python scripts/check-questions.py {{questions}} {{dataset}}
 
+# preprovision のゲートは uv があれば docker 不要。ローダのテストは jq を
+# 要求するため docker 経由で回す(Windows には jq が既定で無い)。
+# シェルスクリプトのテストをすべて実行する(要: uv、docker)
+test-shell:
+    sh scripts/preprovision.test.sh
+    docker run --rm -v "{{justfile_directory()}}:/w" -w /w alpine:3.20 sh -c       'apk add --no-cache jq >/dev/null && sh containers/fuseki/lib/validate.test.sh && sh containers/fuseki/load-snapshot.test.sh'
+
+# ADR-0014 決定2・3(P2A-09)。**割り当てが無いと azd up の postdeploy が
+# 名前空間の作成で 403 になって止まる。** `--dry-run` を渡すと Entra を
+# 変更せず、何をするかだけ表示する。
+# Entra アプリ登録に platform-admin アプリロールを定義して割り当てる
+setup-app-role *args:
+    uv run python scripts/setup-app-role.py {{args}}
+
 # Bicep をビルドして構文を検証する
 lint-infra:
     az bicep build --file infra/main.bicep --stdout

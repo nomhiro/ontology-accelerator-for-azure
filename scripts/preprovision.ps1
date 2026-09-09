@@ -61,3 +61,42 @@ if ($LASTEXITCODE -ne 0) { throw "azd env set に失敗しました" }
 Write-Host "preprovision: AZURE_PRINCIPAL_TYPE=$principalType を設定します"
 azd env set AZURE_PRINCIPAL_TYPE $principalType
 if ($LASTEXITCODE -ne 0) { throw "azd env set (AZURE_PRINCIPAL_TYPE) に失敗しました" }
+
+# ---- platform-admin アプリロールの確認（P2A-09、ADR-0014 決定2・3）----
+#
+# 設計の意図は scripts/preprovision.sh の該当箇所に書いてある（要点のみ）。
+#
+#   - provision の前で見るのは、postdeploy の 403 まで進むと約 11 分の
+#     プロビジョニングと課金を使い切っているため
+#   - 判定はトークンの roles クレームで行う（Graph の appRoleAssignments は
+#     グループ経由の割り当てを見落とし、偽のブロッカーになる）
+#   - **確認できなかったときは通す**（確認の仕組み自体を新しいブロッカーに
+#     しない）。割り当てが無いと確定したときだけ止める
+$authMode = if ($env:AUTH_MODE) { $env:AUTH_MODE } else { "entra" }
+if ($authMode -eq "disabled") {
+    Write-Host "preprovision: AUTH_MODE=disabled のため platform-admin の確認を飛ばします"
+} elseif (-not $env:ENTRA_API_AUDIENCE) {
+    Write-Host "preprovision: ENTRA_API_AUDIENCE が空のため platform-admin の確認を飛ばします"
+    Write-Host "              (認証必須の経路は 401 になります。README のアプリ登録の手順を参照)"
+} else {
+    Write-Host "preprovision: platform-admin アプリロールを確認します"
+    $tokenOutput = az account get-access-token --scope "api://$($env:ENTRA_API_AUDIENCE)/.default" --query accessToken -o tsv 2>&1
+    if ($LASTEXITCODE -eq 0 -and $tokenOutput) {
+        $token = ($tokenOutput | Out-String).Trim()
+        # **トークンは標準入力で渡す。** 引数にすると履歴やプロセス一覧に残る。
+        $token | uv run python scripts/check-platform-admin.py
+        $rc = $LASTEXITCODE
+        if ($rc -eq 2) {
+            Write-Host "preprovision: **provision を中止します。**" -ForegroundColor Red
+            Write-Host "              このまま進めても postdeploy が名前空間の作成で 403 になり、" -ForegroundColor Red
+            Write-Host "              約 11 分のプロビジョニングと課金が無駄になります。" -ForegroundColor Red
+            Write-Host "              scripts/setup-app-role.py で割り当ててから再実行してください。" -ForegroundColor Red
+            throw "platform-admin アプリロールが割り当てられていません"
+        } elseif ($rc -ne 0) {
+            Write-Host "preprovision: platform-admin を確認できませんでした(続行します)" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "preprovision: アクセストークンを取得できませんでした(続行します)" -ForegroundColor Yellow
+        Write-Host ($tokenOutput | Out-String)
+    }
+}

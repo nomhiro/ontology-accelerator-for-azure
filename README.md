@@ -66,7 +66,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 243 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 268 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -426,32 +426,29 @@ azd down --purge   # just destroy でも同じ
 - **Entra ID App 登録**: 人間の認可コードフロー、およびエージェントの client credentials フローのために App 登録が必要です。テナントで App 登録が禁止されている場合、テナント管理者への依頼が必要になります
 - **`platform-admin` アプリロールが必要です([ADR-0014](docs/adr/0014-namespace-rbac.md) 決定2・3)。** 名前空間の作成と `POST /admin/reconcile` はこのロールを要求します。**`azd up` の `postdeploy` は同梱サンプルの名前空間を作るため、これが無いと 403 で止まります。**
 
-  アプリ登録に `appRoles` を 1 件定義し、`azd up` を実行する運用者(または CI のサービスプリンシパル)に割り当ててください。
-
   ```bash
-  APP_ID=<アプリ登録の appId>
-  ROLE_ID=$(uv run python -c "import uuid; print(uuid.uuid4())")
-
-  # 1) アプリロールを定義する
-  #    appRoles は複合プロパティなので、既存の定義があれば含めて丸ごと送ること
-  az ad app update --id "$APP_ID" --set appRoles="[{
-    \"id\": \"$ROLE_ID\",
-    \"allowedMemberTypes\": [\"User\", \"Application\"],
-    \"value\": \"platform-admin\",
-    \"displayName\": \"Platform administrator\",
-    \"description\": \"名前空間の作成と reconcile を行える\",
-    \"isEnabled\": true
-  }]"
-
-  # 2) 運用者に割り当てる(サービスプリンシパル側のオブジェクト ID が必要)
-  SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
-  USER_OID=$(az ad signed-in-user show --query id -o tsv)
-  az rest --method POST \
-    --url "https://graph.microsoft.com/v1.0/users/$USER_OID/appRoleAssignments" \
-    --body "{\"principalId\":\"$USER_OID\",\"resourceId\":\"$SP_OID\",\"appRoleId\":\"$ROLE_ID\"}"
+  # アプリロールを定義し、az にログイン中の主体に割り当てる(冪等)
+  just setup-app-role
+  # 何をするかだけ見る
+  just setup-app-role --dry-run
+  # エージェントのサービスプリンシパルに割り当てる
+  just setup-app-role --principal-id <オブジェクト ID>
   ```
 
-  **ロールはトークンの `roles` クレームで届きます。** 割り当て直後は既存のトークンに反映されないため、`az account get-access-token` を取り直してください。`AUTH_MODE=disabled`(ローカル開発)では `Principal.local_dev()` が `platform-admin` を持つので開発は止まりません。
+  `ENTRA_API_AUDIENCE` を azd 環境から拾います。別のアプリ登録を対象にするときは `--app-id <appId>` を渡してください。
+
+  **`azd provision` の前に自動で確認します。** `preprovision` が発行済みトークンの `roles` クレームを見て、`platform-admin` が無ければ**プロビジョニングを始めずに止めます**(そこまで進んでから `postdeploy` で 403 になると、約 11 分と課金を無駄にするためです)。**確認できなかったときは止めません** — 「権限が無い」と「確認できなかった」は違い、後者でデプロイを止めると確認の仕組み自体が障害になります。
+
+  手元のトークンで確認するには次を実行してください。
+
+  ```bash
+  az account get-access-token --scope "api://$ENTRA_API_AUDIENCE/.default" \
+    --query accessToken -o tsv | uv run python scripts/check-platform-admin.py
+  ```
+
+  **ロールはトークンの `roles` クレームで届きます。** 割り当て直後は既存のトークンに反映されないため、取り直してください(反映には数分かかることがあります)。`AUTH_MODE=disabled`(ローカル開発)では `Principal.local_dev()` が `platform-admin` を持つので開発は止まりません。
+
+  **アプリ登録は `azd down` では消えません。** ARM のリソースではなくテナントに残る永続的な成果物なので、Bicep からは作れず、この手順が別に必要になります。
 
   **名前空間を作った主体は自動的にその名前空間の `owner` になります。** そのため運用者は作成後、追加の付与なしに publish / approve まで行えます(同梱サンプルは四眼原則を無効で作るため approve も通ります)。
 - **App 登録権限がない場合**: `AUTH_MODE=disabled` の **ローカル専用 dev モード**を用意しています。認証を完全に無効化するため、**ローカル開発以外では絶対に使用しないでください**。Azure へデプロイした環境でこのモードを有効にしてはいけません
