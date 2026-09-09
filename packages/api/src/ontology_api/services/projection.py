@@ -252,6 +252,7 @@ class ProjectionService:
         actor: str,
         version: str | None = None,
         base_version: str | None = None,
+        reason: str = "",
     ) -> OntologyVersion:
         """オントロジーを新しいバージョンとして公開する(版だけを返す)。
 
@@ -266,6 +267,7 @@ class ProjectionService:
             actor=actor,
             version=version,
             base_version=base_version,
+            reason=reason,
         )
         return published
 
@@ -277,6 +279,7 @@ class ProjectionService:
         actor: str,
         version: str | None = None,
         base_version: str | None = None,
+        reason: str = "",
     ) -> tuple[OntologyVersion, PublishOutcome]:
         """オントロジーを新しいバージョンとして公開する。
 
@@ -403,6 +406,7 @@ class ProjectionService:
                 action="published",
                 actor=actor,
                 subject=f"{namespace}@{resolved}",
+                reason=reason,
             )
 
         # ---- 正本(Blob・PostgreSQL)の耐久化をここで確定させる ----
@@ -484,7 +488,9 @@ class ProjectionService:
             return False
         return True
 
-    async def submit(self, *, namespace: str, version: str, actor: str) -> OntologyVersion:
+    async def submit(
+        self, *, namespace: str, version: str, actor: str, reason: str = ""
+    ) -> OntologyVersion:
         """`draft` を `in-review` にし、名前付きグラフへ射影する(ADR-0010 決定1)。"""
         versions = VersionRepository(self._session)
         current = await versions.get(namespace, version)
@@ -507,6 +513,7 @@ class ProjectionService:
             action="submitted",
             actor=actor,
             subject=f"{namespace}@{version}",
+            reason=reason,
         )
         await self._session.commit()
 
@@ -519,7 +526,9 @@ class ProjectionService:
 
         return updated
 
-    async def approve(self, *, namespace: str, version: str, actor: str) -> OntologyVersion:
+    async def approve(
+        self, *, namespace: str, version: str, actor: str, reason: str = ""
+    ) -> OntologyVersion:
         """`in-review` を `approved` にする。前の `approved` は自動で `superseded`
         にする(ADR-0010 決定3)。既定グラフ + 名前付きグラフへ射影する(決定5・6)。
 
@@ -564,6 +573,7 @@ class ProjectionService:
             action="approved",
             actor=actor,
             subject=f"{namespace}@{version}",
+            reason=reason,
         )
 
         if previous_approved is not None:

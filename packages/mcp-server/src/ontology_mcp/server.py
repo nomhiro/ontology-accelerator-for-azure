@@ -65,6 +65,8 @@ mcp = MCPServer(
         "承認済みのビジネスオントロジーを参照するためのツール群。"
         "まず list_namespaces で対象の名前空間を確認し、"
         "sparql_query で読み取り専用の SPARQL クエリを実行する。"
+        "定義の根拠(誰が承認したか・なぜそう決めたか)が必要なときは "
+        "version_decisions を使う。"
     ),
 )
 
@@ -191,6 +193,34 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
         )
         response.raise_for_status()
         result: dict[str, Any] = response.json()
+        return result
+
+
+@mcp.tool()
+async def version_decisions(
+    namespace: str, version: str, ctx: Context[Any, Any]
+) -> list[dict[str, Any]]:
+    """ある版について「誰が・いつ・なぜ」そう決めたかを返す。
+
+    定義の根拠を確認するために使う。`sparql_query` が返すのは定義そのもので、
+    その定義を**誰が承認したのか・なぜそう決めたのか**は含まれない。
+    答えの根拠を説明する必要があるときにこのツールを使う。
+
+    Args:
+        namespace: 対象の名前空間の名前。`list_namespaces` で取得できる。
+        version: 対象のバージョン。
+
+    Returns:
+        決定記録の一覧(起きた順)。各要素は action / actor / occurred_at /
+        reason / diff を持つ。`reason` が空の記録もある(理由の記載は任意)。
+
+    Raises:
+        ToolError: 呼び出し元のトークンが無い、または検証を通らないとき。
+    """
+    async with _api_client(_forward_headers(ctx)) as client:
+        response = await client.get(f"/namespaces/{namespace}/versions/{version}/decisions")
+        response.raise_for_status()
+        result: list[dict[str, Any]] = response.json()
         return result
 
 

@@ -232,6 +232,7 @@ POST /namespaces/{ns}/versions/{v}/submit          draft → in-review。名前�
 POST /namespaces/{ns}/versions/{v}/approve         in-review → approved。既定グラフ + 名前付きグラフへ射影する。
                                                     同じ名前空間の前の approved 版は自動で superseded になる
 POST /namespaces/{ns}/versions/{v}/reject          in-review → draft(body に reason が必須)。名前付きグラフから外す
+GET  /namespaces/{ns}/versions/{v}/decisions      この版の決定記録(誰が・いつ・なぜ)を起きた順に返す
 ```
 
 **同時編集は `base_version` で検出します(P1-13)。** `POST /namespaces/{ns}/versions` の body に、編集の基準にした版を渡してください。名前空間の最新版と一致しなければ **409** を返します(HTTP の `If-Match` に相当します)。
@@ -261,6 +262,20 @@ MCP は受け取ったトークンを**自分で検証してから** Core API �
 この設計により、**監査イベントの `actor` が実際のエージェントを指します。** MCP のマネージド ID で Core API を呼ぶ実装にすると、Core API から見た呼び出し元が常に MCP になり、「誰の問い合わせに対してどのバージョンを返したか」が記録できなくなります(ADR-0006 の帰属が壊れます)。
 
 `AUTH_MODE=disabled`(ローカル開発専用)では検証も転送も行いません。
+
+#### 「なぜそう決めたか」を記録して読み出す
+
+**publish / submit / approve の body に `reason` を渡してください。** `audit_events` に記録され、`GET /namespaces/{ns}/versions/{v}/decisions` で起きた順に読み出せます（[ADR-0009](docs/adr/0009-ontology-operations.md) 決定7）。
+
+```json
+{ "turtle": "...", "reason": "顧客区分の定義を営業部の合意に合わせた" }
+```
+
+**理由は任意ですが、人が操作する経路では必ず書いてください。** 「誰が承認した定義に基づく答えかを説明できること」がこの製品の中核価値です（[ADR-0006](docs/adr/0006-ontology-versioning-and-audit.md)）。理由が空の監査は説明になりません。`reject` だけは最初から必須です。
+
+**エージェントは MCP の `version_decisions` ツールで同じ記録を読めます。** `sparql_query` が返すのは定義そのもので、その定義を誰が承認したか・なぜそう決めたかは含まれません。答えの根拠を示す必要があるときに使います。
+
+`superseded`（別の版の承認による自動遷移）の理由はシステムが書きます。`diff`（意味的差分）は未実装で `null` のままです（Phase 2 の `P2B-09`）。
 
 #### `POST /admin/reconcile` の報告の読み方
 

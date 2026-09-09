@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_core.db import AuditEventRow, OntologyVersionRow
-from ontology_core.models import OntologyVersion, OntologyVersionStatus
+from ontology_core.models import AuditEvent, OntologyVersion, OntologyVersionStatus
 
 __all__ = ["AuditRepository", "VersionRepository"]
 
@@ -185,3 +185,38 @@ class AuditRepository:
             )
         )
         await self._session.flush()
+
+    async def list_for_subject(self, namespace: str, subject: str) -> list[AuditEvent]:
+        """ある対象(版など)についての決定記録を、起きた順に返す(P2B-08)。
+
+        ADR-0009 決定7 の「なぜ」を参照時に返すための読み出し。
+        **`occurred_at` だけでなく `id` も並び順に使う。** `occurred_at` の
+        既定値は `now()` で、同一トランザクション内の複数イベントは
+        **同じ値になりうる**(PostgreSQL の `now()` はトランザクション開始時刻)。
+        `id` を第二キーにしないと、同じ時刻のイベントの順序が不定になり
+        「published のあとに submitted」という履歴が読めなくなる。
+
+        汎用の監査照会(名前空間全体・期間・実行者での絞り込み)は `P2B-11`。
+        ここでは 1 つの対象に限る。
+        """
+        stmt = (
+            select(AuditEventRow)
+            .where(
+                AuditEventRow.namespace == namespace,
+                AuditEventRow.subject == subject,
+            )
+            .order_by(AuditEventRow.occurred_at, AuditEventRow.id)
+        )
+        rows = (await self._session.execute(stmt)).scalars()
+        return [
+            AuditEvent(
+                namespace=row.namespace,
+                action=row.action,
+                actor=row.actor,
+                occurred_at=row.occurred_at,
+                subject=row.subject,
+                reason=row.reason,
+                diff=row.diff,
+            )
+            for row in rows
+        ]

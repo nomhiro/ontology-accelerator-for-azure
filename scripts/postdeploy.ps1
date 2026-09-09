@@ -175,11 +175,19 @@ Invoke-Api -Method POST -Path "/namespaces" -Expected 201, 409 -Body $nsBody
 # （ADR-0010 決定1・5）。
 Write-Host "postdeploy: サンプルを公開します"
 $ttl = Get-Content -Path $sample -Raw -Encoding UTF8
-$pubBody = @{ turtle = $ttl; version = $version } | ConvertTo-Json -Compress
+# reason を渡す(P2B-08、ADR-0009 決定7)。同梱サンプルでも「誰が・いつ・なぜ」が
+# 記録され、GET .../decisions で読み出せることを実演する。
+$pubBody = @{
+    turtle  = $ttl
+    version = $version
+    reason  = "同梱サンプルの初期投入(azd のデプロイフックによる自動実行)"
+} | ConvertTo-Json -Compress
 # 200 は同一内容の再投入（冪等。P1-26）。409 は同じ版番号が別内容の場合。
 Invoke-Api -Method POST -Path "/namespaces/$ns/versions" -Expected 201, 200, 409 -Body $pubBody
-Invoke-Api -Method POST -Path "/namespaces/$ns/versions/$version/submit"  -Expected 200, 409
-Invoke-Api -Method POST -Path "/namespaces/$ns/versions/$version/approve" -Expected 200, 409
+$submitBody  = @{ reason = "サンプルのため人のレビューを経ずに提出する" } | ConvertTo-Json -Compress
+$approveBody = @{ reason = "同梱サンプルの初期投入。Phase 2 の Scan/Model フローで置き換えられる想定" } | ConvertTo-Json -Compress
+Invoke-Api -Method POST -Path "/namespaces/$ns/versions/$version/submit"  -Expected 200, 409 -Body $submitBody
+Invoke-Api -Method POST -Path "/namespaces/$ns/versions/$version/approve" -Expected 200, 409 -Body $approveBody
 
 # ---- 発見できることを確認する（P1-10 の完了条件そのもの）----
 Write-Host "postdeploy: 名前空間が一覧に現れることを確認します"

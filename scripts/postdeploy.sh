@@ -191,16 +191,23 @@ echo "postdeploy: サンプルを公開します"
 # 既に `uv run` に依存している（bootstrap-db.py・マイグレーション）ためで、
 # **同じ前提で動く経路に揃える**方が壊れにくい。`uv` が動くなら必ず動く。
 # `uv run` の進捗は stderr に出るので `$(...)` の取り込みは汚れない。
+# `reason` を渡す(P2B-08、ADR-0009 決定7)。同梱サンプルでも
+# 「誰が・いつ・なぜ」が記録され、GET .../decisions で読み出せることを
+# 実演する。理由が空の監査は説明にならない。
 payload="$(uv run python -c "
 import json, sys
 ttl = open('${SAMPLE}', encoding='utf-8').read()
-sys.stdout.write(json.dumps({'turtle': ttl, 'version': '${VERSION}'}))
+sys.stdout.write(json.dumps({
+    'turtle': ttl,
+    'version': '${VERSION}',
+    'reason': '同梱サンプルの初期投入(azd のデプロイフックによる自動実行)',
+}))
 ")"
 # 200 は同一内容の再投入（冪等。P1-26）。409 は同じ版番号が別内容で使われて
 # いる場合。どちらも繰り返し実行で失敗させない。
 call POST "/namespaces/${NS}/versions" "201 200 409" "${payload}"
-call POST "/namespaces/${NS}/versions/${VERSION}/submit"  "200 409"
-call POST "/namespaces/${NS}/versions/${VERSION}/approve" "200 409"
+call POST "/namespaces/${NS}/versions/${VERSION}/submit"  "200 409"     '{"reason":"サンプルのため人のレビューを経ずに提出する"}'
+call POST "/namespaces/${NS}/versions/${VERSION}/approve" "200 409"     '{"reason":"同梱サンプルの初期投入。Phase 2 の Scan/Model フローで置き換えられる想定"}'
 
 # ---- 発見できることを確認する ----
 # これが P1-10 の完了条件そのものである。PostgreSQL に行が入っていなければ

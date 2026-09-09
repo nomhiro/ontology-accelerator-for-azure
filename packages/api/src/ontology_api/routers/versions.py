@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, SettingsDep, StoreDep
-from ontology_api.repositories.versions import VersionRepository
+from ontology_api.repositories.versions import AuditRepository, VersionRepository
 from ontology_api.services.projection import (
     AutoVersionError,
     ConcurrentUpdateError,
@@ -18,7 +18,7 @@ from ontology_api.services.projection import (
     UnknownVersionError,
 )
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
-from ontology_core.models import OntologyVersion
+from ontology_core.models import AuditEvent, OntologyVersion
 from ontology_core.turtle import TurtleSyntaxError
 
 router = APIRouter(tags=["versions"])
@@ -55,6 +55,21 @@ class PublishRequest(BaseModel):
         default=None,
         description="編集の基準にした版。最新と一致しなければ 409。省略時は検査しない",
     )
+    # ADR-0009 決定7。`audit_events.reason` に入り、
+    # `GET /namespaces/{ns}/versions/{v}/decisions` で読み出せる。
+    reason: str = Field(default="", description="この版を公開する理由")
+
+
+class TransitionRequest(BaseModel):
+    """`submit` / `approve` の要求。理由は任意(P2B-08、ADR-0009 決定7)。
+
+    **必須にしていない。** 必須にすると `postdeploy` のような自動投入や、
+    既存のクライアントが動かなくなる。一方で理由が空の監査は説明にならない
+    ため、人が操作する経路(Web UI、Phase 2)では必ず書かせる。
+    `reject` だけは最初から必須である(却下の理由が無い却下は無意味なため)。
+    """
+
+    reason: str = Field(default="", description="この遷移を行う理由")
 
 
 class RejectRequest(BaseModel):
@@ -102,6 +117,7 @@ async def publish_version(
             actor=principal.object_id or principal.subject,
             version=payload.version,
             base_version=payload.base_version,
+            reason=payload.reason,
         )
         # **両方を明示的に設定する。** ルートの `status_code=201` は
         # OpenAPI の既定値として残すが、実際のコードはここで決める。
@@ -150,6 +166,43 @@ async def list_versions(
     return await VersionRepository(session).list_for(namespace)
 
 
+@router.get(
+    "/namespaces/{namespace}/versions/{version}/decisions",
+    summary="版の決定記録(誰が・いつ・なぜ)を返す",
+)
+async def list_version_decisions(
+    namespace: str,
+    version: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+) -> list[AuditEvent]:
+    """この版について記録された決定を、起きた順に返す(P2B-08、ADR-0009 決定7)。
+
+    **「誰が承認した定義に基づく答えかを説明できること」がこの製品の中核価値
+    である**(ADR-0006)。理由を書いても読み出せなければ説明にならないため、
+    書き込みと同じラウンドで読み出し口を用意する。
+
+    存在しない版は**空配列ではなく 404** にする。空配列だと「決定記録が無い版」
+    と「そもそも存在しない版」の区別がつかない。
+
+    汎用の監査照会(名前空間全体・期間・実行者での絞り込み、ページング)は
+    `P2B-11` で別に用意する。ここは 1 つの版に限る。
+    """
+    del principal
+    try:
+        validate_namespace_name(namespace)
+        validate_version(version)
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    if await VersionRepository(session).get(namespace, version) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"'{namespace}@{version}' が見つかりません",
+        )
+    return await AuditRepository(session).list_for_subject(namespace, f"{namespace}@{version}")
+
+
 @router.post(
     "/namespaces/{namespace}/versions/{version}/submit",
     summary="draft を in-review にする(名前付きグラフへ射影)",
@@ -162,6 +215,7 @@ async def submit_version(
     blob: BlobDep,
     store: StoreDep,
     settings: SettingsDep,
+    payload: TransitionRequest | None = None,
 ) -> OntologyVersion:
     """ADR-0010 決定1・5。Phase 1 では権限を強制しない(認証済みの呼び出し元は誰でも実行できる)。"""
     validate_namespace_name(namespace)
@@ -171,7 +225,10 @@ async def submit_version(
     )
     try:
         return await service.submit(
-            namespace=namespace, version=version, actor=principal.object_id or principal.subject
+            namespace=namespace,
+            version=version,
+            actor=principal.object_id or principal.subject,
+            reason=(payload.reason if payload is not None else ""),
         )
     except UnknownVersionError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -193,6 +250,7 @@ async def approve_version(
     blob: BlobDep,
     store: StoreDep,
     settings: SettingsDep,
+    payload: TransitionRequest | None = None,
 ) -> OntologyVersion:
     """ADR-0010 決定1・3・5・6。
 
@@ -209,7 +267,10 @@ async def approve_version(
     )
     try:
         return await service.approve(
-            namespace=namespace, version=version, actor=principal.object_id or principal.subject
+            namespace=namespace,
+            version=version,
+            actor=principal.object_id or principal.subject,
+            reason=(payload.reason if payload is not None else ""),
         )
     except UnknownVersionError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
-from ontology_api.repositories.versions import VersionRepository
+from ontology_api.repositories.versions import AuditRepository, VersionRepository
 from ontology_api.services.projection import (
     InvalidTransitionError,
     ProjectionService,
@@ -768,3 +768,134 @@ async def test_reconcile_does_not_touch_the_default_graph_without_an_approved_ve
     assert store.default_graphs.get("retail-core") is None
     assert all("既定グラフ" not in m for m in report.missing_graphs)
     assert report.graphs_repaired == []
+
+
+# ---- P2B-08 / ADR-0009 決定7: 「なぜ」を書いて参照時に返す ----
+#
+# `audit_events` の `reason` 列は最初から存在したが、`reject` 以外は誰も
+# 渡していなかった。「誰が承認した定義に基づく答えかを説明できること」が
+# この製品の中核価値(ADR-0006)なのに、**理由が空の監査は説明にならない**。
+#
+# `diff`(意味的差分)の計算は `P2B-09`、汎用の監査照会 API は `P2B-11`。
+# ここでは扱わない。
+
+
+async def test_reason_is_recorded_for_every_transition(prepared: Prepared) -> None:
+    """publish / submit / approve のすべてで理由が記録される。"""
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(
+        namespace="retail-core", turtle=TTL, actor="alice", reason="初版の骨格を用意した"
+    )
+    await svc.submit(
+        namespace="retail-core",
+        version=draft.version,
+        actor="alice",
+        reason="用語の定義が揃ったのでレビューを依頼する",
+    )
+    await svc.approve(
+        namespace="retail-core",
+        version=draft.version,
+        actor="bob",
+        reason="想定質問をすべて満たすことを確認した",
+    )
+
+    events = await AuditRepository(session).list_for_subject(
+        "retail-core", f"retail-core@{draft.version}"
+    )
+    by_action = {e.action: e for e in events}
+    assert by_action["published"].reason == "初版の骨格を用意した"
+    assert by_action["submitted"].reason == "用語の定義が揃ったのでレビューを依頼する"
+    assert by_action["approved"].reason == "想定質問をすべて満たすことを確認した"
+    # `diff` は P2B-09 まで空のままにする(埋めたふりをしない)。
+    assert all(e.diff is None for e in events)
+
+
+async def test_supersede_records_why_it_was_replaced(prepared: Prepared) -> None:
+    """`superseded` は自動付与なので、理由もシステムが書く。
+
+    人が理由を書けない遷移で理由が空になると、監査を読んだ人が
+    「なぜこの版が現行でなくなったのか」を辿れない。
+    """
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    v1 = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=v1.version, actor="alice")
+    old = await svc.approve(namespace="retail-core", version=v1.version, actor="bob")
+
+    v2 = await svc.publish(
+        namespace="retail-core", turtle=TTL + "<urn:x> <urn:y> <urn:z> .\n", actor="alice"
+    )
+    await svc.submit(namespace="retail-core", version=v2.version, actor="alice")
+    new = await svc.approve(namespace="retail-core", version=v2.version, actor="bob")
+
+    events = await AuditRepository(session).list_for_subject(
+        "retail-core", f"retail-core@{old.version}"
+    )
+    superseded = next(e for e in events if e.action == "superseded")
+    assert new.version in superseded.reason
+
+
+async def test_reason_defaults_to_empty_and_does_not_break_existing_callers(
+    prepared: Prepared,
+) -> None:
+    """理由は任意。渡さない既存の呼び出しは従来どおり通る(後方互換)。"""
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    events = await AuditRepository(session).list_for_subject(
+        "retail-core", f"retail-core@{draft.version}"
+    )
+    assert [e.action for e in events] == ["published"]
+    assert events[0].reason == ""
+
+
+async def test_decisions_are_returned_in_chronological_order(prepared: Prepared) -> None:
+    """決定記録は起きた順に返る(遷移の履歴として読めること)。"""
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    await svc.reject(
+        namespace="retail-core", version=draft.version, actor="bob", reason="用語が不足"
+    )
+    await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    await svc.approve(namespace="retail-core", version=draft.version, actor="bob")
+
+    events = await AuditRepository(session).list_for_subject(
+        "retail-core", f"retail-core@{draft.version}"
+    )
+    assert [e.action for e in events] == [
+        "published",
+        "submitted",
+        "rejected",
+        "submitted",
+        "approved",
+    ]
+    assert next(e for e in events if e.action == "rejected").reason == "用語が不足"
+
+
+async def test_decisions_of_another_version_are_not_mixed_in(prepared: Prepared) -> None:
+    """別の版の決定記録が混ざらない。"""
+    session, blob = prepared
+    svc = ProjectionService(
+        session=session, blob=blob, store=FakeStore(), graph_iri_base="urn:ontology:graph"
+    )
+    v1 = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    v2 = await svc.publish(
+        namespace="retail-core", turtle=TTL + "<urn:x> <urn:y> <urn:z> .\n", actor="alice"
+    )
+    assert v1.version != v2.version
+
+    events = await AuditRepository(session).list_for_subject(
+        "retail-core", f"retail-core@{v2.version}"
+    )
+    assert [e.subject for e in events] == [f"retail-core@{v2.version}"]

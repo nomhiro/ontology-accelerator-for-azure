@@ -280,3 +280,48 @@ async def test_unsafe_query_is_rejected_before_touching_the_token(
             _ctx({"authorization": "Bearer t"}),
         )
     assert verifier.calls == []
+
+
+async def test_version_decisions_sends_the_authorization_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2B-08: 決定記録のツールも呼び出し元のトークンを転送する。
+
+    監査の `actor` が実際のエージェントを指すためには、このツールも
+    同じ経路を通る必要がある(ADR-0012)。
+    """
+    _use_auth_mode(monkeypatch, AuthMode.ENTRA)
+    _use_verifier(monkeypatch, _FakeVerifier())
+
+    sent: dict[str, Any] = {}
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict[str, Any]]:
+            return [{"action": "approved", "reason": "想定質問を満たす"}]
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            sent["headers"] = dict(kwargs.get("headers") or {})
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, path: str) -> _FakeResponse:
+            sent["path"] = path
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    result = await server.version_decisions(
+        "retail-core", "1.0.0", _ctx({"authorization": "Bearer t"})
+    )
+
+    assert result == [{"action": "approved", "reason": "想定質問を満たす"}]
+    assert sent["path"] == "/namespaces/retail-core/versions/1.0.0/decisions"
+    assert sent["headers"] == {"Authorization": "Bearer t"}

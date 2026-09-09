@@ -16,7 +16,9 @@ from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.routers.versions import (
     PublishRequest,
     RejectRequest,
+    TransitionRequest,
     approve_version,
+    list_version_decisions,
     publish_version,
     reject_version,
     submit_version,
@@ -457,3 +459,110 @@ async def test_publish_version_returns_201_for_a_new_version(
 
     assert r1.status_code == 201
     assert r2.status_code == 201
+
+
+# ---- P2B-08: 決定記録を参照時に返す ----
+
+
+async def test_list_version_decisions_returns_the_why(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """版の決定記録が理由付きで、起きた順に返る。
+
+    ADR-0009 決定7。「誰が承認した定義に基づく答えかを説明できること」は
+    この製品の中核価値(ADR-0006)なので、理由が読み出せなければ意味がない。
+    """
+    name = "ver-decisions"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri=f"https://e.example/{name}#",
+        created_by="t",
+    )
+    await session.commit()
+    store = _NullStore()
+
+    published = await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=TTL, reason="初版の骨格"),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+        response=Response(),
+    )
+    await submit_version(
+        namespace=name,
+        version=published.version,
+        payload=TransitionRequest(reason="レビュー依頼"),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+    )
+    await approve_version(
+        namespace=name,
+        version=published.version,
+        payload=TransitionRequest(reason="想定質問を満たす"),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+    )
+
+    decisions = await list_version_decisions(
+        namespace=name,
+        version=published.version,
+        principal=_PRINCIPAL,
+        session=session,
+    )
+
+    assert [d.action for d in decisions] == ["published", "submitted", "approved"]
+    assert [d.reason for d in decisions] == ["初版の骨格", "レビュー依頼", "想定質問を満たす"]
+    assert all(d.actor for d in decisions)
+
+
+async def test_list_version_decisions_rejects_invalid_namespace(
+    session: AsyncSession,
+) -> None:
+    """名前空間名はセキュリティ境界なので入口で検証する(不変条件5)。"""
+    with pytest.raises(HTTPException) as exc_info:
+        await list_version_decisions(
+            namespace="../evil",
+            version="1.0.0",
+            principal=_PRINCIPAL,
+            session=session,
+        )
+    assert exc_info.value.status_code == 400
+
+
+async def test_list_version_decisions_is_404_for_an_unknown_version(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """存在しない版は空配列ではなく 404。
+
+    空配列だと「決定記録が無い版」と「存在しない版」の区別がつかない。
+    """
+    del blob_store, settings
+    name = "ver-decisions-404"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri=f"https://e.example/{name}#",
+        created_by="t",
+    )
+    await session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_version_decisions(
+            namespace=name,
+            version="9.9.9",
+            principal=_PRINCIPAL,
+            session=session,
+        )
+    assert exc_info.value.status_code == 404
