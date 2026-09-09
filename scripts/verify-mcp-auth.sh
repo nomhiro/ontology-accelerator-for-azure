@@ -45,8 +45,10 @@ api_pid=""
 mcp_pid=""
 
 cleanup() {
-    [ -n "${api_pid}" ] && kill "${api_pid}" 2>/dev/null || true
-    [ -n "${mcp_pid}" ] && kill "${mcp_pid}" 2>/dev/null || true
+    # `A && B || true` は書かない（SC2015）。B が失敗したときも C が走るため
+    # if-then-else には**ならない**。ここでは常に続行したいので if で書く。
+    if [ -n "${api_pid}" ]; then kill "${api_pid}" 2>/dev/null || true; fi
+    if [ -n "${mcp_pid}" ]; then kill "${mcp_pid}" 2>/dev/null || true; fi
     echo "--- API のログ (末尾) ---"
     tail -20 "${work}/api.log" 2>/dev/null || true
     echo "--- MCP のログ (末尾) ---"

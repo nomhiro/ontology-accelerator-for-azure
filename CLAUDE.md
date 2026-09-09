@@ -65,6 +65,9 @@ uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
 sh containers/fuseki/load-snapshot.test.sh     # ローダの制御フロー
 sh scripts/lint-shell.sh                       # シェルの移植性(素の python 等)
+# shellcheck は CI と同じバージョンを使う(apt 版 0.9.0 と指摘が違うため固定)
+docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
+  scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh
 az bicep build --file infra/main.bicep --stdout > /dev/null
 ```
 

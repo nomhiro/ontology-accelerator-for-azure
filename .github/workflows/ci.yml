@@ -210,8 +210,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # **バージョンを固定した docker イメージを使う。** ubuntu-latest に apt で
+      # 入る shellcheck は 0.9.0 で、ローカルで使っていた 0.11.0 と指摘が違う
+      # （0.9.0 だけが SC2015 を出した）。**ローカルの検査が CI より緩い**状態は、
+      # 「1 つの経路で確認して両方に一般化する」失敗そのものなので、
+      # 同じイメージ・同じバージョンを両方で使う。
+      # CLAUDE.md の検証コマンドにも同じ 1 行が載っている。
       - name: シェルスクリプトを検査する
-        run: shellcheck scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
+            scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh
       # 静的解析では拾えない移植性の検査（素の `python` 呼び出しなど）。
       # 詳細は scripts/lint-shell.sh の冒頭コメント。
       - name: シェルスクリプトの移植性を検査する
