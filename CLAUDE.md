@@ -82,6 +82,15 @@ az keyvault purge --name <name> --location japaneast
 
 リソースグループの削除自体は ARM のサーバ側で継続するので、コマンドを止めても完了する。止まるのは purge だけである。
 
+**中断は自分の操作だけで起きるとは限らない。** 実行環境のメモリ不足で背景プロセスが殺されて実際に中断した（2026-09-09）。そのため **`azd down --purge` の後は必ず副作用で確認する**こと。終了コードを見るだけでは足りない。
+
+```bash
+az group exists -g <rg>                    # false であること
+az keyvault list-deleted --query "[].name" -o tsv   # 対象が消えていること
+```
+
+**長時間かかるコマンドを待つのに、スリープを入れない密ループを書いてはいけない。**`until cond; do :; done` は CPU とメモリを食い潰し、**待っている当の背景プロセスごと殺される**（実際に `azd down --purge` を巻き込んで止めた）。`sleep 45` などを必ず挟む。
+
 **MCP SDK は `ToolError` 以外の例外のメッセージを隠す。** ツールの中で
 `ValueError` を投げると、エージェントに届くのは `Error executing tool <name>`
 だけで理由が失われる。意図的な拒否は必ず
