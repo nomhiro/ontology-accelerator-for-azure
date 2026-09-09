@@ -65,7 +65,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 311 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 333 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -113,6 +113,8 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **ルータのハンドラ名が、同じモジュールで import している関数を上書きすることがある。** エンドポイント関数を `validate_version` と命名したところ、入口検証に使っている `ontology_core.graphs.validate_version` を隠してしまい、**他のハンドラの検証が黙って効かなくなった**。ハンドラ名は `validate_version_shacl` のように用途を付けて衝突を避ける（回帰テストあり）。
 
 **SQLAlchemy の `session.execute()` の戻り値に `rowcount` は無い（mypy strict）。** `rowcount` は `CursorResult` にしか無く、`execute()` の宣言型はそれより広い `Result[Any]` である。DELETE の件数が欲しいときは `cast` で型を潰すのではなく、**存在確認してから削除する**（1 クエリ増えるが意図が読める。`RoleRepository.revoke` がこの形）。
+
+**FastAPI の `Query(...)` を既定値の位置に書くと、ハンドラを直接呼ぶテストで `Query` オブジェクトが値として流れ込む。** `limit: int = Query(default=50)` の既定値は `50` ではなく `Query` インスタンスである。FastAPI 経由なら解決されるので、**HTTP で叩くテストだけでは気づけない**。このリポジトリのルータのテストはハンドラを直接呼ぶため必ず踏む。`limit: Annotated[int, Query(...)] = 50` と書けば既定値は素の値になる。
 
 **PostgreSQL の `now()` はトランザクション開始時刻を返す。** `server_default=now()` の列は、同一トランザクション内で挿入した複数行が**同じ値になる**。時系列で並べたいときは主キーを第二キーに加える（`audit_events` の決定記録の並び順で実際に必要になった）。
 

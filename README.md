@@ -49,7 +49,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
   | 操作 | 必要なロール |
   |---|---|
-  | SPARQL 読み取り / 版の一覧 / 決定記録 / SHACL 検証 / 用語の責任者の参照 | `data-analyst` |
+  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / SHACL 検証 / 用語の責任者の参照 | `data-analyst` |
   | `publish` / `submit` | `data-steward` |
   | `approve` / `reject` | `maintainer` |
   | 用語の責任者の付与・取り消し | `maintainer` |
@@ -67,7 +67,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 311 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 333 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -80,7 +80,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - Fuseki 側で `SERVICE` 句が HTTP 422 でブロックされる(SSRF 対策)
 - Fuseki は internal ingress のため外部から到達できない
 - API `/healthz` が応答し、トークン無しの `GET /namespaces` は **401**(`AUTH_MODE=entra` が機能)
-- MCP `/mcp` が `tools/list` を返す(`list_namespaces` / `sparql_query`)
+- MCP `/mcp` が `tools/list` を返す(`list_namespaces` / `sparql_query` / `version_decisions` / `term_owner`)
 - **MCP のツール呼び出しが実際の Entra トークンで Core API まで通る(ADR-0012)。** トークン無し・不正なトークンは MCP 側の検証で拒否され、理由がエージェントに返る。検証手順は `scripts/verify-mcp-auth.sh`
 - API / MCP の scale-to-zero が機能する(初回アクセスはコールドスタート)
 
@@ -372,6 +372,46 @@ just check-questions my.questions.yaml my-namespace     # 自分の名前空間�
 
 `superseded`（別の版の承認による自動遷移）の理由はシステムが書きます。`diff`（意味的差分）は未実装で `null` のままです（Phase 2 の `P2B-09`）。
 
+#### 監査証跡を照会する
+
+**`GET /namespaces/{ns}/audit` で名前空間全体の監査を新しい順に読めます**（`data-analyst` が必要）。「先週この名前空間で何が起きたか」「この人が何をしたか」を追うための口です。版単位の `decisions` が「1 つの版の根拠」を起きた順に返すのに対し、こちらは絞り込みとページングつきで名前空間全体を返します。
+
+```bash
+# 直近 50 件
+curl "$API/namespaces/retail-core/audit" -H "Authorization: Bearer $TOKEN"
+
+# 特定の主体が承認した記録だけ
+curl -G "$API/namespaces/retail-core/audit" \
+  --data-urlencode "action=approved" \
+  --data-urlencode "actor=<Entra のオブジェクト ID>" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 期間で絞る(タイムゾーン必須。since は含み、until は含まない)
+curl -G "$API/namespaces/retail-core/audit" \
+  --data-urlencode "since=2026-09-01T00:00:00Z" \
+  --data-urlencode "until=2026-09-08T00:00:00Z" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 次のページ(前のレスポンスの next_cursor をそのまま渡す)
+curl -G "$API/namespaces/retail-core/audit" \
+  --data-urlencode "limit=100" --data-urlencode "cursor=1234" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{ "events": [ { "action": "approved", "actor": "...", "occurred_at": "...",
+                "subject": "retail-core@2.0.0", "reason": "...", "diff": null } ],
+  "next_cursor": 1234 }
+```
+
+**`next_cursor` が `null` なら最後のページです。** 件数が `limit` ちょうどでもそうなります — 「返った件数が `limit` より少ないから最後」という判定はしないでください。
+
+**ページングの鍵は `id` で、`occurred_at` ではありません。** `occurred_at` は PostgreSQL の `now()`（トランザクション開始時刻）なので、同一トランザクション内で記録された複数のイベントは同じ値になります。時刻でページングすると境界で取りこぼします。`id` は追記専用テーブルの単調増加する主キーなので、照会中に新しいイベントが追記されても既読のページは動きません。
+
+**日時にはタイムゾーンを付けてください**（付いていなければ 422）。素朴に UTC と解釈しないのは、監査の照会で 9 時間ずれた結果を返すのが「何も返らない」よりたちが悪いからです。
+
+**`limit` の上限は 500 です。** `audit_events` は追記専用で無限に伸びるため（[ADR-0011](docs/adr/0011-database-privilege-separation.md) 決定2 で `DELETE` を剥奪しています）、上限が無いと 1 リクエストで全件を読み出せてしまいます。
+
 #### 「この用語は誰に聞けばよいか」を記録して解決する
 
 **用語ごとに責任者を置けます**（[ADR-0015](docs/adr/0015-term-owners.md)、[ADR-0009](docs/adr/0009-ontology-operations.md) 決定4）。`created_by` / `approved_by` は「その時の行為者」であって現在の責任者ではありません。差分レビューのルーティング先と、健全性指標（`P2B-06`）の「責任者が未設定の用語」の原資料になります。
@@ -416,7 +456,9 @@ curl -X DELETE -G "$API/namespaces/retail-core/term-owners" \
 
 **`base_iri` 配下でない IRI にも責任者を置けます。** 外部語彙への `skos:closeMatch` を張ったとき、そのマッピングの妥当性について説明責任を負うのは張った側だからです。
 
-**エージェント（MCP）にはまだ出していません。** `P2B-11`（監査を読み出す API）と合わせて設計します。
+**エージェントは MCP の `term_owner` ツールで同じ解決を引けます。** `version_decisions` が「誰が承認したか」（過去の行為者）を返すのに対し、こちらは**現在の責任者**を返します。承認した人が今も担当しているとは限りません。
+
+なお**名前空間全体の監査照会は MCP に出していません。** エージェントが必要とするのは「この定義の根拠」であって「名前空間の全履歴」ではないためです。
 
 #### `POST /admin/reconcile` の報告の読み方
 

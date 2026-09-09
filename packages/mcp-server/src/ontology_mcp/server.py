@@ -224,6 +224,41 @@ async def version_decisions(
         return result
 
 
+@mcp.tool()
+async def term_owner(namespace: str, term_iri: str, ctx: Context[Any, Any]) -> dict[str, Any]:
+    """ある用語について「誰に聞けばよいか」を返す(ADR-0015、`P2B-04`)。
+
+    定義に疑問があるとき、あるいは定義が答えを出すのに足りないときに、
+    **確認すべき相手**を示すために使う。`version_decisions` が「誰が承認したか」
+    (過去の行為者)を返すのに対し、こちらは**現在の責任者**を返す。両者は別物で、
+    承認した人が今も担当しているとは限らない。
+
+    Args:
+        namespace: 対象の名前空間の名前。`list_namespaces` で取得できる。
+        term_iri: 対象の用語の絶対 IRI(例 `https://example.com/ontology/retail#Product`)。
+
+    Returns:
+        `source` と `principal_ids` を持つ辞書。**`source` を必ず見ること。**
+
+        - `term-owner`: その用語の責任者そのもの(`principal_ids` は 1 件)
+        - `namespace-owners`: **その用語には責任者がいない。** 名前空間の
+          責任者へ回している(1 件以上)。回答の際は「この用語の担当者は
+          設定されていない」ことを添えるのが正確である
+        - `unresolved`: 誰にも回せない(`principal_ids` は空)
+
+    Raises:
+        ToolError: 呼び出し元のトークンが無い、または検証を通らないとき。
+    """
+    async with _api_client(_forward_headers(ctx)) as client:
+        response = await client.get(
+            f"/namespaces/{namespace}/term-owners/resolve",
+            params={"term_iri": term_iri},
+        )
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+
 async def _healthz(request: Request) -> JSONResponse:
     """プロセスの生存確認。
 

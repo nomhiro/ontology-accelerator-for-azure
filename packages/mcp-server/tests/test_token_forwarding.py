@@ -325,3 +325,68 @@ async def test_version_decisions_sends_the_authorization_header(
     assert result == [{"action": "approved", "reason": "想定質問を満たす"}]
     assert sent["path"] == "/namespaces/retail-core/versions/1.0.0/decisions"
     assert sent["headers"] == {"Authorization": "Bearer t"}
+
+
+async def test_term_owner_sends_the_authorization_header_and_the_iri_as_a_param(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2B-04 / P2B-11: 責任者の解決も呼び出し元のトークンを転送する。
+
+    **用語 IRI はパスに埋めずクエリパラメータで渡す。** IRI は `/` と `#` を
+    含むので、パスに埋めるとエスケープの問題になる(Core API 側も同じ理由で
+    クエリパラメータにしている)。
+    """
+    _use_auth_mode(monkeypatch, AuthMode.ENTRA)
+    _use_verifier(monkeypatch, _FakeVerifier())
+
+    sent: dict[str, Any] = {}
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"source": "namespace-owners", "principal_ids": ["owner-oid"]}
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            sent["headers"] = dict(kwargs.get("headers") or {})
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, path: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+            sent["path"] = path
+            sent["params"] = params
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    result = await server.term_owner(
+        "retail-core",
+        "https://example.com/ontology/retail#Product",
+        _ctx({"authorization": "Bearer t"}),
+    )
+
+    assert result["source"] == "namespace-owners"
+    assert sent["path"] == "/namespaces/retail-core/term-owners/resolve"
+    assert sent["params"] == {"term_iri": "https://example.com/ontology/retail#Product"}
+    assert sent["headers"] == {"Authorization": "Bearer t"}
+
+
+async def test_term_owner_requires_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """トークン無しで Core API に届かせない(ADR-0012)。
+
+    **`ToolError` で拒否する。** `ValueError` だと SDK がメッセージを隠し、
+    エージェントには理由が届かない。
+    """
+    _use_auth_mode(monkeypatch, AuthMode.ENTRA)
+    verifier = _FakeVerifier()
+    _use_verifier(monkeypatch, verifier)
+
+    with pytest.raises(ToolError):
+        await server.term_owner("retail-core", "https://e.example/#A", _ctx({}))
+    assert verifier.calls == []

@@ -182,3 +182,20 @@ class AuditEvent(BaseModel):
     subject: str = Field(description="対象。オントロジーのバージョンやマッピングの識別子")
     reason: str = ""
     diff: str | None = Field(default=None, description="前バージョンとの差分")
+
+
+class AuditPage(BaseModel):
+    """監査照会の 1 ページ(`P2B-11`)。
+
+    **`next_cursor` が `None` なら、それが最後のページである。** 「返った件数が
+    `limit` より少ないから最後」という判定に頼らせない — 境界ちょうどのときに
+    余分な 1 往復が要るだけでなく、**呼び出し側が判定を間違える**。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    events: tuple[AuditEvent, ...]
+    next_cursor: int | None = Field(
+        default=None,
+        description="次のページを取るときに `cursor` へ渡す値。`None` なら最後のページ",
+    )

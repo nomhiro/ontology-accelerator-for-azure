@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_core.db import AuditEventRow, OntologyVersionRow
-from ontology_core.models import AuditEvent, OntologyVersion, OntologyVersionStatus
+from ontology_core.models import AuditEvent, AuditPage, OntologyVersion, OntologyVersionStatus
 
 __all__ = ["AuditRepository", "VersionRepository"]
 
@@ -166,8 +166,28 @@ class VersionRepository:
         return set((await self._session.execute(stmt)).scalars())
 
 
+def _to_audit(row: AuditEventRow) -> AuditEvent:
+    return AuditEvent(
+        namespace=row.namespace,
+        action=row.action,
+        actor=row.actor,
+        occurred_at=row.occurred_at,
+        subject=row.subject,
+        reason=row.reason,
+        diff=row.diff,
+    )
+
+
 class AuditRepository:
     """`audit_events` へのアクセス。"""
+
+    #: 1 ページの既定件数と上限。
+    #:
+    #: **上限を設ける理由は `audit_events` が追記専用で無限に伸びること**である
+    #: (ADR-0011 決定2 で `DELETE` を剥奪している)。上限が無いと、運用が長い
+    #: 名前空間への 1 リクエストで全件を読み出せてしまう。
+    DEFAULT_LIMIT = 50
+    MAX_LIMIT = 500
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -208,15 +228,94 @@ class AuditRepository:
             .order_by(AuditEventRow.occurred_at, AuditEventRow.id)
         )
         rows = (await self._session.execute(stmt)).scalars()
-        return [
-            AuditEvent(
-                namespace=row.namespace,
-                action=row.action,
-                actor=row.actor,
-                occurred_at=row.occurred_at,
-                subject=row.subject,
-                reason=row.reason,
-                diff=row.diff,
+        return [_to_audit(row) for row in rows]
+
+    async def query(
+        self,
+        *,
+        namespace: str,
+        action: str | None = None,
+        actor: str | None = None,
+        subject: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = DEFAULT_LIMIT,
+        cursor: int | None = None,
+    ) -> AuditPage:
+        """名前空間の監査証跡を新しい順に 1 ページ返す(`P2B-11`)。
+
+        ## 並び順とページングの鍵は `id` である。`occurred_at` ではない
+
+        `occurred_at` の既定値は `now()` で、**PostgreSQL の `now()` は
+        トランザクション開始時刻**を返す。同一トランザクション内で記録した
+        複数のイベントは**同じ値になる**。時刻を鍵にページングすると、
+        境界にある同時刻の複数件を取りこぼすか二重に返す。
+
+        `id` は追記専用のテーブル(ADR-0011 決定2 で `DELETE` を剥奪している)の
+        単調増加する主キーなので、**全順序で安定**している。
+
+        ## offset ではなく keyset(cursor)にする
+
+        照会している最中に新しいイベントが追記されるのは普通に起こる。降順の
+        offset ページングだと、新しい行が先頭に入るたびに窓が 1 件ずれ、
+        **既読のページの末尾を取りこぼす**。`id < cursor` で辿れば、追記は
+        必ず大きい `id` を持つので既読のページは動かない。
+
+        ## 期間は半開区間 `[since, until)`
+
+        境界を両側とも含めると、期間を並べて集計したときに二重に数える。
+
+        Args:
+            since: この時刻以降(**含む**)。タイムゾーン付きでなければならない。
+            until: この時刻より前(**含まない**)。同上。
+            cursor: 前のページの `next_cursor`。この `id` より小さいものを返す。
+
+        Raises:
+            ValueError: `limit` が範囲外、日時にタイムゾーンが無い、
+                または `until` が `since` より前のとき。
+        """
+        if not 1 <= limit <= self.MAX_LIMIT:
+            raise ValueError(
+                f"limit は 1〜{self.MAX_LIMIT} の範囲で指定してください(受領: {limit})"
             )
-            for row in rows
-        ]
+        for name, value in (("since", since), ("until", until)):
+            if value is not None and value.tzinfo is None:
+                # **素朴に UTC と解釈しない。** 監査の照会で 9 時間ずれた結果を
+                # 返すのは「何も返らない」よりたちが悪い(誤った結論の根拠になる)。
+                raise ValueError(
+                    f"{name} にはタイムゾーンを付けてください"
+                    "(`2026-09-10T00:00:00Z` や `2026-09-10T09:00:00+09:00`)"
+                )
+        if since is not None and until is not None and until < since:
+            # 空の結果を返すより、指定の誤りとして伝える。空だと「本当に何も
+            # 無い」と誤解させる。
+            raise ValueError("until が since より前です")
+
+        stmt = select(AuditEventRow).where(AuditEventRow.namespace == namespace)
+        if action is not None:
+            stmt = stmt.where(AuditEventRow.action == action)
+        if actor is not None:
+            stmt = stmt.where(AuditEventRow.actor == actor)
+        if subject is not None:
+            stmt = stmt.where(AuditEventRow.subject == subject)
+        if since is not None:
+            stmt = stmt.where(AuditEventRow.occurred_at >= since)
+        if until is not None:
+            stmt = stmt.where(AuditEventRow.occurred_at < until)
+        if cursor is not None:
+            stmt = stmt.where(AuditEventRow.id < cursor)
+
+        # **`limit + 1` 件取って続きの有無を判断する。** 「返った件数が limit
+        # より少ないから最後」という判定を呼び出し側に押し付けない(件数が
+        # ちょうど limit のときに余分な 1 往復が要るだけでなく、判定を間違える)。
+        rows = list(
+            (
+                await self._session.execute(stmt.order_by(AuditEventRow.id.desc()).limit(limit + 1))
+            ).scalars()
+        )
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        return AuditPage(
+            events=tuple(_to_audit(row) for row in page),
+            next_cursor=page[-1].id if has_more and page else None,
+        )

@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
@@ -107,10 +109,13 @@ async def resolve_term_owner(
     namespace: str,
     principal: CurrentPrincipal,
     session: SessionDep,
-    term_iri: str = Query(
-        description="解決したい用語の絶対 IRI",
-        examples=["https://example.com/ontology/retail#Product"],
-    ),
+    term_iri: Annotated[
+        str,
+        Query(
+            description="解決したい用語の絶対 IRI",
+            examples=["https://example.com/ontology/retail#Product"],
+        ),
+    ],
 ) -> OwnerResolution:
     """「この用語は誰に聞けばよいか」を返す(ADR-0015 決定2)。
 
@@ -173,7 +178,7 @@ async def unassign_term_owner(
     namespace: str,
     principal: CurrentPrincipal,
     session: SessionDep,
-    term_iri: str = Query(description="責任者を外す用語の絶対 IRI"),
+    term_iri: Annotated[str, Query(description="責任者を外す用語の絶対 IRI")],
 ) -> None:
     """責任者を外す。`maintainer` が必要(ADR-0015 決定5)。
 
