@@ -32,6 +32,7 @@
 7. **オントロジーは不変リビジョン。** 公開済みの版を書き換えない。削除もしない（[ADR-0006](docs/adr/0006-ontology-versioning-and-audit.md)）
 8. **オントロジーは縮められなければならない。** 廃止を追加と同格に扱う。IRI を削除も再利用もしない（[ADR-0009](docs/adr/0009-ontology-operations.md)）
 9. `AUTH_MODE=disabled` はローカル開発専用。デプロイ環境で使ってはならない
+10. **`projected_at` は書き込み経路の知識であり、ストアの現在の状態ではない。** ストアは再構築可能な派生物なので、PostgreSQL の列から「ストアが今それを保持している」ことは主張できない。それに答えられるのはストア自身だけである（[ADR-0013](docs/adr/0013-reconcile-repairs-observed-divergence.md)）
 
 ## 開発環境
 
@@ -59,7 +60,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 163 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 172 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数

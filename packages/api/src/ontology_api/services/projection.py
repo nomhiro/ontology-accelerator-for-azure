@@ -182,17 +182,27 @@ class ReconcileReport:
     # なかった(P1-19)。
     #
     # `projected_at` は過去に射影したときのまま残るため `unprojected()` では
-    # 拾えない。ここが唯一の検出手段になる。**自動復旧はしない**
-    # (`projected_at` が非 NULL の版を再射影してよいかは別の判断であり、
-    # `SUPERSEDED_RETAIN` の保持ポリシーとの関係も未決。`P1-25` で扱う)。
-    # ただし reconcile はこの後マニフェストを正本から再生成するため、
-    # スキップの原因がマニフェストの欠落・破損であれば**次の再構築では
-    # 直っている**。運用者はこの報告を見て再構築を促せばよい。
+    # 拾えない。ここが唯一の検出手段になる。
     #
-    # `superseded` は既定(`SUPERSEDED_RETAIN=0`)でローダが読み込まないため
-    # **報告しない**。報告すると正常な構成で毎回ノイズが出て、本当の異常が
-    # 埋もれる。
+    # **検出したものは修復する**(ADR-0013 決定2)。`projected_at` は
+    # 書き込み経路の知識であり「ストアが今それを保持している」という主張では
+    # ない(ADR-0013 決定1)。ストアに無いと**観測された**なら、それは
+    # 再射影すべき根拠である。修復できたものは `graphs_repaired` に入るが、
+    # **この一覧からは消さない**(ADR-0013 決定5)。修復した事実を隠すと
+    # 上流の原因(Blob へ到達できない、`GRAPH_IRI_BASE` の食い違い、
+    # ローダのクラッシュ)が見えなくなる。
+    #
+    # `superseded` は**報告も修復もしない**(ADR-0013 決定3)。ストアに載るかを
+    # 決めるのはローダだけ(`SUPERSEDED_RETAIN`)であり、reconcile が再射影すると
+    # 再構築のたびに保持ポリシーを打ち消す。報告もしないのは、既定構成で毎回
+    # ノイズが出て本当の異常が埋もれるため。
     missing_graphs: list[str] = field(default_factory=list)
+    # 上記の欠落のうち、この実行で再射影できたもの(ADR-0013 決定5)。
+    #
+    # **これが空でないことは成功報告ではなく、上流に問題があるという信号である。**
+    # 正常な運用ではストアの内容が失われることはない。空でないなら、ローダの
+    # スキップか、ストアの再作成か、手動操作が起きている。
+    graphs_repaired: list[str] = field(default_factory=list)
 
 
 def _next_version(previous: OntologyVersion | None) -> str:
@@ -452,7 +462,7 @@ class ProjectionService:
         except (BlobStoreError, SparqlStoreError):
             logger.exception(
                 "名前空間 '%s' バージョン '%s' の名前付きグラフへの射影に失敗しました。"
-                "reconcile で回復します",
+                "reconcile の回収対象として残ります",
                 namespace,
                 version.version,
             )
@@ -467,7 +477,7 @@ class ProjectionService:
         except (BlobStoreError, SparqlStoreError):
             logger.exception(
                 "名前空間 '%s' バージョン '%s' の既定グラフへの射影に失敗しました。"
-                "reconcile で回復します",
+                "reconcile の回収対象として残ります",
                 namespace,
                 version.version,
             )
@@ -714,16 +724,53 @@ class ProjectionService:
                 for version in ns_versions
                 if version.status is not OntologyVersionStatus.DRAFT
             }
-            # 欠落の検出は `superseded` を除いた集合で行う(P1-19)。
+            # 欠落の検出は `superseded` を除いた集合で行う(P1-19、ADR-0013 決定3)。
             # `superseded` は既定でローダが読み込まないため、無いのが正常。
+            # **逆に、存在している `superseded` は残留として削除しない**
+            # (上の `expected` は draft 以外すべてを含む)。在否をどちらも
+            # 不問にすることで、ストアに載せるかの決定をローダ 1 箇所に保つ。
             must_exist = {
                 version.graph_iri: version.status.value
                 for version in ns_versions
                 if version.status
                 in (OntologyVersionStatus.IN_REVIEW, OntologyVersionStatus.APPROVED)
             }
+            # ---- 欠落した名前付きグラフを報告して修復する(ADR-0013) ----
+            by_iri = {v.graph_iri: v for v in ns_versions}
             for graph_iri in sorted(set(must_exist) - set(actual)):
                 report.missing_graphs.append(f"{ns.name}: {graph_iri} ({must_exist[graph_iri]})")
+                if await self._project_named_graph(namespace=ns.name, version=by_iri[graph_iri]):
+                    report.graphs_repaired.append(
+                        f"{ns.name}: {graph_iri} ({must_exist[graph_iri]})"
+                    )
+                else:
+                    report.failures.append(f"{ns.name}: {graph_iri} の再射影に失敗")
+
+            # ---- 既定グラフが空でないことを別に確認する(ADR-0013 決定4) ----
+            #
+            # `list_graphs` は名前付きグラフしか返さないので、既定グラフの欠落は
+            # 上のループには映らない。**エージェントが読むのは既定グラフ**
+            # (ADR-0010 決定6)なので、ここを検査対象から外すと最も害の大きい
+            # 障害を見逃す。
+            current_approved = next(
+                (v for v in ns_versions if v.status is OntologyVersionStatus.APPROVED),
+                None,
+            )
+            if current_approved is not None:
+                try:
+                    has_content = await self._store.has_default_graph_content(dataset)
+                except SparqlStoreError as exc:
+                    report.failures.append(f"{ns.name}: 既定グラフの確認に失敗 ({exc})")
+                else:
+                    if not has_content:
+                        label = f"{ns.name}: 既定グラフが空 (approved {current_approved.version})"
+                        report.missing_graphs.append(label)
+                        if await self._project_default_graph(
+                            namespace=ns.name, version=current_approved
+                        ):
+                            report.graphs_repaired.append(label)
+                        else:
+                            report.failures.append(f"{ns.name}: 既定グラフの再射影に失敗")
             for graph_iri in actual:
                 if not graph_iri.startswith(prefix):
                     report.foreign_graphs.append(f"{ns.name}: {graph_iri}")

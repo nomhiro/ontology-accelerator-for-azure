@@ -75,6 +75,9 @@ class FakeStore(SparqlStore):
     async def list_graphs(self, dataset: str) -> list[str]:
         return sorted(iri for (ds, iri) in self.graphs if ds == dataset)
 
+    async def has_default_graph_content(self, dataset: str) -> bool:
+        return bool(self.default_graphs.get(dataset))
+
     async def list_datasets(self) -> list[str]:
         return list(self.datasets)
 
@@ -520,9 +523,14 @@ async def test_reconcile_reports_graphs_the_loader_should_have_loaded(
 
     report = await svc.reconcile()
 
-    assert report.missing_graphs == [f"retail-core: {approved.graph_iri} (approved)"]
+    # 名前付きグラフと既定グラフの**両方**が報告される。既定グラフは
+    # `list_graphs` に映らないので別に確認している(ADR-0013 決定4)。
+    assert report.missing_graphs == [
+        f"retail-core: {approved.graph_iri} (approved)",
+        f"retail-core: 既定グラフが空 (approved {approved.version})",
+    ]
     # `projected_at` が残っているため、バージョン単位の回収は動かない
-    # (= 報告が唯一の検出手段であることの確認)。
+    # (= この突き合わせが唯一の検出手段であることの確認)。
     assert report.versions_projected == []
     assert report.failures == []
 
@@ -562,3 +570,201 @@ async def test_reconcile_does_not_report_missing_superseded_graphs(
 
     # 承認済み現行版だけが報告される。superseded は報告しない。
     assert report.missing_graphs == [f"retail-core: {approved.graph_iri} (approved)"]
+
+
+# ---- P1-25 / ADR-0013: 観測された欠落を修復する ----
+#
+# `projected_at` は書き込み経路の知識であり、ストアの現在の状態ではない
+# (ADR-0013 決定1)。一度射影に成功した版がストアから失われた場合、
+# `unprojected()` は拾えない。グラフ単位の突き合わせが観測を根拠に修復する。
+
+
+async def test_reconcile_repairs_a_missing_named_graph(prepared: Prepared) -> None:
+    """承認済みの版のグラフがストアから失われていたら再射影する。
+
+    ローダが名前空間をスキップした後の状態(データセットはあるが空)を模す。
+    """
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    approved = await svc.approve(namespace="retail-core", version=draft.version, actor="bob")
+
+    # 再構築でスキップされた状態を作る。
+    store.graphs.clear()
+    store.default_graphs.clear()
+    store.datasets = ["retail-core"]
+
+    report = await svc.reconcile()
+
+    # 修復されている。
+    assert ("retail-core", approved.graph_iri) in store.graphs
+    assert store.default_graphs.get("retail-core")
+    # **報告は消さない**(ADR-0013 決定5)。
+    assert any(approved.graph_iri in m for m in report.missing_graphs)
+    assert any(approved.graph_iri in r for r in report.graphs_repaired)
+    assert report.failures == []
+    # バージョン単位の経路は動いていない(`projected_at` は非 NULL のまま)。
+    assert report.versions_projected == []
+    still = await VersionRepository(session).get("retail-core", approved.version)
+    assert still is not None
+    assert still.projected_at is not None
+
+
+async def test_reconcile_reports_repair_failure_and_keeps_the_missing_record(
+    prepared: Prepared,
+) -> None:
+    """修復に失敗したら failures に出し、graphs_repaired には入れない。"""
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    approved = await svc.approve(namespace="retail-core", version=draft.version, actor="bob")
+
+    failing = FakeStore(fail_put=True, fail_default=True)
+    failing.datasets = ["retail-core"]
+    svc_failing = ProjectionService(
+        session=session, blob=blob, store=failing, graph_iri_base="urn:ontology:graph"
+    )
+    report = await svc_failing.reconcile()
+
+    assert any(approved.graph_iri in m for m in report.missing_graphs)
+    assert report.graphs_repaired == []
+    assert any(approved.graph_iri in f for f in report.failures)
+    # マニフェストの再生成(reconcile の後段)まで到達していること。
+    manifest = await _manifest(blob, "retail-core")
+    assert manifest["current"] == approved.version
+
+
+async def test_reconcile_does_not_repair_superseded_graphs(prepared: Prepared) -> None:
+    """`superseded` の在否は不問(ADR-0013 決定3)。修復も報告もしない。
+
+    ストアに載るかどうかを決めるのはローダだけである。reconcile が再射影すると
+    再構築のたびに `SUPERSEDED_RETAIN` の保持ポリシーを打ち消してしまう。
+    """
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    v1 = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=v1.version, actor="alice")
+    old = await svc.approve(namespace="retail-core", version=v1.version, actor="bob")
+
+    v2 = await svc.publish(
+        namespace="retail-core", turtle=TTL + "<urn:x> <urn:y> <urn:z> .\n", actor="alice"
+    )
+    await svc.submit(namespace="retail-core", version=v2.version, actor="alice")
+    current = await svc.approve(namespace="retail-core", version=v2.version, actor="bob")
+
+    statuses = {
+        v.version: v.status for v in await VersionRepository(session).list_for("retail-core")
+    }
+    assert statuses[old.version] is OntologyVersionStatus.SUPERSEDED
+
+    store.graphs.clear()
+    store.default_graphs.clear()
+    store.datasets = ["retail-core"]
+
+    report = await svc.reconcile()
+
+    # 承認済み現行版だけが修復される。
+    assert ("retail-core", current.graph_iri) in store.graphs
+    assert ("retail-core", old.graph_iri) not in store.graphs
+    assert all(old.graph_iri not in r for r in report.graphs_repaired)
+    assert all(old.graph_iri not in m for m in report.missing_graphs)
+
+
+async def test_reconcile_keeps_a_present_superseded_graph(prepared: Prepared) -> None:
+    """存在している `superseded` のグラフは残留として削除しない(ADR-0013 決定3)。"""
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    v1 = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=v1.version, actor="alice")
+    old = await svc.approve(namespace="retail-core", version=v1.version, actor="bob")
+    v2 = await svc.publish(
+        namespace="retail-core", turtle=TTL + "<urn:x> <urn:y> <urn:z> .\n", actor="alice"
+    )
+    await svc.submit(namespace="retail-core", version=v2.version, actor="alice")
+    await svc.approve(namespace="retail-core", version=v2.version, actor="bob")
+
+    store.datasets = ["retail-core"]
+    report = await svc.reconcile()
+
+    assert ("retail-core", old.graph_iri) in store.graphs
+    assert report.graphs_removed == []
+
+
+async def test_reconcile_repairs_an_empty_default_graph(prepared: Prepared) -> None:
+    """名前付きグラフは揃っているのに既定グラフが空、という状態を直す。
+
+    **`list_graphs` には映らない**ので、これは既定グラフを別に確認しないと
+    検出できない(ADR-0013 決定4・論点4)。エージェントが `GRAPH` 句なしで
+    読むのはここなので、最も害が大きい。
+    """
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    approved = await svc.approve(namespace="retail-core", version=draft.version, actor="bob")
+
+    # 名前付きグラフは残し、既定グラフだけを失わせる。
+    store.default_graphs.clear()
+    store.datasets = ["retail-core"]
+    assert ("retail-core", approved.graph_iri) in store.graphs
+
+    report = await svc.reconcile()
+
+    assert store.default_graphs.get("retail-core")
+    assert any("既定グラフ" in m for m in report.missing_graphs)
+    assert any("既定グラフ" in r for r in report.graphs_repaired)
+
+
+async def test_reconcile_leaves_a_healthy_default_graph_alone(prepared: Prepared) -> None:
+    """既定グラフに内容があれば何もしない(毎回の再射影を避ける)。"""
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    await svc.approve(namespace="retail-core", version=draft.version, actor="bob")
+    store.datasets = ["retail-core"]
+
+    report = await svc.reconcile()
+
+    assert report.missing_graphs == []
+    assert report.graphs_repaired == []
+
+
+async def test_reconcile_does_not_touch_the_default_graph_without_an_approved_version(
+    prepared: Prepared,
+) -> None:
+    """承認済みの版が無い名前空間では既定グラフが空でも正常。"""
+    session, blob = prepared
+    store = FakeStore()
+    svc = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
+    await svc.submit(namespace="retail-core", version=draft.version, actor="alice")
+    store.datasets = ["retail-core"]
+
+    report = await svc.reconcile()
+
+    assert store.default_graphs.get("retail-core") is None
+    assert all("既定グラフ" not in m for m in report.missing_graphs)
+    assert report.graphs_repaired == []

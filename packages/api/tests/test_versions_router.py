@@ -56,6 +56,9 @@ class _NullStore(SparqlStore):
     async def list_graphs(self, dataset: str) -> list[str]:
         return []
 
+    async def has_default_graph_content(self, dataset: str) -> bool:
+        return True
+
     async def list_datasets(self) -> list[str]:
         return []
 

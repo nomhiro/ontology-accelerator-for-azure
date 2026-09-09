@@ -194,3 +194,41 @@ async def test_reconcile_removes_residual_named_graph_on_real_fuseki(
     assert report.graphs_removed == [submitted.graph_iri]
     assert submitted.graph_iri not in await store.list_graphs(ns)
     assert await _named_graph_subjects(store, ns, submitted.graph_iri) == []
+
+
+async def test_reconcile_repairs_a_wiped_store_on_real_fuseki(
+    session: AsyncSession, blob_store: OntologyBlobStore, store: FusekiStore, ns: str
+) -> None:
+    """P1-25 / ADR-0013: ストアの内容が失われても reconcile が復旧すること。
+
+    ローダが名前空間をスキップした後(データセットはあるが空)を実物で作り、
+    **`GRAPH` 句を書かないクエリが再び答えを返す**ところまで確認する。
+    フェイクでは既定グラフの実際の挙動を検証できないため、ここが本題。
+    """
+    svc = ProjectionService(
+        session=session, blob=blob_store, store=store, graph_iri_base="urn:ontology:graph"
+    )
+    draft = await svc.publish(namespace=ns, turtle=TTL_V1, actor="alice")
+    await svc.submit(namespace=ns, version=draft.version, actor="alice")
+    approved = await svc.approve(namespace=ns, version=draft.version, actor="bob")
+
+    assert await _default_graph_subjects(store, ns) != []
+    assert await store.has_default_graph_content(ns) is True
+
+    # データセットを作り直して中身を失わせる(ローダのスキップと同じ最終状態)。
+    await store.delete_dataset(ns)
+    await store.create_dataset(ns)
+    assert await store.list_graphs(ns) == []
+    assert await store.has_default_graph_content(ns) is False
+    assert await _default_graph_subjects(store, ns) == []
+
+    report = await svc.reconcile()
+
+    # 名前付きグラフと既定グラフの両方が戻っている。
+    assert approved.graph_iri in await store.list_graphs(ns)
+    assert await store.has_default_graph_content(ns) is True
+    assert await _default_graph_subjects(store, ns) != []
+    # 報告は消えない(ADR-0013 決定5)。
+    assert len(report.missing_graphs) == 2
+    assert len(report.graphs_repaired) == 2
+    assert report.failures == []

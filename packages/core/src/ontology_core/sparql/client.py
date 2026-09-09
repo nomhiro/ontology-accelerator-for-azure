@@ -84,6 +84,22 @@ class SparqlStore(ABC):
         """
 
     @abstractmethod
+    async def has_default_graph_content(self, dataset: str) -> bool:
+        """既定グラフに 1 トリプル以上あるかを返す(ADR-0013 決定4)。
+
+        **`list_graphs` では既定グラフの欠落が分からない。** あちらは
+        名前付きグラフの IRI しか返さない(SPARQL に既定グラフを名前で
+        列挙する仕組みが無いため)。しかし**エージェントが読むのは既定
+        グラフ**である(`GRAPH` 句を書かないクエリ。ADR-0010 決定6)。
+        「名前付きグラフは揃っているのに既定グラフが空」という状態は、
+        最も害が大きいのに名前付きグラフの一覧には映らない。
+
+        **内容の一致は見ない。** 空かどうかだけを返す。別の版が載って
+        いる場合の検出には正規化を伴う比較が必要で、Phase 1 の範囲外
+        (ADR-0013 の未解決事項)。
+        """
+
+    @abstractmethod
     async def list_datasets(self) -> list[str]:
         """データセット名の一覧を返す。"""
 
@@ -220,6 +236,18 @@ class FusekiStore(SparqlStore):
         try:
             bindings = payload["results"]["bindings"]
             return sorted({str(row["g"]["value"]) for row in bindings})
+        except (KeyError, TypeError) as exc:
+            # 不変条件4: ストアの失敗は必ず SparqlStoreError として表面化する。
+            raise SparqlStoreError(f"{operation}の応答形式が不正です: {exc}") from exc
+
+    async def has_default_graph_content(self, dataset: str) -> bool:
+        # `GRAPH` 句を書かない ASK は既定グラフだけを見る
+        # (`tdb2:unionDefaultGraph` を持たせていないため。ADR-0010 決定6)。
+        # 名前付きグラフの内容はここに混ざらない。
+        operation = "既定グラフの内容確認"
+        payload = await self.query("ASK { ?s ?p ?o }", dataset=dataset)
+        try:
+            return bool(payload["boolean"])
         except (KeyError, TypeError) as exc:
             # 不変条件4: ストアの失敗は必ず SparqlStoreError として表面化する。
             raise SparqlStoreError(f"{operation}の応答形式が不正です: {exc}") from exc

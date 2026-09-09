@@ -262,6 +262,26 @@ MCP は受け取ったトークンを**自分で検証してから** Core API �
 
 `AUTH_MODE=disabled`(ローカル開発専用)では検証も転送も行いません。
 
+#### `POST /admin/reconcile` の報告の読み方
+
+トリプルストアは正本ではなく**再構築可能な射影**です（[ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md)）。`reconcile` は正本（PostgreSQL + Blob）を基準にストアの状態を揃えます。**背景では動きません** — 運用者が明示的に叩いたときだけ実行されます（[ADR-0013](docs/adr/0013-reconcile-repairs-observed-divergence.md) 決定6）。
+
+報告の各項目は意味が違います。
+
+| 項目 | 意味 | reconcile の動作 |
+|---|---|---|
+| `versions_projected` | 書き込み経路が完了していなかった版 | 射影した |
+| `graphs_removed` | 射影されているべきでないのに残っていたグラフ | 削除した |
+| `missing_graphs` | 射影されているべきなのに無かったグラフ・既定グラフ | 報告した（下記のとおり修復も試みる） |
+| `graphs_repaired` | 上記のうち再射影できたもの | 修復した |
+| `foreign_graphs` | 自分たちの IRI 接頭辞に一致しないグラフ | **報告のみ**（削除しない） |
+| `orphan_datasets` / `orphan_blobs` | 正本に対応が無いデータセット・TTL | **報告のみ**（削除しない） |
+| `failures` | 個別に失敗したもの | 続行して報告した |
+
+**`graphs_repaired` が空でないことは成功報告ではありません。** 正常な運用でストアの内容が失われることはないので、空でないなら上流に原因があります（ローダのスキップ、ストアの再作成、手動操作）。`reconcile` はマニフェストも正本から再生成するため、原因がマニフェストの欠落・破損であれば原因自体も直りますが、それ以外（Blob へ到達できない、`GRAPH_IRI_BASE` の食い違い、ローダのクラッシュ）なら**毎回症状だけを消し続けます**。
+
+**`superseded` の版は `reconcile` の対象外です。** ストアに載せるかを決めるのはローダだけ（`SUPERSEDED_RETAIN`）で、`reconcile` は欠落を報告も修復もせず、存在していても削除しません。反映させる手段は再構築です。
+
 #### Blob のレイアウト
 
 正本 TTL とは別に、名前空間ごとに承認状態のマニフェストを Blob に置きます(ADR-0010 決定7)。`load-snapshot.sh` はこのマニフェストだけを見て、どの版をどこへ読み込むか(名前付きグラフのみ/既定グラフにも)を決めます。PostgreSQL は一切参照しません。

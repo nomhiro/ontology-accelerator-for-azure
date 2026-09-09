@@ -74,6 +74,9 @@ class FakeStore(SparqlStore):
     async def list_graphs(self, dataset: str) -> list[str]:
         return sorted(iri for (ds, iri) in self.graphs if ds == dataset)
 
+    async def has_default_graph_content(self, dataset: str) -> bool:
+        return bool(self.default_graphs.get(dataset))
+
     async def list_datasets(self) -> list[str]:
         return list(self.datasets)
 
