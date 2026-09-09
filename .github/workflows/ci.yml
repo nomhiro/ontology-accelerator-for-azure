@@ -9,9 +9,19 @@ on:
 permissions:
   contents: read
 
+# **main では打ち消さない**(P2A-12)。
+#
+# `cancel-in-progress: true` を無条件に置くと、**コードを検証中の run を
+# ドキュメントだけの push が打ち消す**。新しい run は paths-filter で
+# コードのジョブを全部スキップして `success` で終わるため、
+# **「最新のコミットは緑」なのにコードは一度も検証されていない**状態が
+# できる(2026-09-10 に実際に発生し、手動で再実行して検証した)。
+#
+# PR のブランチでは最新のコミットだけが問題なので打ち消してよい。
+# main は 1 コミットずつ検証されるべきなので打ち消さない。
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # 変更されたパスに応じて後続のジョブを絞る。
