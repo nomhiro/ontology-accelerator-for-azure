@@ -60,7 +60,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 207 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 218 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -103,6 +103,8 @@ az keyvault list-deleted --query "[].name" -o tsv   # 対象が消えている�
 docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
   'apk add --no-cache jq >/dev/null && sh containers/fuseki/load-snapshot.test.sh'
 ```
+
+**ルータのハンドラ名が、同じモジュールで import している関数を上書きすることがある。** エンドポイント関数を `validate_version` と命名したところ、入口検証に使っている `ontology_core.graphs.validate_version` を隠してしまい、**他のハンドラの検証が黙って効かなくなった**。ハンドラ名は `validate_version_shacl` のように用途を付けて衝突を避ける（回帰テストあり）。
 
 **PostgreSQL の `now()` はトランザクション開始時刻を返す。** `server_default=now()` の列は、同一トランザクション内で挿入した複数行が**同じ値になる**。時系列で並べたいときは主キーを第二キーに加える（`audit_events` の決定記録の並び順で実際に必要になった）。
 

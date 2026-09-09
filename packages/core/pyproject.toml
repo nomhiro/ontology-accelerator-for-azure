@@ -10,6 +10,9 @@ dependencies = [
     "pydantic-settings>=2.7",
     "httpx>=0.28",
     "rdflib>=7.1",
+    # SHACL 検証。ADR-0005 決定1「SHACL 検証は pyshacl で完結させる」により
+    # Java 依存を Phase 4 まで発生させない。
+    "pyshacl>=0.26",
     # 想定質問ファイル(samples/*.questions.yaml)の読み込み。ADR-0009 決定6。
     # **推移的に入っていることに頼らない。** 実行時に import するので明示する
     # (azure-core[aio] を明示したのと同じ理由)。

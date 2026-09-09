@@ -233,6 +233,7 @@ POST /namespaces/{ns}/versions/{v}/approve         in-review → approved。既�
                                                     同じ名前空間の前の approved 版は自動で superseded になる
 POST /namespaces/{ns}/versions/{v}/reject          in-review → draft(body に reason が必須)。名前付きグラフから外す
 GET  /namespaces/{ns}/versions/{v}/decisions      この版の決定記録(誰が・いつ・なぜ)を起きた順に返す
+POST /namespaces/{ns}/versions/{v}/validate       この版を SHACL で検証する(状態は変えない)
 ```
 
 **同時編集は `base_version` で検出します(P1-13)。** `POST /namespaces/{ns}/versions` の body に、編集の基準にした版を渡してください。名前空間の最新版と一致しなければ **409** を返します(HTTP の `If-Match` に相当します)。
@@ -262,6 +263,23 @@ MCP は受け取ったトークンを**自分で検証してから** Core API �
 この設計により、**監査イベントの `actor` が実際のエージェントを指します。** MCP のマネージド ID で Core API を呼ぶ実装にすると、Core API から見た呼び出し元が常に MCP になり、「誰の問い合わせに対してどのバージョンを返したか」が記録できなくなります(ADR-0006 の帰属が壊れます)。
 
 `AUTH_MODE=disabled`(ローカル開発専用)では検証も転送も行いません。
+
+#### SHACL 検証は承認を止めます
+
+**`approve` は SHACL 検証を行い、違反があれば 422 で拒否します**（[ADR-0005](docs/adr/0005-reasoner-boundary.md) 決定1・[ADR-0009](docs/adr/0009-ontology-operations.md) 決定1）。SHACL 適合性は形式的に決定可能なので、機械が確定的に判定してブロックします。検証は状態遷移より前に行うため、拒否されたときに状態は変わりません。
+
+**`publish` は止めません。** `draft` は編集途中でありうるためです（publish と approve の分離は [ADR-0010](docs/adr/0010-approval-and-projection.md) 決定1）。レビュー中に違反を確認するには `POST /namespaces/{ns}/versions/{v}/validate` を呼んでください（状態を変えずに報告だけ返します）。
+
+検証は 2 段階です。
+
+1. **shapes 自体**を SHACL-SHACL で検証します。`sh:targetClass` がリテラルを指しているような shape は**どのノードにも当たらない**ため、データ検証では「違反ゼロ」になります。制約を書いたつもりが何も検査していない状態を、この段階が捕まえます
+2. **データ**を shapes で検証します。ADR-0005 の本題です
+
+**制約名のタイプミス（`sh:minCoun` など）は検出できません。** SHACL の処理系は知らない述語を無視する仕様のためで、既知の限界としてテストに固定しています。
+
+**「検証できなかった」は違反として扱いません。** Blob へ到達できない場合などは 502 を返します。「制約を満たしている」と「確かめられなかった」を混同すると、壊れた定義を承認してしまいます。
+
+外部の実データへの適用（定義と実データの乖離検出）は Phase 3 です。Ontop 経由の連邦クエリが前提になります。
 
 #### 想定質問（Competency Questions）で「目的を果たしているか」を判定する
 

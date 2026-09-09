@@ -13,6 +13,8 @@ from fastapi import HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
+from ontology_api.repositories.versions import VersionRepository
+from ontology_api.routers import versions as versions_module
 from ontology_api.routers.versions import (
     PublishRequest,
     RejectRequest,
@@ -26,6 +28,8 @@ from ontology_api.routers.versions import (
 from ontology_core.auth.entra import Principal
 from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import Settings
+from ontology_core.graphs import NamespaceNameError
+from ontology_core.models import OntologyVersionStatus
 from ontology_core.sparql.client import SparqlStore
 
 pytestmark = pytest.mark.integration
@@ -566,3 +570,138 @@ async def test_list_version_decisions_is_404_for_an_unknown_version(
             session=session,
         )
     assert exc_info.value.status_code == 404
+
+
+# ---- P2A-05: SHACL 検証 ----
+
+
+def test_graphs_validate_version_is_not_shadowed_by_a_handler() -> None:
+    """**`validate_version` がハンドラ名で上書きされていないこと。**
+
+    ルータのモジュールは `ontology_core.graphs.validate_version` を入口検証に
+    使っている。ハンドラを同名 `validate_version` で定義すると、以後の
+    `validate_version(version)` がハンドラを呼ぶようになり、入口検証が黙って
+    効かなくなる(実際に一度踏んだ)。同じ間違いを機械的に防ぐ。
+    """
+    from ontology_core.graphs import validate_version as graphs_validate_version
+
+    # モジュールの名前空間を直接引く(mypy の explicit-export を避けるため
+    # getattr を使う。ここで見たいのは「この名前に何が束縛されているか」である)。
+    bound = getattr(versions_module, "validate_version")  # noqa: B009
+    assert bound is graphs_validate_version
+    # 検証関数として振る舞うこと(不正な版を弾く)。
+    with pytest.raises(NamespaceNameError):
+        bound("../evil")
+
+
+async def test_approve_is_blocked_when_shacl_is_violated(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """SHACL 違反があると承認が 422 で止まり、状態が変わらないこと。
+
+    ADR-0009 決定1: 形式的に決定可能なものはブロッキング。
+    ADR-0010 決定1 の分離により、**publish は止めない**(draft は編集途中で
+    ありうる)。止めるのはエージェントが答えの根拠にする現行版にする瞬間。
+    """
+    name = "ver-shacl-block"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri="https://e.example/#",
+        created_by="t",
+    )
+    await session.commit()
+    store = _NullStore()
+
+    violating = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix ex:  <https://e.example/#> .
+ex:Product a owl:Class .
+ex:ProductShape a sh:NodeShape ;
+    sh:targetClass ex:Product ;
+    sh:property [ sh:path ex:sku ; sh:datatype xsd:string ; sh:minCount 1 ] .
+ex:p1 a ex:Product .
+"""
+    published = await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=violating),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+        response=Response(),
+    )
+    # publish は通る(draft は編集途中でありうる)。
+    assert published.status is OntologyVersionStatus.DRAFT
+
+    await submit_version(
+        namespace=name,
+        version=published.version,
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await approve_version(
+            namespace=name,
+            version=published.version,
+            principal=_PRINCIPAL,
+            session=session,
+            blob=blob_store,
+            store=store,
+            settings=settings,
+        )
+    assert exc_info.value.status_code == 422
+    assert "SHACL" in str(exc_info.value.detail)
+
+    # 状態は変わっていない(検証は遷移より前にある)。
+    still = await VersionRepository(session).get(name, published.version)
+    assert still is not None
+    assert still.status is OntologyVersionStatus.IN_REVIEW
+
+
+async def test_validate_endpoint_reports_without_changing_state(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """検証エンドポイントは報告するだけで状態を変えないこと(ADR-0005)。"""
+    name = "ver-shacl-report"
+    await NamespaceRepository(session).create(
+        name=name,
+        display_name=name,
+        description="",
+        base_iri="https://e.example/#",
+        created_by="t",
+    )
+    await session.commit()
+    store = _NullStore()
+
+    published = await publish_version(
+        namespace=name,
+        payload=PublishRequest(turtle=TTL),
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+        response=Response(),
+    )
+    report = await versions_module.validate_version_shacl(
+        namespace=name,
+        version=published.version,
+        principal=_PRINCIPAL,
+        session=session,
+        blob=blob_store,
+        store=store,
+        settings=settings,
+    )
+    assert report.conforms is True
+    still = await VersionRepository(session).get(name, published.version)
+    assert still is not None
+    assert still.status is OntologyVersionStatus.DRAFT

@@ -14,11 +14,14 @@ from ontology_api.services.projection import (
     ProjectionService,
     PublishOutcome,
     ReconcileReport,
+    ShaclViolationError,
     UnknownNamespaceError,
     UnknownVersionError,
 )
+from ontology_core.blob import BlobStoreError
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
 from ontology_core.models import AuditEvent, OntologyVersion
+from ontology_core.shacl import ShaclReport, ShaclValidationError
 from ontology_core.turtle import TurtleSyntaxError
 
 router = APIRouter(tags=["versions"])
@@ -204,6 +207,50 @@ async def list_version_decisions(
 
 
 @router.post(
+    "/namespaces/{namespace}/versions/{version}/validate",
+    summary="版を SHACL で検証する(状態は変えない)",
+)
+# **関数名を `validate_version` にしてはいけない。** `ontology_core.graphs` の
+# 検証関数 `validate_version` を同名で上書きしてしまい、他のハンドラの
+# 入口検証が黙ってこのエンドポイント関数を呼ぶようになる(実際に一度踏んだ)。
+async def validate_version_shacl(
+    namespace: str,
+    version: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    store: StoreDep,
+    settings: SettingsDep,
+) -> ShaclReport:
+    """SHACL の検証結果を返す。**状態は変えない**(P2A-05、ADR-0005)。
+
+    承認前にレビュー画面がこれを呼び、「この提案は制約に違反しています」を
+    即座に示すための口である。`approve` は同じ検証を行い、違反があれば
+    422 で拒否する(ADR-0009 決定1: 形式的に決定可能なものはブロッキング)。
+
+    **検証できなかった場合は 502 にする。** 「制約を満たしている」と
+    「確かめられなかった」を混同すると、壊れた定義を通してしまう。
+    """
+    del principal
+    service = ProjectionService(
+        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+    )
+    try:
+        validate_namespace_name(namespace)
+        validate_version(version)
+        return await service.validate_shacl(namespace=namespace, version=version)
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except UnknownVersionError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except (BlobStoreError, ShaclValidationError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"SHACL 検証を実行できませんでした: {exc}",
+        ) from exc
+
+
+@router.post(
     "/namespaces/{namespace}/versions/{version}/submit",
     summary="draft を in-review にする(名前付きグラフへ射影)",
 )
@@ -272,6 +319,19 @@ async def approve_version(
             actor=principal.object_id or principal.subject,
             reason=(payload.reason if payload is not None else ""),
         )
+    except ShaclViolationError as exc:
+        # P2A-05: 形式的に決定可能な違反なので承認を止める(ADR-0009 決定1)。
+        # 状態は変えていない(検証は遷移より前にある)。
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="\n".join(part for part in (str(exc), exc.report) if part).strip(),
+        ) from exc
+    except (BlobStoreError, ShaclValidationError) as exc:
+        # 「確かめられなかった」を違反として扱わない。
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"SHACL 検証を実行できませんでした: {exc}",
+        ) from exc
     except UnknownVersionError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except InvalidTransitionError as exc:

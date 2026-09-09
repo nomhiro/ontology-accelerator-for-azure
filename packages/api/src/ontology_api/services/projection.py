@@ -53,6 +53,7 @@ from ontology_api.repositories.versions import AuditRepository, VersionRepositor
 from ontology_core.blob import BlobStoreError, OntologyBlobStore
 from ontology_core.graphs import dataset_name, version_graph_iri
 from ontology_core.models import OntologyVersion, OntologyVersionStatus
+from ontology_core.shacl import ShaclReport, validate_turtle_with_shacl
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
 from ontology_core.turtle import validate_turtle
 
@@ -74,6 +75,23 @@ class UnknownNamespaceError(Exception):
 
 class UnknownVersionError(Exception):
     """存在しない (名前空間, バージョン) の組を指定したことを表す。"""
+
+
+class ShaclViolationError(Exception):
+    """SHACL の制約に違反しているため承認できない(P2A-05、ADR-0005)。
+
+    ADR-0009 決定1 は「形式的に決定可能なもの(構文、プロファイル適合、
+    論理的整合性)は機械が確定的に判定し、ブロッキングとする」としている。
+    SHACL 適合性は形式的に決定可能なので、**承認を止める**。
+
+    **`publish` では止めない。** `draft` は編集途中でありうる(ADR-0010 決定1 が
+    publish と approve を分離したのはこのため)。止めるのは「エージェントが
+    答えの根拠にする現行版」にする瞬間である。
+    """
+
+    def __init__(self, message: str, report: str = "") -> None:
+        super().__init__(message)
+        self.report = report
 
 
 class ConcurrentUpdateError(Exception):
@@ -526,6 +544,26 @@ class ProjectionService:
 
         return updated
 
+    async def validate_shacl(self, *, namespace: str, version: str) -> ShaclReport:
+        """版の TTL を SHACL で検証して報告を返す(P2A-05)。
+
+        レビュー画面が承認前に呼ぶ想定(ADR-0005: 専門家がレビューする画面で
+        「この提案は制約に違反しています」と即座に示す)。**状態を変えない。**
+
+        Raises:
+            UnknownVersionError: 版が無いとき。
+            BlobStoreError: 正本から TTL を読めなかったとき。**違反として
+                扱わない**(検証できなかったことと違反ゼロを混同しない)。
+            ShaclValidationError: 検証を実行できなかったとき。同上。
+        """
+        current = await VersionRepository(self._session).get(namespace, version)
+        if current is None:
+            raise UnknownVersionError(f"'{namespace}@{version}' が見つかりません")
+        turtle = await self._blob.get_version(current.blob_path)
+        # pyshacl は同期・CPU バウンドなので、TTL の構文検証(P1-C2)と同じく
+        # 別スレッドへ逃がす。イベントループを塞ぐと他のリクエストが進めない。
+        return await asyncio.to_thread(validate_turtle_with_shacl, turtle)
+
     async def approve(
         self, *, namespace: str, version: str, actor: str, reason: str = ""
     ) -> OntologyVersion:
@@ -547,6 +585,25 @@ class ProjectionService:
             raise InvalidTransitionError(
                 f"'{namespace}@{version}' は in-review ではないため approve できません"
                 f"(現在の状態: {current.status.value})"
+            )
+
+        # ---- SHACL 検証(P2A-05、ADR-0005 / ADR-0009 決定1) ----
+        # **状態を変える前に検証する。位置が本質。** 承認後に検証しても、
+        # 既定グラフに載った後の検査になって意味が無い(TTL の構文検証を
+        # Blob 書き込みの前に置いているのと同じ理由。P1-C2)。
+        #
+        # 検証を**実行できなかった**場合(Blob へ到達できない、pyshacl の
+        # 実行時エラー)は違反として扱わず、そのまま呼び出し元へ伝える。
+        # 「制約を満たしている」と「確かめられなかった」を混同すると、
+        # 壊れた定義を承認してしまう。
+        shacl_report = await asyncio.to_thread(
+            validate_turtle_with_shacl, await self._blob.get_version(current.blob_path)
+        )
+        if not shacl_report.conforms:
+            raise ShaclViolationError(
+                f"'{namespace}@{version}' は SHACL の制約に違反しているため承認できません: "
+                + " / ".join(shacl_report.messages()),
+                report=shacl_report.shapes_report or shacl_report.data_report,
             )
 
         previous_approved = next(
