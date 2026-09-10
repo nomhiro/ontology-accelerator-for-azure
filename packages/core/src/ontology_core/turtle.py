@@ -17,9 +17,9 @@
 
 from __future__ import annotations
 
-from rdflib import Graph
+from rdflib import Graph, URIRef
 
-__all__ = ["TurtleSyntaxError", "validate_turtle"]
+__all__ = ["TurtleSyntaxError", "iri_subjects", "term_iris_with_prefix", "validate_turtle"]
 
 
 class TurtleSyntaxError(ValueError):
@@ -48,3 +48,38 @@ def validate_turtle(text: str) -> None:
         Graph().parse(data=text, format="turtle")
     except Exception as exc:
         raise TurtleSyntaxError(f"TTL の構文が不正です: {exc}") from exc
+
+
+def iri_subjects(graph: Graph) -> set[str]:
+    """主語として現れる IRI を返す。
+
+    **「用語とは IRI の主語である」という判断をここ 1 箇所に置く。**
+    空白ノードは含めない — 構造であって用語ではなく、IRI を持たないので
+    参照もできない。`ontology_core.diff` と `ontology_core.health` の両方が
+    この定義に依存しているので、二重に持たない。
+    """
+    return {str(s) for s in graph.subjects() if isinstance(s, URIRef)}
+
+
+def term_iris_with_prefix(turtle: str, prefix: str) -> set[str]:
+    """TTL を解析し、`prefix` を接頭辞に持つ用語 IRI を返す。
+
+    健全性指標(ADR-0020)が「その名前空間が発行した用語」を数えるために使う。
+    **`prefix` が空なら空集合を返す** — 全 IRI を数えてしまわないため
+    (`base_iri` が設定されていない名前空間で `rdf:type` まで用語に数えると
+    指標が意味を失う)。
+
+    Raises:
+        TurtleSyntaxError: TTL として解析できないとき。**空集合を返さない**
+            (「用語が無い」と「解析できなかった」を混同しない)。
+    """
+    if not prefix:
+        return set()
+    graph = Graph()
+    if turtle.strip():
+        try:
+            graph.parse(data=turtle, format="turtle")
+        except Exception as exc:
+            # rdflib は多様な例外を投げるためここで一本化する。
+            raise TurtleSyntaxError(f"TTL を解析できません: {exc}") from exc
+    return {iri for iri in iri_subjects(graph) if iri.startswith(prefix)}

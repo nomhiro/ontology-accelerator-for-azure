@@ -40,6 +40,8 @@ from rdflib.compare import graph_diff
 from rdflib.namespace import OWL
 from rdflib.term import Node
 
+from ontology_core.turtle import iri_subjects
+
 __all__ = [
     "MAX_BLANK_NODES",
     "SUMMARY_MAX_TERMS",
@@ -188,10 +190,10 @@ def _parse(turtle: str, *, label: str) -> Graph:
 def _iri_subjects(graph: Graph) -> set[str]:
     """主語として現れる IRI を返す。
 
-    **空白ノードは含めない。** 空白ノードは構造であって用語ではなく、IRI を
-    持たないので参照もできない。
+    **判断は `ontology_core.turtle.iri_subjects` に置いてある。** 「用語とは
+    IRI の主語である」という定義を、差分と健全性指標で二重に持たないため。
     """
-    return {str(s) for s in graph.subjects() if isinstance(s, URIRef)}
+    return iri_subjects(graph)
 
 
 def _deprecated_subjects(graph: Graph) -> set[str]:

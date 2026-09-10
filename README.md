@@ -49,7 +49,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
   | 操作 | 必要なロール |
   |---|---|
-  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 廃止の検査 / 用語の責任者の参照 / 用語ごとの参照の集約 | `data-analyst` |
+  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 廃止の検査 / 用語の責任者の参照 / 用語ごとの参照の集約 / 健全性指標 | `data-analyst` |
   | `publish` / `submit` | `data-steward` |
   | `approve` / `reject` | `maintainer` |
   | 用語の責任者の付与・取り消し | `maintainer` |
@@ -68,7 +68,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 477 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 531 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -168,8 +168,8 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
 
-現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、そして保持ポリシーです。
-**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、健全性指標の集計と提示(`P2B-06`)、OWL 推論器の CI 投入(`P2B-01`)です。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、保持ポリシー、そして健全性指標です。
+**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、OWL 推論器の CI 投入(`P2B-01`)、領域間マッピング(`P2B-10`)です。
 監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
@@ -458,6 +458,49 @@ curl -G "$API/namespaces/retail-core/versions/2.0.0/diff" \
 正規化のコストは空白ノードの数だけで決まります（トリプル総数はほとんど効きません）。実測で 2 グラフの差分が 300 個で 2〜4.5 秒、500 個で 8 秒、1,000 個で 42 秒です。SHACL の property shape は 1 つずつ空白ノードを作ります。
 
 **監査に保存されるのは要約です。** 版は Blob に不変で残るため、厳密な差分はいつでも再計算できます（監査行に全トリプルを積むと行が非有界に育ちます）。用語の一覧は 50 件で切り、切った場合は `truncated` が `true` になります。
+
+#### 健全性を測る
+
+**`GET /namespaces/{ns}/health` が 6 項目を返します**（[ADR-0020](docs/adr/0020-health-metrics.md)、[ADR-0009](docs/adr/0009-ontology-operations.md) 決定5）。同 ADR の言葉で言えば「**測っていないものは、致命的になるまで見えない**」。
+
+```bash
+curl "$API/namespaces/retail-core/health" -H "Authorization: Bearer $TOKEN"
+# 用語 IRI の一覧も欲しいとき
+curl -G "$API/namespaces/retail-core/health" \
+  --data-urlencode "include_terms=true" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{ "namespace": "retail-core", "current_version": "2.0.0",
+  "term_count": 42,
+  "unreferenced_window_days": 90, "unreferenced_count": 7, "unreferenced_ratio": 0.166,
+  "without_owner_count": 12,
+  "approval_age_days": 5,
+  "shacl_violation_count": 0,
+  "unprojected_version_count": 0,
+  "unavailable": [], "truncated": false }
+```
+
+| 項目 | 意味 | 原資料 |
+|---|---|---|
+| `term_count` | その名前空間が発行した用語の数 | **正本の TTL** |
+| `unreferenced_count` / `_ratio` | 一定期間エージェントに渡っていない用語 | アクセスログ（上記） |
+| `without_owner_count` | 責任者が未設定の用語 | 用語の責任者（上記） |
+| `approval_age_days` | 現行版が承認されてからの日数 | `approved_at` |
+| `shacl_violation_count` | SHACL 違反の件数 | SHACL 検証 |
+| `unprojected_version_count` | 射影が済んでいない版 | `projected_at` |
+
+**`null` は「測れなかった」で、`0` ではありません。** どの項目がなぜ測れなかったかは `unavailable` に並びます。**健全性指標が障害時に「健全」と言うのは、目的に正面から反します。**
+
+**「全部か無か」にはしません。** 正本の TTL に到達できなくても、PostgreSQL だけで測れる項目（`approval_age_days`、`unprojected_version_count`）はそのまま返ります。Blob の一時的な不調で未射影の版の数まで見えなくなってはいけないからです。
+
+**用語は正本の TTL から数えます。トリプルストアからは数えません。** ストアは再構築可能な射影であって正本ではないため（[ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md)）、**ストアが空のときにストアを数えると「用語数 0、未参照 0 件、責任者未設定 0 件」= 完全に健全という報告になります。**
+
+**`approval_age_days` は版単位です。** このシステムの承認は版単位なので、用語単位の「再承認の古さ」は計算できません。**存在しない粒度をあるように見せないため**、測れる粒度で報告しています。
+
+**`shacl_violation_count` は構造上ほぼ常に 0 です。** `approve` が違反をブロックするためです（上記「SHACL 検証は承認を止めます」）。SHACL 検証を入れる前に承認された版と、shape 自身の問題を拾うために項目として残しています。
+
+**総合スコアは出しません。** 点数が下がった理由が行動に結びつかないためです（[ADR-0009](docs/adr/0009-ontology-operations.md) が却下しています）。項目ごとの生の値を返します。
 
 #### エージェントに何を渡したかを記録する(アクセスログ)
 
@@ -779,7 +822,7 @@ AWS 版は Apache-2.0 で公開されており、フォークすることも法�
 - [`docs/architecture.md`](docs/architecture.md) — アーキテクチャ、グラフ永続化設計、Azure サービスマッピング、認証・認可・セキュリティ
 - [`docs/cost-estimate.md`](docs/cost-estimate.md) — 月額費用試算と単価の出典・計算式
 - [`docs/third-party-licenses.md`](docs/third-party-licenses.md) — 第三者コンポーネントのライセンス
-- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0019)。**却下した代替案とその理由**を残しています
+- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0020)。**却下した代替案とその理由**を残しています
 
 ## コントリビューション
 
