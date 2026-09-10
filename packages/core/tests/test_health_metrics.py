@@ -32,6 +32,7 @@ def _inputs(
     approved_at: datetime | None = _NOW - timedelta(days=5),
     shacl_violations: int | None = 0,
     unprojected: int = 0,
+    competency_questions: int | None = 0,
     unavailable: tuple[str, ...] = (),
 ) -> HealthInputs:
     return HealthInputs(
@@ -42,6 +43,7 @@ def _inputs(
         current_approved_at=approved_at,
         shacl_violation_count=shacl_violations,
         unprojected_version_count=unprojected,
+        competency_question_count=competency_questions,
         unavailable=unavailable,
         now=_NOW,
     )

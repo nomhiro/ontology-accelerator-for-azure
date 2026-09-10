@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.access import AccessRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
+from ontology_api.repositories.questions import QuestionSetRepository
 from ontology_api.repositories.term_owners import TermOwnerRepository
 from ontology_api.repositories.versions import VersionRepository
 from ontology_core.blob import BlobStoreError, OntologyBlobStore
@@ -54,7 +55,7 @@ class HealthService:
         self._blob = blob
 
     async def measure(self, namespace: str) -> HealthReport:
-        """ADR-0009 決定5 の 6 項目を集計する。
+        """ADR-0009 決定5 の 6 項目と、受け入れ基準の件数(ADR-0022)を集計する。
 
         Raises:
             UnknownNamespaceError: 名前空間が無いとき。
@@ -82,6 +83,10 @@ class HealthService:
         owned = frozenset(
             row.term_iri for row in await TermOwnerRepository(self._session).list_for(namespace)
         )
+        # **`0` は「受け入れ基準を定めていない」である**(ADR-0022 決定7)。
+        # 定めていない名前空間の承認はブロックしないので、**ここに出ることが
+        # 唯一それが見える経路である。**
+        question_count = await QuestionSetRepository(self._session).count_questions(namespace)
 
         return compute_health(
             HealthInputs(
@@ -92,6 +97,7 @@ class HealthService:
                 current_approved_at=None if current is None else current.approved_at,
                 shacl_violation_count=shacl_violations,
                 unprojected_version_count=unprojected,
+                competency_question_count=question_count,
                 unavailable=tuple(unavailable),
                 now=datetime.now(UTC),
             ),

@@ -37,6 +37,8 @@
 12. **`platform-admin` は名前空間の権限を飛び越えるが、四眼原則は飛び越えない。** 管理者が自分の提案を自分で承認できてしまうと、四眼原則が「管理者以外への制約」に成り下がり、規制対応の文脈で意味を失う（ADR-0014 決定5）
 
 13. **権限（何ができるか）と責任者（誰が説明責任を負うか）を混ぜない。** 名前空間単位の責任者は `namespace_roles` の `owner`、用語単位は `term_owners` である（[ADR-0015](docs/adr/0015-term-owners.md)）。**ルーティングにはフォールバックを作るが、権限には作らない** — 安全側の向きが逆である（権限は「無いなら拒否」、ルーティングは「無いなら上位に回す」。誰にも届かない問い合わせは放置され、放置されたことも分からない）。ただしフォールバックしたことは `source` で必ず見せる
+14. **受け入れ基準を、その基準で審査される側が書き換えられてはならない。** 想定質問の集合は**名前空間ごとの不変改訂**であり、版ごとに持たない（版ごとにすると新しい版が自分の合格条件を自分で書き換えられる。[ADR-0022](docs/adr/0022-competency-question-sets.md) 決定2）。書き込みは `owner`、`approve` は `maintainer` 以上に分けてある（決定6）。**ただしロールは階層なので `owner` は両方できる — これは「防止」ではなく「可視化」の仕組みである**（改訂は不変、`reason` 必須、減った質問が監査に出る）
+15. **承認時の検査でトリプルストアに問い合わせてはならない。** その時点でその版はまだ射影されていない。SHACL・廃止・想定質問はいずれも**正本の TTL** に対して評価する（ADR-0022 決定3）。ストアに依存させると、不変条件3 が守ろうとしているものの逆向きになる（射影の可用性が正本の書き込みを止める）
 
 ## 開発環境
 
@@ -49,16 +51,28 @@ just dev-api             # Core API 起動
 
 ### 既知の罠
 
-- **ポート 3030 が別プロジェクトと衝突する場合がある。** `FUSEKI_PORT=3131` を環境変数で指定する。テストも同じ変数を読む（`POSTGRES_PORT` / `AZURITE_PORT` も同様）
+- **ポート 3030 が別プロジェクトと衝突する場合がある。** `FUSEKI_PORT=3131` を環境変数で指定する。テストも同じ変数を読む（`POSTGRES_PORT` / `AZURITE_PORT` も同様）。
+  **ただし `scripts/check-questions.py` には効かない**（`SPARQL_QUERY_ENDPOINT` という完全な URL を読むため。`P2A-13`）。3030 を別プロジェクトが握っていると**そちらへクエリが飛んで HTTP 405 になり、質問が落ちたように見える**（実測）。`SPARQL_QUERY_ENDPOINT='http://localhost:3131/{dataset}/sparql'` を明示する
 - **`just up` は Azurite に Blob コンテナを作る。** これを飛ばすと publish と削除が `ContainerNotFound` で失敗する。名前空間の作成と SPARQL 参照は Blob を触らないため動いてしまい、原因が分かりにくい
 - **`just clean` は PostgreSQL のボリュームごと消す。** 消した後は `just migrate` をやり直す必要がある。さらに `alembic` を素で叩くときは `.env` を読まないので、`POSTGRES_*` を環境変数で明示する（`just migrate` は `--env-file` を使っている）。読み込まれないと既定値で接続を試み、`InvalidPasswordError` になる
+- **`git checkout -- <ディレクトリ>` は未コミットの変更を巻き戻す。** 変異テストの
+  復元に使うと、**変異と無関係な実装まで消える**。新規ファイルは untracked なので
+  残り、既存ファイルの変更だけが消えるため**被害が分かりにくい**(実際に 1 度、
+  実装の半分を消した)。**1 ファイル単位で `cp` して戻す**こと
 - **`git commit` はインデックス全体をコミットする。** `git add <パス>` で絞っても、他に staged なものがあれば混ざる。**コミット前に `git diff --cached --name-only` で確認する**
 - **PowerShell の `>` は UTF-16LE で書き出す。** ファイル出力はシェルに任せず、生成側の言語で `encoding='utf-8'` を明示する
 - **docker のボリュームを `/lib` にマウントしてはいけない。** Alpine の `/lib` は musl libc 等の
   システム共有ライブラリの場所で、そこを自分のディレクトリで覆うと `/bin/sh` 自身が動かなくなり
   `exec /bin/sh: no such file or directory` で全滅する。`/work` などに置くこと。
   `jq` が必要なシェルテストを docker で回すときに踏む
-- **Git Bash は `/` で始まる引数を Windows パスに変換する。** `az` に ARM のリソース ID を渡すと壊れる。**docker の `-w /work` も壊れる**(`W:/` になって拒否される)。`export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` を先に置くか、リソース ID ではなく名前を渡す。
+- **`MSYS2_ARG_CONV_EXCL='*'` を `export` してはいけない。** docker のためにこれを
+  シェル全体へ広げると、**Windows のバイナリに渡す POSIX パスも変換されなくなる**。
+  `scripts/preprovision.test.sh` が `指定されたパスが見つかりません。 (os error 3)` で
+  5 件落ちた(実測。uv がパスを解釈できない)。**docker のコマンドの前置きにして
+  1 コマンドに閉じる**こと(`MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker run ...`)。
+  スクリプトの中で `export` してよいのは、そのスクリプトが Windows バイナリへ
+  絶対パスを渡さない場合に限る(`containers/reasoner/*.sh` は相対パスしか渡さない)
+- **Git Bash は `/` で始まる引数を Windows パスに変換する。** `az` に ARM のリソース ID を渡すと壊れる。**docker の `-w /work` も壊れる**(`W:/` になって拒否される)。`MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` をそのコマンドの**前置き**にするか(**`export` はしない** — 上の罠)、リソース ID ではなく名前を渡す。
   抑止すれば `-v "$PWD:/mnt"` の `/c/...` 形式は Docker Desktop が受け付けるが、**`docker build` のビルドコンテキストは受け付けない**(`path not found`)。スクリプトの中では `cygpath -m` で `C:/...` に直す(`containers/reasoner/*.sh` がその形)
 
 ## 検証
@@ -66,7 +80,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 531 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 575 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -75,10 +89,11 @@ sh scripts/lint-shell.sh                       # シェルの移植性(素の py
 sh scripts/preprovision.test.sh                # provision を止めるゲート(要: uv)
 sh containers/reasoner/reasoner-check.test.sh  # OWL 推論器の検査(要: docker、uv。約 2 分)
 sh scripts/check-reasoning.sh samples          # 同梱サンプルの論理的整合性(要: docker、uv)
-# **Git Bash から docker を呼ぶ前に必ずこれを実行する。** 無いと `-w /mnt` が
-# `C:/Program Files/Git/mnt` に変換されて docker が拒否する(実測)。Linux では無害
-export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+# **Git Bash では docker の前に変換抑止が必要。** 無いと `-w /mnt` が
+# `C:/Program Files/Git/mnt` に変換されて docker が拒否する(実測)。
+# **`export` ではなく前置きにする** — 広げると uv が壊れる(下の罠を参照)。
 # shellcheck は CI と同じバージョンを使う(apt 版 0.9.0 と指摘が違うため固定)
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
 docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
   scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh containers/reasoner/*.sh
 az bicep build --file infra/main.bicep --stdout > /dev/null
@@ -112,8 +127,8 @@ az keyvault list-deleted --query "[].name" -o tsv   # 対象が消えている�
 **シェル側のテストは `jq` を要求する。** `containers/fuseki/` の 2 本は load-snapshot.sh 自身がマニフェストの解析に jq を使うため、jq が無い環境では実行できない。Windows には既定で無いので docker 経由で回す:
 
 ```bash
-# Git Bash では先に `export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` が必要。
-# 無いと `-w /w` が `W:/` になって docker が拒否する(実測)。
+# Git Bash では変換抑止が必要(無いと `-w /w` が `W:/` になって拒否される)。
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
 docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
   'apk add --no-cache jq >/dev/null && sh containers/fuseki/load-snapshot.test.sh'
 ```

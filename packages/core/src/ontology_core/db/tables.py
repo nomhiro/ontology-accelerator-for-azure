@@ -232,3 +232,42 @@ class AuditEventRow(Base):
     subject: Mapped[str] = mapped_column(Text)
     reason: Mapped[str] = mapped_column(Text, default="")
     diff: Mapped[str | None] = mapped_column(Text, default=None)
+
+
+class CompetencyQuestionSetRow(Base):
+    """想定質問の集合(ADR-0022 決定1・2、`P2B-14`)。
+
+    **1 行 = 1 改訂。名前空間ごとに 1 系列で、有効なのは最大の改訂である。**
+
+    **版ごとに持たない**(決定2)。版ごとにすると新しい版が自分の合格条件を
+    自分で書き換えられ、**テストが通ったことが何の保証にもならなくなる**。
+    四眼原則(ADR-0014 決定4)と同じ論点である。
+
+    **Blob には置かない**(決定1)。想定質問は射影されないので Blob →
+    PostgreSQL の順序を挟む理由が無く、挟むと孤児 Blob という故障モードを
+    新しく作る(`P2B-12` と同じ形)。PostgreSQL だけなら改訂と監査記録を
+    同一トランザクションで書ける。
+
+    **改訂は書き換えない**(不変条件7 と同じ形)。`reason` は必須である —
+    基準を緩めたことが理由なしに起きてはいけない(決定6)。
+    """
+
+    __tablename__ = "competency_question_sets"
+    __table_args__ = (
+        UniqueConstraint("namespace", "revision", name="uq_competency_question_sets_ns_revision"),
+        Index("ix_competency_question_sets_namespace", "namespace"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(
+        ForeignKey("namespaces.name", ondelete="CASCADE"), nullable=False
+    )
+    # 名前空間ごとに 1 から増える連番。**`id` の順序に頼らない** — `id` は
+    # 全名前空間で共有の連番なので、名前空間内の「何番目の改訂か」を表さない。
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    question_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    reason: Mapped[str] = mapped_column(Text, nullable=False)

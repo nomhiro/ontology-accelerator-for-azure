@@ -14,7 +14,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ontology_api import __version__
-from ontology_api.routers import access, audit, health, namespaces, sparql, term_owners, versions
+from ontology_api.routers import (
+    access,
+    audit,
+    health,
+    namespaces,
+    questions,
+    sparql,
+    term_owners,
+    versions,
+)
 from ontology_core.config import AuthMode, get_settings
 
 _settings = get_settings()
@@ -43,6 +52,7 @@ app.include_router(access.router)
 app.include_router(audit.router)
 app.include_router(health.router)
 app.include_router(namespaces.router)
+app.include_router(questions.router)
 app.include_router(sparql.router)
 app.include_router(term_owners.router)
 app.include_router(versions.router)

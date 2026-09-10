@@ -17,6 +17,8 @@ from ontology_api.services.authorization import (
 )
 from ontology_api.services.projection import (
     AutoVersionError,
+    CompetencyEvaluationError,
+    CompetencyViolationError,
     ConcurrentUpdateError,
     DeprecationViolationError,
     InvalidTransitionError,
@@ -356,6 +358,11 @@ async def approve_version(
     (**409**。ADR-0014 決定4)。SHACL 違反は **422**、検証を実行できなかった
     場合は **502**(「制約を満たしている」と「確かめられなかった」を混同しない)。
 
+    **想定質問に答えられなければ 422 で拒否する**(`P2B-14`、ADR-0022 決定3)。
+    評価は正本の TTL に対して行い、ストアには問い合わせない。**質問集合が
+    無い名前空間は素通りする**(決定7。「基準を定めていない」は「基準を
+    満たしていない」ではない)。評価しきれなかった場合は **502** である。
+
     承認時に**意味的差分**を計算し、`audit_events.diff` に要約を記録する
     (`P2B-09`、ADR-0016)。基準は前の `approved` 版である。**差分の計算に
     失敗しても承認は失敗しない**(差分は記述的なメタデータであって承認の
@@ -393,6 +400,14 @@ async def approve_version(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="\n".join([str(exc), *(p.message for p in exc.problems)]),
         ) from exc
+    except CompetencyViolationError as exc:
+        # P2B-14: 合意済みの規約に反するので承認を止める(ADR-0009 決定1、
+        # ADR-0022 決定3)。**SHACL 違反とも廃止違反とも別の例外にしている** —
+        # 対処が「オントロジーを直す」か「基準を改訂する」かの分岐になる。
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except ShaclViolationError as exc:
         # P2A-05: 形式的に決定可能な違反なので承認を止める(ADR-0009 決定1)。
         # 状態は変えていない(検証は遷移より前にある)。
@@ -400,7 +415,12 @@ async def approve_version(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="\n".join(part for part in (str(exc), exc.report) if part).strip(),
         ) from exc
-    except (BlobStoreError, ShaclValidationError, DeprecationCheckError) as exc:
+    except (
+        BlobStoreError,
+        ShaclValidationError,
+        DeprecationCheckError,
+        CompetencyEvaluationError,
+    ) as exc:
         # 「確かめられなかった」を違反として扱わない。
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

@@ -128,7 +128,7 @@ reconcile                      -> 孤児ゼロ
 - 廃止のライフサイクル（`owl:deprecated` + 後継への参照。IRI は削除も再利用もしない）〔決定 3〕 — **完了**（2026-09-10。`P2B-03`、[ADR-0017](adr/0017-deprecation-lifecycle.md)。削除は 422 でブロック、クエリには警告を返す）
 - 名前空間と用語の責任者〔決定 4〕 — **完了**（2026-09-10。`P2B-04`、[ADR-0015](adr/0015-term-owners.md)。名前空間単位は `owner` ロール、用語単位は `term_owners`）
 - 健全性指標（未参照の用語、責任者未設定、再承認が古い、SHACL 違反、未射影）〔決定 5〕 — **完了**（2026-09-10。原資料は `P2B-05`／[ADR-0018](adr/0018-context-access-log.md)、集計は `P2B-06`／[ADR-0020](adr/0020-health-metrics.md)）
-- 想定質問（Competency Questions）を SPARQL テストとして CI で実行〔決定 6〕 — **完了**（2026-09-09。`P2B-07`）
+- 想定質問（Competency Questions）を SPARQL テストとして CI で実行〔決定 6〕 — **完了**（CI での実行は 2026-09-09 の `P2B-07`、デプロイ済みの名前空間への紐づけと承認ゲートは 2026-09-11 の `P2B-14`／[ADR-0022](adr/0022-competency-question-sets.md)）
 - 「なぜ」を参照時に返す（`reason` / `diff` を書き、読み出す）〔決定 7〕 — **完了**（`reason` は 2026-09-09 の `P2B-08`、`diff` は 2026-09-10 の `P2B-09`、監査を読み出す口は `P2B-11`）
 - 意味的差分の計算と差分レビュー〔決定 7〕 — **計算は完了**（2026-09-10。`P2B-09`、[ADR-0016](adr/0016-semantic-diff.md)）。差分レビューの画面は `P2A-03`
 - 領域間マッピング（SKOS `closeMatch` 等）〔決定 8〕

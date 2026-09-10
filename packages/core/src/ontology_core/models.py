@@ -257,3 +257,84 @@ class AuditPage(BaseModel):
         default=None,
         description="次のページを取るときに `cursor` へ渡す値。`None` なら最後のページ",
     )
+
+
+class QuestionSetSummary(BaseModel):
+    """想定質問の集合の 1 改訂(本文を含まない)(ADR-0022 決定1)。
+
+    **本文を含まないのは、改訂の一覧が肥大しないようにするため**である。
+    本文は `GET /namespaces/{ns}/questions` で有効な改訂だけを返す。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    revision: int = Field(description="名前空間ごとに 1 から増える連番。有効なのは最大の改訂")
+    content_hash: str = Field(description="本文の SHA-256")
+    question_count: int
+    created_at: datetime
+    created_by: str
+    reason: str = Field(description="この改訂を入れた理由。**必須である**(ADR-0022 決定6)")
+
+
+class QuestionSet(BaseModel):
+    """想定質問の集合の 1 改訂(本文を含む)。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    revision: int
+    content: str = Field(description="質問ファイル(YAML)の本文")
+    content_hash: str
+    question_count: int
+    created_at: datetime
+    created_by: str
+    reason: str
+
+    def summary(self) -> QuestionSetSummary:
+        return QuestionSetSummary(
+            namespace=self.namespace,
+            revision=self.revision,
+            content_hash=self.content_hash,
+            question_count=self.question_count,
+            created_at=self.created_at,
+            created_by=self.created_by,
+            reason=self.reason,
+        )
+
+
+class CompetencyQuestionOutcome(BaseModel):
+    """想定質問 1 件の評価結果。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    question: str
+    expect: str
+    passed: bool
+    detail: str = Field(description="判定の根拠。行数は数えていないので「1 行以上」と出る")
+
+
+class CompetencyRunReport(BaseModel):
+    """ある版に対する想定質問の評価結果(ADR-0022 決定9)。
+
+    **`conforms` は「全件を評価できて、かつ全件が通った」ときだけ真である。**
+    評価していない質問があるときに真を返してはいけない(ADR-0022 決定5)。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    version: str
+    revision: int | None = Field(
+        default=None,
+        description="評価に使った質問集合の改訂。**`None` は「質問集合が無い」**"
+        "(基準を定めていない。基準を満たしていないのではない)",
+    )
+    conforms: bool
+    results: tuple[CompetencyQuestionOutcome, ...] = ()
+    not_evaluated: tuple[str, ...] = Field(
+        default=(),
+        description="予算を超えて評価しなかった質問の id。**空でなければ「確かめられなかった」**",
+    )
+    elapsed_seconds: float = 0.0

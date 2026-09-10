@@ -49,7 +49,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
   | 操作 | 必要なロール |
   |---|---|
-  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 廃止の検査 / 用語の責任者の参照 / 用語ごとの参照の集約 / 健全性指標 | `data-analyst` |
+  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 廃止の検査 / 用語の責任者の参照 / 用語ごとの参照の集約 / 健全性指標 / 想定質問の参照と試行 | `data-analyst` |
   | `publish` / `submit` | `data-steward` |
   | `approve` / `reject` | `maintainer` |
   | 用語の責任者の付与・取り消し | `maintainer` |
@@ -68,7 +68,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 531 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 575 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -311,6 +311,16 @@ MCP は受け取ったトークンを**自分で検証してから** Core API �
 
 **`approve` は SHACL 検証を行い、違反があれば 422 で拒否します**（[ADR-0005](docs/adr/0005-reasoner-boundary.md) 決定1・[ADR-0009](docs/adr/0009-ontology-operations.md) 決定1）。SHACL 適合性は形式的に決定可能なので、機械が確定的に判定してブロックします。検証は状態遷移より前に行うため、拒否されたときに状態は変わりません。
 
+**`approve` が状態を変える前に行う検査は 3 つあります。** いずれも「形式的に決定可能なものは機械が確定的に判定する」に対応し、**すべて正本の TTL に対して行います**（トリプルストアには問い合わせません — その時点でその版はまだ射影されていないためです）。
+
+| # | 検査 | 落ちたとき |
+|---|---|---|
+| 1 | **SHACL 検証**（`P2A-05`） | 422 |
+| 2 | **廃止のライフサイクル**（[ADR-0017](docs/adr/0017-deprecation-lifecycle.md)） | 422 |
+| 3 | **想定質問**（[ADR-0022](docs/adr/0022-competency-question-sets.md)。下記「想定質問は名前空間の受け入れ基準になり、承認を止めます」） | 422 |
+
+**いずれも「確かめられなかった」場合は 502 です。** 「制約を満たしている」と「確かめられなかった」を混同すると、壊れた定義を承認してしまいます。
+
 **`publish` は止めません。** `draft` は編集途中でありうるためです（publish と approve の分離は [ADR-0010](docs/adr/0010-approval-and-projection.md) 決定1）。レビュー中に違反を確認するには `POST /namespaces/{ns}/versions/{v}/validate` を呼んでください（状態を変えずに報告だけ返します）。
 
 検証は 2 段階です。
@@ -396,9 +406,37 @@ just check-questions my.questions.yaml my-namespace     # 自分の名前空間�
 
 `empty` は決定1 の「合意済みの規約（命名規則、必須項目）はテストとして機械が実行する」をそのまま満たします。想定質問と規約チェックを同じ仕組みで書けます。
 
-**想定質問は読み取り専用に強制されます。** SPARQL Update と `SERVICE` 句はファイルの読み込み時に拒否されます。
+**想定質問は読み取り専用に強制されます。** SPARQL Update と `SERVICE` 句は読み込み時に拒否されます。
 
-現時点ではリポジトリ内の質問ファイルを CI で回すところまでです。デプロイ済みの名前空間に質問を紐づける仕組み（承認をブロックするかを含む）は Phase 2 の `P2B-14` です。
+##### 想定質問は名前空間の受け入れ基準になり、承認を止めます
+
+**デプロイ済みの名前空間に質問集合を紐づけられます**([ADR-0022](docs/adr/0022-competency-question-sets.md)、`P2B-14`)。答えられない版は `approve` が **422** で拒否します(ADR-0009 決定1: 合意済みの規約はブロッキング)。
+
+```bash
+# 基準を定める(owner が必要。理由は必須)
+curl -X POST "$API/namespaces/retail-core/questions" -H "Authorization: Bearer $TOKEN"   -H 'Content-Type: application/json'   -d "$(jq -Rn --rawfile c samples/retail-core.questions.yaml         '{content: $c, reason: "初版の受け入れ基準"}')"
+
+# 承認前に試す(状態は変えない)
+curl -X POST "$API/namespaces/retail-core/versions/2.0.0/questions/run"   -H "Authorization: Bearer $TOKEN"
+
+# 基準がいつ・誰に・なぜ変えられたかの履歴
+curl "$API/namespaces/retail-core/questions/revisions" -H "Authorization: Bearer $TOKEN"
+```
+
+**受け入れ基準を書き換えられるなら、通ったことは保証になりません。** これが設計の中心です。
+
+- **質問集合は名前空間ごとに 1 系列で、版ごとには持ちません。** 版ごとにすると**新しい版が自分の合格条件を自分で書き換えられます**(四眼原則と同じ論点です)
+- **改訂は不変です。** 古い改訂は消えず、`reason` が必須で、すべて監査に残ります。**改訂で減った質問の id が監査の記録に出ます**
+- **書き込みは `owner`、読み取りは `data-analyst` です。** `approve` は `maintainer` 以上なので、承認する主体より 1 段上に置いています
+- **ただしこれは「防止」ではなく「可視化」です。** ロールは階層なので `owner` は基準を書き換えて自分で承認できます。四眼原則を質問集合にも掛けるかは `P2B-16` として残しています
+
+**評価は正本の TTL に対して行い、トリプルストアには問い合わせません。** `approve` の時点でその版は**まだ射影されていない**ので、ストアに問うと「既定グラフに載った後の検査」になって意味を失います。承認をストアの可用性に依存させるのは、「射影の失敗は正本への書き込みを失敗させない」という不変条件の逆向きでもあります。同梱サンプルの 11 件を rdflib と Fuseki の両方で評価し、同じ 11/11 になることを確認しています。
+
+**質問集合が無い名前空間の承認はブロックしません。** 「基準を定めていない」は「基準を満たしていない」ではありません。ブロックすると、この機能を入れた瞬間に既存のすべての名前空間が承認不能になります。**定めていないことは健全性指標の `competency_question_count` で見えます**(`0` に意味がある唯一の項目です)。
+
+**「評価していない」は合格になりません。** 予算(30 秒)を超えた質問は `not_evaluated` に並び、承認は **502** で止まります(基準を満たしていない **422** とは別物です — 運用者が取るべき対処が違います)。
+
+**行数は数えません。** 判定に必要なのは存在の有無だけなので、報告は「1 行以上」「0 行」です。実測で 216,000 行の直積を全部読むと 9.68 秒、先頭 1 行なら 0.000 秒でした。**数えたふりをしません。**
 
 #### 「なぜそう決めたか」を記録して読み出す
 
@@ -519,6 +557,7 @@ curl -G "$API/namespaces/retail-core/health" \
   "approval_age_days": 5,
   "shacl_violation_count": 0,
   "unprojected_version_count": 0,
+  "competency_question_count": 11,
   "unavailable": [], "truncated": false }
 ```
 
@@ -530,8 +569,11 @@ curl -G "$API/namespaces/retail-core/health" \
 | `approval_age_days` | 現行版が承認されてからの日数 | `approved_at` |
 | `shacl_violation_count` | SHACL 違反の件数 | SHACL 検証 |
 | `unprojected_version_count` | 射影が済んでいない版 | `projected_at` |
+| `competency_question_count` | 受け入れ基準の質問の件数 | 想定質問の集合（上記） |
 
 **`null` は「測れなかった」で、`0` ではありません。** どの項目がなぜ測れなかったかは `unavailable` に並びます。**健全性指標が障害時に「健全」と言うのは、目的に正面から反します。**
+
+**`competency_question_count` だけは `0` に意味があります** — 「受け入れ基準を定めていない」です（[ADR-0022](docs/adr/0022-competency-question-sets.md) 決定7）。定めていない名前空間の承認はブロックしないので、**ここに出ることが唯一それが見える経路です。**
 
 **「全部か無か」にはしません。** 正本の TTL に到達できなくても、PostgreSQL だけで測れる項目（`approval_age_days`、`unprojected_version_count`）はそのまま返ります。Blob の一時的な不調で未射影の版の数まで見えなくなってはいけないからです。
 
@@ -863,7 +905,7 @@ AWS 版は Apache-2.0 で公開されており、フォークすることも法�
 - [`docs/architecture.md`](docs/architecture.md) — アーキテクチャ、グラフ永続化設計、Azure サービスマッピング、認証・認可・セキュリティ
 - [`docs/cost-estimate.md`](docs/cost-estimate.md) — 月額費用試算と単価の出典・計算式
 - [`docs/third-party-licenses.md`](docs/third-party-licenses.md) — 第三者コンポーネントのライセンス
-- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0021)。**却下した代替案とその理由**を残しています
+- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0022)。**却下した代替案とその理由**を残しています
 
 ## コントリビューション
 

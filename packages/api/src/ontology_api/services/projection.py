@@ -50,9 +50,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
+from ontology_api.repositories.questions import QuestionSetRepository
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
 from ontology_api.services.authorization import TwoPersonApprovalError
 from ontology_core.blob import BlobStoreError, OntologyBlobStore
+from ontology_core.competency import (
+    CompetencyReport,
+    QuestionFileError,
+    evaluate_questions_on_turtle,
+    parse_questions,
+)
 from ontology_core.deprecation import (
     DeprecationProblem,
     check_deprecation,
@@ -70,6 +77,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "AutoVersionError",
+    "CompetencyEvaluationError",
+    "CompetencyViolationError",
     "InvalidTransitionError",
     "ProjectionService",
     "ReconcileReport",
@@ -115,6 +124,33 @@ class ShaclViolationError(Exception):
     def __init__(self, message: str, report: str = "") -> None:
         super().__init__(message)
         self.report = report
+
+
+class CompetencyViolationError(Exception):
+    """想定質問に答えられないため承認できない(ADR-0022 決定3、`P2B-14`)。
+
+    ADR-0009 決定1 は「合意済みの規約はテストとして機械が実行する」と決めて
+    いる。想定質問はまさにそれなので、**落ちたら承認を止める**(422)。
+    落ちても通るなら、それは「合意済みの規約」ではなく参考情報である。
+
+    **`CompetencyEvaluationError` と分ける。** どちらも承認を止めるが、
+    こちらは 422(基準を満たしていない)、あちらは 502(確かめられなかった)
+    である。運用者が取るべき対処が違う — 前者はオントロジーか基準を直す話、
+    後者は質問集合が重すぎる・壊れているという話である。
+    """
+
+    def __init__(self, message: str, *, report: CompetencyReport) -> None:
+        super().__init__(message)
+        self.report = report
+
+
+class CompetencyEvaluationError(Exception):
+    """想定質問を評価できなかった(ADR-0022 決定5)。
+
+    **「評価できなかった」を合格に丸めない。** 予算超過・質問集合の破損・
+    TTL の解析失敗はいずれもここに来る。呼び出し元は 502 にする
+    (SHACL の `ShaclValidationError` と同じ扱い)。
+    """
 
 
 class ConcurrentUpdateError(Exception):
@@ -624,6 +660,61 @@ class ProjectionService:
         # 別スレッドへ逃がす。イベントループを塞ぐと他のリクエストが進めない。
         return await asyncio.to_thread(validate_turtle_with_shacl, turtle)
 
+    async def evaluate_competency_questions(
+        self, *, namespace: str, version: str
+    ) -> tuple[int | None, CompetencyReport]:
+        """版の TTL に対して想定質問を評価する(ADR-0022 決定3、`P2B-14`)。
+
+        **状態を変えない。** レビュー画面と `approve` の両方から呼ぶ
+        (`validate_shacl` と同じ形)。
+
+        戻り値の第 1 要素は評価に使った質問集合の改訂番号。**`None` は
+        「質問集合が無い」= 基準を定めていないことを表す**(基準を満たして
+        いないのではない。ADR-0022 決定7)。その場合の報告は空である。
+
+        **ストアには問い合わせない。** `approve` の時点でその版はまだ射影
+        されていないし、承認をストアの可用性に依存させるのは不変条件3 が
+        守ろうとしているものの逆である(ADR-0022 決定3)。
+
+        Raises:
+            UnknownVersionError: 版が無いとき。
+            BlobStoreError: 正本から TTL を読めなかったとき。**「合格」に
+                しない**(評価できなかったことと合格を混同しない)。
+            CompetencyEvaluationError: 質問集合が壊れている、または TTL を
+                解析できないとき。同上。
+        """
+        current = await VersionRepository(self._session).get(namespace, version)
+        if current is None:
+            raise UnknownVersionError(f"'{namespace}@{version}' が見つかりません")
+
+        question_set = await QuestionSetRepository(self._session).active(namespace)
+        if question_set is None:
+            return None, CompetencyReport()
+
+        try:
+            questions = parse_questions(
+                question_set.content,
+                where=f"'{namespace}' の質問集合(改訂 {question_set.revision})",
+            )
+        except QuestionFileError as exc:
+            # **壊れた質問集合を「基準なし」に丸めない。** 丸めると、質問集合を
+            # 壊すことが検査を無効化する手段になる。
+            raise CompetencyEvaluationError(str(exc)) from exc
+
+        turtle = await self._blob.get_version(current.blob_path)
+        # rdflib の評価は同期・CPU バウンドなので別スレッドへ逃がす
+        # (SHACL 検証と同じ理由)。
+        try:
+            report = await asyncio.to_thread(
+                evaluate_questions_on_turtle,
+                turtle,
+                questions,
+                graph_iri=version_graph_iri(self._base, namespace, version),
+            )
+        except QuestionFileError as exc:
+            raise CompetencyEvaluationError(str(exc)) from exc
+        return question_set.revision, report
+
     async def check_deprecation_lifecycle(
         self, *, namespace: str, version: str, base: OntologyVersion | None
     ) -> list[DeprecationProblem]:
@@ -716,10 +807,16 @@ class ProjectionService:
 
         1. **四眼原則**(P2A-06、ADR-0014 決定4)。状態を変える前に判定する
         2. **SHACL 検証**(P2A-05)。**位置が本質** — 承認後の検証は意味が無い
-        3. 状態遷移と前の版の `superseded`
-        4. **意味的差分**(P2B-09、ADR-0016)。承認の可否に影響しないので
+        3. **廃止のライフサイクル**(P2B-03、ADR-0017 決定2・4)。同上
+        4. **想定質問**(P2B-14、ADR-0022 決定3)。同上。**ストアには問い
+           合わせない** — この時点でこの版はまだ射影されていない
+        5. 状態遷移と前の版の `superseded`
+        6. **意味的差分**(P2B-09、ADR-0016)。承認の可否に影響しないので
            状態遷移の後でよい。失敗しても承認は失敗させない
-        5. マニフェストの更新と射影
+        7. マニフェストの更新と射影
+
+        2〜4 はいずれも「形式的に決定可能なものは機械が確定的に判定する」
+        (ADR-0009 決定1)に対応する。**すべて状態遷移より前にある。**
 
         呼び出し元のロール判定(`maintainer` 以上)はルータで行う。
         """
@@ -795,6 +892,36 @@ class ProjectionService:
                 problems=[p for p in deprecation_problems if p.blocking],
             )
 
+        # ---- 想定質問(P2B-14、ADR-0022 決定3) ----
+        # **状態を変える前に検査する**(SHACL 検証と同じ理由)。
+        #
+        # **ストアには問い合わせない。** この時点でこの版はまだ射影されて
+        # いないし、承認をストアの可用性に依存させるのは不変条件3 が守ろうと
+        # しているものの逆である。正本の TTL に対して rdflib で評価する。
+        #
+        # **質問集合が無い名前空間は素通りする**(決定7)。「基準を定めて
+        # いない」は「基準を満たしていない」ではない。定めていないことは
+        # 健全性指標(`competency_question_count`)で見える。
+        question_revision, competency = await self.evaluate_competency_questions(
+            namespace=namespace, version=version
+        )
+        if question_revision is not None:
+            if not competency.evaluated_all:
+                # **「評価していない」を合格に丸めない**(決定5)。422 ではなく
+                # 502 相当として扱う — 基準を満たしていないのではなく、
+                # 確かめられなかったのである。
+                raise CompetencyEvaluationError(
+                    f"'{namespace}@{version}' の想定質問を評価しきれませんでした"
+                    f"(予算 {competency.elapsed_seconds:.1f} 秒を超過。"
+                    f"未評価 {len(competency.not_evaluated)} 件)"
+                )
+            if not competency.conforms:
+                raise CompetencyViolationError(
+                    f"'{namespace}@{version}' は想定質問に答えられないため承認できません"
+                    f"(質問集合の改訂 {question_revision}): " + " / ".join(competency.messages()),
+                    report=competency,
+                )
+
         now = datetime.now(UTC)
         updated = await versions.set_status(
             namespace,
@@ -817,13 +944,24 @@ class ProjectionService:
             namespace=namespace, base=previous_approved, target=updated
         )
 
+        # **どの基準で通ったかを監査に残す**(ADR-0022 決定8)。基準は改訂
+        # されうるので、版だけでは「何を満たして承認されたのか」を後から
+        # 復元できない。
+        audit_reason = reason
+        if question_revision is not None:
+            note = (
+                f"想定質問: 質問集合の改訂 {question_revision} の "
+                f"{len(competency.results)} 件すべてに合格"
+            )
+            audit_reason = f"{reason} / {note}" if reason else note
+
         audit = AuditRepository(self._session)
         await audit.record(
             namespace=namespace,
             action="approved",
             actor=actor,
             subject=f"{namespace}@{version}",
-            reason=reason,
+            reason=audit_reason,
             diff=diff_summary,
         )
 

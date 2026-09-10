@@ -60,6 +60,9 @@ class HealthInputs:
         shacl_violation_count: SHACL 違反の件数。**`None` は「測れなかった」**。
         unprojected_version_count: `projected_at IS NULL` の版の数。
             PostgreSQL だけで測れるので `None` にならない。
+        competency_question_count: 有効な質問集合の質問の件数
+            (ADR-0022 決定7)。**`0` は「基準を定めていない」**であって
+            「基準を満たしていない」ではない。`None` は測れなかったとき。
         unavailable: 測れなかった項目の理由。
         now: 「今」。テストのために外から渡す。
     """
@@ -71,15 +74,20 @@ class HealthInputs:
     current_approved_at: datetime | None
     shacl_violation_count: int | None
     unprojected_version_count: int
+    competency_question_count: int | None
     unavailable: tuple[str, ...]
     now: datetime
 
 
 @dataclass(frozen=True)
 class HealthReport:
-    """健全性指標の報告(ADR-0009 決定5 の 6 項目)。
+    """健全性指標の報告(ADR-0009 決定5 の 6 項目 + ADR-0022 の 1 項目)。
 
     **`None` は「測れなかった」であり `0` ではない。**
+
+    `competency_question_count` だけは `0` にも意味がある — 「受け入れ基準を
+    定めていない」である(ADR-0022 決定7)。定めていない名前空間の承認は
+    ブロックしないので、**ここに出ることが唯一それが見える経路である。**
     """
 
     namespace: str
@@ -91,6 +99,7 @@ class HealthReport:
     approval_age_days: int | None
     shacl_violation_count: int | None
     unprojected_version_count: int
+    competency_question_count: int | None
     unavailable: tuple[str, ...]
     unreferenced_window_days: int = UNREFERENCED_WINDOW_DAYS
 
@@ -138,6 +147,7 @@ class HealthReport:
             "approval_age_days": self.approval_age_days,
             "shacl_violation_count": self.shacl_violation_count,
             "unprojected_version_count": self.unprojected_version_count,
+            "competency_question_count": self.competency_question_count,
             "unavailable": list(self.unavailable),
         }
         lists = (self.unreferenced_terms, self.without_owner_terms)
@@ -193,5 +203,6 @@ def compute_health(inputs: HealthInputs, *, namespace: str = "") -> HealthReport
         approval_age_days=approval_age,
         shacl_violation_count=inputs.shacl_violation_count,
         unprojected_version_count=inputs.unprojected_version_count,
+        competency_question_count=inputs.competency_question_count,
         unavailable=inputs.unavailable,
     )
