@@ -70,6 +70,21 @@ test-shell:
     sh scripts/preprovision.test.sh
     docker run --rm -v "{{justfile_directory()}}:/w" -w /w alpine:3.20 sh -c       'apk add --no-cache jq >/dev/null && sh containers/fuseki/lib/validate.test.sh && sh containers/fuseki/load-snapshot.test.sh'
 
+# OWL 推論器(ELK)で論理的整合性を検査する(ADR-0021)。要: docker、uv
+#
+# **「矛盾は検出されなかった」は「矛盾がない」ではない。** ELK は扱えない公理を
+# 無視するので見逃しがある(誤検出はしない)。結論が完全だったかどうかを併せて
+# 表示するので、そこまで読むこと。
+#
+# 引数を省略すると samples/ 配下の *.ttl をすべて検査する。
+# OWL 推論器で矛盾・充足不能クラスを検査する(引数なしで samples/ を全部)
+check-reasoning *paths:
+    sh scripts/check-reasoning.sh {{paths}}
+
+# 推論器の検査そのものの振る舞いをテストする(要: docker、uv)
+test-reasoner:
+    sh containers/reasoner/reasoner-check.test.sh
+
 # ADR-0014 決定2・3(P2A-09)。**割り当てが無いと azd up の postdeploy が
 # 名前空間の作成で 403 になって止まる。** `--dry-run` を渡すと Entra を
 # 変更せず、何をするかだけ表示する。

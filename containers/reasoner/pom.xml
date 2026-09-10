@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWL 推論と OWL 2 プロファイル適合の検査 (P2B-01、ADR-0005 決定1 / ADR-0009 決定1)。
+
+  ライセンスの選択:
+    - ELK (io.github.liveontologies:elk-owlapi) は Apache-2.0
+    - OWL API (net.sourceforge.owlapi) は **Apache-2.0 と LGPL-3.0 のデュアル
+      ライセンス**。**Apache-2.0 の方を選択する**
+    - **HermiT (net.sourceforge.owlapi:org.semanticweb.hermit) には依存しない。**
+      LGPL-3.0 単独であり、ADR-0005 が「同梱しない」と決めている
+      (owlready2 を却下したのと同じ理由)
+
+  ROBOT (ontodev/robot) を使わない理由もここに書いておく。ROBOT は BSD-3-Clause
+  だが、配布 jar が **HermiT と JFact を同梱している**(実際に jar の中身を
+  確認した: org/semanticweb/HermiT/... が入っている)。ELK だけが必要なので、
+  依存を自分で選べるこの形にする。
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.example.ontology</groupId>
+  <artifactId>reasoner-check</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <elk.version>0.6.0</elk.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.liveontologies</groupId>
+      <artifactId>elk-owlapi</artifactId>
+      <version>${elk.version}</version>
+    </dependency>
+    <!-- **OWL API は明示的に足さない。** ELK 0.6.0 が `owlapi-apibinding`
+         経由で api / impl / parsers / rio / tools / oboformat をすべて引く
+         (`mvn dependency:tree -Dincludes='net.sourceforge.owlapi:*'` で確認)。
+         ここに `owlapi-distribution` (uber-jar) を足すと**同じクラスが 2 つ**
+         classpath に載り、Turtle の読み込みが `NoSuchFieldError` で落ちた
+         (ADR-0021 決定4 に実測を記録)。 -->
+    <!-- ログを標準エラーへ出す。JSON を標準出力に出すので混ざらせない。 -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>2.0.13</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>reasoner-check</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.3</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <transformer
+                    implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.example.ontology.ReasonerCheck</mainClass>
+                </transformer>
+                <transformer
+                    implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <!-- **同梱物の NOTICE と LICENSE を集約する。** shade は
+                     同名のリソースを衝突させるので、これを置かないと
+                     `META-INF/NOTICE` がどれか 1 つで上書きされ、
+                     **Apache-2.0 §4 の「NOTICE の内容を継承する」義務を
+                     満たせなくなる**(ELK と OWL API がどちらも
+                     Apache-2.0 である)。 -->
+                <transformer
+                    implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
+                  <projectName>Ontology Accelerator for Azure - reasoner-check</projectName>
+                  <!-- **帰属表示を明示的に上書きする。** 既定のままだと
+                       「Copyright 2006-2026 The Apache Software Foundation」
+                       「This product includes software developed at
+                       The Apache Software Foundation」が生成され、
+                       **この成果物の著作権が ASF にあるかのように読める**
+                       (実測)。本体の帰属表示はリポジトリの NOTICE が正本で、
+                       ここに必要なのは**同梱物の NOTICE の集約**である。 -->
+                  <addHeader>false</addHeader>
+                  <copyright>Copyright 2026 Hiroki Nomura</copyright>
+                  <organizationName>Hiroki Nomura</organizationName>
+                  <organizationURL>https://github.com/nomhiro/ontology-accelerator-for-azure</organizationURL>
+                </transformer>
+                <transformer
+                    implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

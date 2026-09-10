@@ -1,0 +1,13 @@
+# EL の中で書いた「充足不能クラス」。
+# ex:Ghost は互いに素な 2 つのクラスの共通部分なので、インスタンスは存在し得ない。
+# **オントロジー自体は矛盾していない**(個体を主張していないため)。
+# つまり `inconsistency_found` は false のまま `unsatisfiable_classes` に出る。
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex:   <https://example.com/t#> .
+
+<https://example.com/t> a owl:Ontology .
+
+ex:Animal   a owl:Class .
+ex:Mineral  a owl:Class ; owl:disjointWith ex:Animal .
+ex:Ghost    a owl:Class ; rdfs:subClassOf ex:Animal , ex:Mineral .

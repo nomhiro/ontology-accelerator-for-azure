@@ -1,0 +1,20 @@
+# OWL 2 EL プロファイルの逸脱を含むオントロジー。
+#
+# `owl:unionOf` は EL の外なので OWLAPI は逸脱として報告する。
+# しかし `(Cat ⊔ Dog) ⊑ Pet` は `Cat ⊑ Pet` と `Dog ⊑ Pet` に等価なので
+# **ELK は完全に扱える**(実測: `consistency_conclusive: true`)。
+#
+# **狙い**: 逸脱があっても結論は完全になりうること。
+# `incomplete-datatype.ttl` と対になっていて、この 2 つで
+# 「プロファイル適合と推論の完全性は別物」を両方向から固定する。
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex:   <https://example.com/t#> .
+
+<https://example.com/t> a owl:Ontology .
+
+ex:Cat  a owl:Class .
+ex:Dog  a owl:Class .
+ex:Pet  a owl:Class .
+
+[ a owl:Class ; owl:unionOf ( ex:Cat ex:Dog ) ] rdfs:subClassOf ex:Pet .

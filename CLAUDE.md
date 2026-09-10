@@ -58,7 +58,8 @@ just dev-api             # Core API 起動
   システム共有ライブラリの場所で、そこを自分のディレクトリで覆うと `/bin/sh` 自身が動かなくなり
   `exec /bin/sh: no such file or directory` で全滅する。`/work` などに置くこと。
   `jq` が必要なシェルテストを docker で回すときに踏む
-- **Git Bash は `/` で始まる引数を Windows パスに変換する。** `az` に ARM のリソース ID を渡すと壊れる。`export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` を先に置くか、リソース ID ではなく名前を渡す
+- **Git Bash は `/` で始まる引数を Windows パスに変換する。** `az` に ARM のリソース ID を渡すと壊れる。**docker の `-w /work` も壊れる**(`W:/` になって拒否される)。`export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` を先に置くか、リソース ID ではなく名前を渡す。
+  抑止すれば `-v "$PWD:/mnt"` の `/c/...` 形式は Docker Desktop が受け付けるが、**`docker build` のビルドコンテキストは受け付けない**(`path not found`)。スクリプトの中では `cygpath -m` で `C:/...` に直す(`containers/reasoner/*.sh` がその形)
 
 ## 検証
 
@@ -72,9 +73,14 @@ sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
 sh containers/fuseki/load-snapshot.test.sh     # ローダの制御フロー
 sh scripts/lint-shell.sh                       # シェルの移植性(素の python 等)
 sh scripts/preprovision.test.sh                # provision を止めるゲート(要: uv)
+sh containers/reasoner/reasoner-check.test.sh  # OWL 推論器の検査(要: docker、uv。約 2 分)
+sh scripts/check-reasoning.sh samples          # 同梱サンプルの論理的整合性(要: docker、uv)
+# **Git Bash から docker を呼ぶ前に必ずこれを実行する。** 無いと `-w /mnt` が
+# `C:/Program Files/Git/mnt` に変換されて docker が拒否する(実測)。Linux では無害
+export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 # shellcheck は CI と同じバージョンを使う(apt 版 0.9.0 と指摘が違うため固定)
 docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
-  scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh
+  scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh containers/reasoner/*.sh
 az bicep build --file infra/main.bicep --stdout > /dev/null
 ```
 
@@ -106,6 +112,8 @@ az keyvault list-deleted --query "[].name" -o tsv   # 対象が消えている�
 **シェル側のテストは `jq` を要求する。** `containers/fuseki/` の 2 本は load-snapshot.sh 自身がマニフェストの解析に jq を使うため、jq が無い環境では実行できない。Windows には既定で無いので docker 経由で回す:
 
 ```bash
+# Git Bash では先に `export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` が必要。
+# 無いと `-w /w` が `W:/` になって docker が拒否する(実測)。
 docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
   'apk add --no-cache jq >/dev/null && sh containers/fuseki/load-snapshot.test.sh'
 ```
@@ -128,9 +136,15 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 
 **Python の標準出力は Windows では cp932 になる。** `print` に日本語を渡すと cp932 のバイト列が出る一方、周りのシェルスクリプトの `echo` はソースの UTF-8 をそのまま出すため、**同じログに 2 つのエンコーディングが混ざる**。azd のフックのログが読めなくなり、ログを機械的に検査するテストも通らない（実際に踏んだ）。cp932 に無い文字（絵文字・ダッシュ）があると `UnicodeEncodeError` で**スクリプトごと落ちる**。運用者に見せる出力は `ontology_core.console` の `say` / `warn` を使う。
 
+**入力側も同じである。** `json.load(sys.stdin)` は cp932 として読むため、**日本語を含む JSON をパイプで渡すと壊れる**（`JSONDecodeError` になる。実測）。`json.loads(sys.stdin.buffer.read().decode("utf-8"))` と書く。シェルから `uv run python -c` に JSON を流すテストで必ず踏む。
+
 **`set -e` の下では `cmd; rc=$?` が書けない。** `cmd` が非ゼロで終わった時点でスクリプトが終わり、`rc` を読む行に到達しない（実測で確認）。終了コードで分岐したいときは `rc=0; cmd || rc=$?` にする。**「2 なら止める、1 なら続行する」のような多値の分岐**を書くときに必ず踏む。
 
+**`uv run --directory` に Git Bash のパス（`/c/...`）を渡してはいけない。** Windows の uv が「指定されたパスが見つかりません。 (os error 3)」で落ちる。**パスを渡すのではなく `cd` してから `uv run` する**（`scripts/check-reasoning.sh` がその形）。
+
 **シェルスクリプトで素の `python` を呼んではいけない。** 多くの現代的な Linux には `python` が無く `python3` しかない（Python 3 が既定になった時点で各ディストリが無印の提供をやめた）。実測で Azure Linux 3.0 には無い。**`uv run python` を使う**（このリポジトリのスクリプトは既に uv に依存しているため、前提を増やさない）。`scripts/lint-shell.sh` が機械的に検査する。
+
+**シェルの単一引用符で囲んだ埋め込み Python のコメントに、バッククォートを書いてはいけない。** shellcheck がコマンド置換と誤認して SC2016(`Expressions don't expand in single quotes`)を出し、**検査が落ちる**（shellcheck は info でも終了コード 1 を返す）。`uv run python -c '...'` の中で識別子を強調したいときは「」で囲む。
 
 **コメント行を静的解析ツールの名前だけで始めてはいけない。** `#` の直後にツール名が来ると、ツール自身がディレクティブ指定として解釈して SC1072 / SC1073 で失敗する。説明したいときは「静的解析ツール」と書くか、行頭に別の語を置く（2 回踏んだ）。
 

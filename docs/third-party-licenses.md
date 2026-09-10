@@ -15,7 +15,9 @@
 | Oxigraph | MIT / Apache-2.0 | https://github.com/oxigraph/oxigraph | ✓ 代替ストア候補 |
 | rdflib | BSD-3-Clause | https://github.com/RDFLib/rdflib | ✓ Python 側の RDF 処理 |
 | pyshacl | Apache-2.0 | https://github.com/RDFLib/pySHACL | ✓ SHACL 検証(Phase 2) |
-| ELK reasoner | Apache-2.0 | https://github.com/liveontologies/elk-reasoner | ✓ **既定の OWL 推論器**にする |
+| ELK reasoner | Apache-2.0(確認済) | `io.github.liveontologies:elk-owlapi:0.6.0` / https://github.com/liveontologies/elk-reasoner | ✓ **既定の OWL 推論器。CI で使用中**(`containers/reasoner`、[ADR-0021](adr/0021-owl-reasoning-in-ci.md))。**結論は健全だが完全ではない**(データプロパティを扱えない)ため、検査は完全性を併せて報告する |
+| OWL API | **Apache-2.0 / LGPL-3.0 のデュアル**(確認済) | `net.sourceforge.owlapi:owlapi-apibinding:5.1.20` / https://github.com/owlcs/owlapi | ✓ **Apache-2.0 の方を選択する。** ELK が推移的に引く(api / impl / parsers / rio / tools / oboformat)。**版は ELK に揃える** — `owlapi-distribution:5.5.1` を足すと同じクラスが二重に載って Turtle が読めなくなった(ADR-0021 決定4) |
+| SLF4J (slf4j-api / slf4j-simple) | MIT(確認済) | https://github.com/qos-ch/slf4j | ✓ 推論器コンテナのログ。**2.0.13 の pom には `<licenses>` ブロックが無い**ので、jar 内の `META-INF/LICENSE.txt`(MIT の本文)と `Bundle-License` ヘッダで確認した。**Logback は使わない**(EPL-1.0 / LGPL-2.1 のデュアルで、選択の説明が要る割に得るものが無い) |
 | HermiT | **LGPL-3.0** | https://www.hermit-reasoner.com/ | △ 同梱せず、任意有効化のコンテナビルド時取得。ACA Job の**別プロセス**として動かす構成が LGPL 上最も安全。NOTICE に明記 |
 | PostgreSQL JDBC (pgjdbc) | BSD-2-Clause(確認済) | https://github.com/pgjdbc/pgjdbc | ✓ Ontop 用。自前イメージに**同梱してよい**(Phase 3) |
 | Microsoft JDBC Driver for SQL Server | MIT(確認済) | https://github.com/microsoft/mssql-jdbc | ✓ Ontop 用。自前イメージに**同梱してよい**(Phase 3) |
@@ -36,6 +38,8 @@
 | ライブラリ | ライセンス | 取得元 | 理由 |
 |---|---|---|---|
 | **owlready2** | **LGPL-3.0** | https://owlready2.readthedocs.io/ | ✗ **採用しない**。改変版 HermiT を同梱する Python ライブラリで、Apache-2.0 の本体にライブラリとして取り込むとコンテナイメージ配布時に LGPL の順守義務が絡む。rdflib + pyshacl + 別プロセスの Java 推論器で代替する |
+| **ROBOT** | BSD-3-Clause(**ただし配布物が LGPL-3.0 を同梱**) | https://github.com/ontodev/robot | ✗ **採用しない**。ROBOT 自身は許諾的だが、**配布 jar (82 MB) の中身を列挙したところ `org/semanticweb/HermiT/...` と `jfact` が入っていた**(実測)。ADR-0005 決定4(HermiT を同梱しない)に反する。依存を自分で選べる形(`elk-owlapi` に直接依存)で代替する |
+| Logback | EPL-1.0 / LGPL-2.1 のデュアル | https://github.com/qos-ch/logback | ✗ 採用しない。推論器のログは slf4j-simple(MIT)で足りる。デュアルライセンスの選択を説明する負担を負う理由が無い |
 | Virtuoso Open Source | GPL | https://github.com/openlink/virtuoso-opensource | ✗ 検討対象外 |
 
 ---
@@ -55,7 +59,45 @@
 
 改変版 HermiT を**ライブラリとして同梱する** Python パッケージです。これを Apache-2.0 の本体に依存関係として取り込むと、コンテナイメージを配布する時点で LGPL の順守義務(利用者による差し替えの保証など)が絡みます。回避策を運用で維持するより、依存しない設計を選びます。
 
-代替として **rdflib + pyshacl + 別プロセスの Java 推論器(ELK)** の組み合わせを用います。**SHACL 検証は pyshacl(純 Python)で完結するため、Java 依存は Phase 4 まで発生しません。**
+代替として **rdflib + pyshacl + 別プロセスの Java 推論器(ELK)** の組み合わせを用います。SHACL 検証は pyshacl(純 Python)で完結します。
+
+> **Java 依存は Phase 2 で発生しました。** ADR-0005 の補記(2026-09-01)が OWL 推論器の導入を Phase 4 から Phase 2 へ前倒ししたためです。`containers/reasoner` が ELK + OWL API を含む JRE イメージ(513 MB)をビルドします。**HermiT と JFact が入っていないことは、ビルドした jar のエントリを列挙して確認しています**([ADR-0021](adr/0021-owl-reasoning-in-ci.md))。
+
+### 配布物に HermiT が入っていないことの確認 — CI が検査します
+
+**`containers/reasoner/reasoner-check.test.sh` が毎回検査します。** イメージから jar を取り出し、`hermit` / `jfact` に一致するエントリが 0 件であることと、`META-INF/NOTICE` が集約されていることを確認します。
+
+**目視の確認では守れません。** 依存を 1 つ足すと推移的に入りうるためです(実際に `owlapi-distribution` を足していた時期は除外指定が必要でした)。この検査を意図的に壊すと落ちることも確認しています。
+
+手作業で確かめる場合は次の通りです。
+
+```bash
+docker create --name reasoner-check-tmp ontology-reasoner:local
+docker cp reasoner-check-tmp:/opt/reasoner/reasoner-check.jar ./reasoner-check.jar
+docker rm reasoner-check-tmp
+unzip -l reasoner-check.jar | grep -iE 'hermit|jfact' || echo "同梱なし"
+```
+
+### 推論器コンテナに入る依存の棚卸し(2026-09-11 時点)
+
+`containers/reasoner` の shade jar (18.4 MiB) には **67 個の第三者依存**が入ります。ライセンスを機械的に集計した結果、**コピーレフトのコンポーネントは 1 つもありません**。
+
+| ライセンス | 主なコンポーネント |
+|---|---|
+| Apache-2.0 | ELK、Jackson、Guava、Apache HttpComponents、Commons Codec / IO / RDF API、Caffeine、hppcrt、jcl-over-slf4j、puli / owlapi-proof |
+| **Apache-2.0 / LGPL-3.0 のデュアル** | OWL API (api / apibinding / impl / parsers / rio / tools)。**Apache-2.0 を選択します** |
+| BSD-3-Clause | JSONLD Java、OWLAPI :: OBO Format |
+| Eclipse Distribution License v1.0 (= BSD-3-Clause) | Eclipse RDF4J 3.7.4 (model / rio / util) |
+| MIT | SLF4J、Checker Qual |
+| Public Domain | XZ for Java |
+
+再集計するコマンド(**ビルド時だけのプラグインで、成果物には入りません**)。
+
+```bash
+docker run --rm -v "$PWD/containers/reasoner:/build:ro" -w /tmp/proj   maven:3.9-eclipse-temurin-21 sh -c   'mkdir -p /tmp/proj && cp /build/pom.xml /tmp/proj/ && cp -r /build/src /tmp/proj/    && cd /tmp/proj    && mvn -B -q org.codehaus.mojo:license-maven-plugin:2.4.0:add-third-party    && cat target/generated-sources/license/THIRD-PARTY.txt'
+```
+
+> **この棚卸しを CI で自動化するのは Phase 4** のままです。今 CI が機械的に守っているのは「HermiT / JFact が入っていないこと」だけで、**新しいコピーレフト依存が別の名前で入ってきた場合は捕まえられません。** 依存を追加する Pull Request では上のコマンドを回してください。
 
 ---
 

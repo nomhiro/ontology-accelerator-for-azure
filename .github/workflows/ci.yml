@@ -33,6 +33,7 @@ jobs:
       infra: ${{ steps.filter.outputs.infra }}
       containers: ${{ steps.filter.outputs.containers }}
       shell: ${{ steps.filter.outputs.shell }}
+      reasoner: ${{ steps.filter.outputs.reasoner }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -73,6 +74,14 @@ jobs:
             shell:
               - 'scripts/**'
               - 'containers/**'
+              - '.github/workflows/ci.yml'
+            # OWL 推論器（ELK）による論理的整合性の検査。**`samples/**` を含める。**
+            # 新しいサンプルオントロジーを足したときに、それが論理的に矛盾して
+            # いないかを検査させるため（P2B-01、ADR-0021）。
+            reasoner:
+              - 'containers/reasoner/**'
+              - 'scripts/check-reasoning.sh'
+              - 'samples/**'
               - '.github/workflows/ci.yml'
 
   python:
@@ -214,6 +223,38 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
+  # OWL 推論器（ELK）による論理的整合性の検査（P2B-01、ADR-0021）。
+  #
+  # **矛盾と充足不能クラスと読み込み失敗だけが CI を止める。** ELK は扱えない
+  # 公理を無視するので誤検出はしない（見逃しはする）。逆に「結論が不完全
+  # だった」ことで止める設計にすると、データプロパティを 1 つ持つだけで
+  # 実用的なオントロジーが全部落ちる（同梱サンプルで実測）。止めない代わりに、
+  # 不完全だったことは必ずログに出す。
+  #
+  # `containers` ジョブのマトリクスに入れていないのは、下の 2 ステップが
+  # イメージをビルドするため二重になるからである。
+  reasoner:
+    needs: changes
+    if: needs.changes.outputs.reasoner == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 検査結果の JSON の判定に uv（ontology_core.console）を使う。
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: 依存関係を入れる
+        run: uv sync --all-packages
+      # 「矛盾を検出したら止める」「読めなかったら止める」「結論が不完全でも
+      # 止めない」の 3 方向を固定する。**片方向だけだと、常に通す実装と常に
+      # 止める実装のどちらも通ってしまう。**
+      - name: 推論器の検査の振る舞いをテストする
+        run: sh containers/reasoner/reasoner-check.test.sh
+      # 同梱サンプルを全部検査する。**テストが見ているのは retail-core だけ**
+      # なので、サンプルが増えたときにここで捕まえる。
+      - name: 同梱サンプルを検査する
+        run: sh scripts/check-reasoning.sh samples
+
   shell:
     needs: changes
     if: needs.changes.outputs.shell == 'true'
@@ -229,7 +270,8 @@ jobs:
       - name: シェルスクリプトを検査する
         run: |
           docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
-            scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh
+            scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh \
+            containers/reasoner/*.sh
       # 静的解析では拾えない移植性の検査（素の `python` 呼び出しなど）。
       # 詳細は scripts/lint-shell.sh の冒頭コメント。
       - name: シェルスクリプトの移植性を検査する

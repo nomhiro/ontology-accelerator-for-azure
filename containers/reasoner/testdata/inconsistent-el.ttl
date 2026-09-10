@@ -1,0 +1,10 @@
+# EL の中で書いた「矛盾したオントロジー」。
+# 個体が互いに素な 2 つのクラスに属すると主張しているので、モデルが存在しない。
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix ex:   <https://example.com/t#> .
+
+<https://example.com/t> a owl:Ontology .
+
+ex:Animal   a owl:Class .
+ex:Mineral  a owl:Class ; owl:disjointWith ex:Animal .
+ex:rock     a owl:NamedIndividual , ex:Animal , ex:Mineral .

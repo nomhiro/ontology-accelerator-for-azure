@@ -51,7 +51,38 @@ Ontop (Apache License 2.0)
 ELK reasoner (Apache License 2.0)
   Copyright ELK developers
   https://github.com/liveontologies/elk-reasoner
-  既定の OWL 推論器 (Phase 4)。
+  既定の OWL 推論器。containers/reasoner のイメージに同梱します
+  (io.github.liveontologies:elk-owlapi:0.6.0)。
+
+OWL API (Apache License 2.0 / LGPL-3.0 のデュアルライセンス)
+  Copyright The University of Manchester and OWL API contributors
+  https://github.com/owlcs/owlapi
+  ELK が依存します。**Apache License 2.0 の方を選択して**
+  containers/reasoner のイメージに同梱します
+  (net.sourceforge.owlapi:owlapi-apibinding:5.1.20 とその依存)。
+
+  OWL API is dual-licensed under the Apache License 2.0 and LGPL-3.0.
+  This project elects the Apache License 2.0.
+
+SLF4J (MIT License)
+  Copyright QOS.ch Sarl (Switzerland)
+  https://github.com/qos-ch/slf4j
+  推論器コンテナのログ (slf4j-api / slf4j-simple)。同梱します。
+
+Jackson (Apache License 2.0)
+  Copyright FasterXML, LLC
+  https://github.com/FasterXML/jackson
+  OWL API が依存します。同梱します。
+
+Eclipse RDF4J (Eclipse Distribution License v1.0 = BSD 3-Clause)
+  Copyright Eclipse RDF4J contributors
+  https://github.com/eclipse/rdf4j
+  OWL API の Turtle パーサ (owlapi-rio) が依存します。同梱します。
+
+Guava (Apache License 2.0)
+  Copyright Google LLC
+  https://github.com/google/guava
+  ELK が依存します。同梱します。
 
 Oxigraph (MIT License / Apache License 2.0)
   https://github.com/oxigraph/oxigraph
@@ -82,6 +113,19 @@ HermiT (LGPL-3.0)
   HermiT is LGPL-3.0 licensed and is NOT bundled in any distribution of this
   project. It may be fetched at container build time as an opt-in and is run
   only as a separate process (an Azure Container Apps Job).
+
+  同梱していないことは、ビルドした jar のエントリを列挙して確認しています。
+  手順は docs/third-party-licenses.md に記載しています。
+
+JFact (LGPL-3.0)
+  https://github.com/owlcs/jfact
+  同上の理由により同梱しません。
+
+ROBOT (BSD-3-Clause)
+  https://github.com/ontodev/robot
+  ROBOT 自身のライセンスは許諾的ですが、**配布 jar が HermiT と JFact を
+  同梱している**ため採用しません (実測で確認)。ELK に直接依存する形で
+  代替しています (docs/adr/0021-owl-reasoning-in-ci.md)。
 
 owlready2 (LGPL-3.0)
   改変版 HermiT を同梱する Python ライブラリであるため採用しません。

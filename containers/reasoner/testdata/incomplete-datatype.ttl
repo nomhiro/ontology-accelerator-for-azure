@@ -1,0 +1,20 @@
+# データプロパティを使った、ごく普通のオントロジー。
+#
+# **狙い**: OWL 2 EL の逸脱は 0 件なのに ELK の結論が不完全になること。
+# データプロパティは OWL 2 EL に**含まれる**が ELK は扱えないため、
+# `inconsistency_found: false` の裏で `consistency_conclusive: false` になる。
+#
+# **プロファイル適合から不完全性を推測してはいけない**ことの回帰テスト
+# (ADR-0021 決定1)。ここを取り違えると、実用的なオントロジーで
+# 「矛盾なし」と読める報告を返してしまう。
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <https://example.com/t#> .
+
+<https://example.com/t> a owl:Ontology .
+
+ex:Product  a owl:Class .
+ex:sku      a owl:DatatypeProperty ;
+            rdfs:domain ex:Product ;
+            rdfs:range xsd:string .
