@@ -25,10 +25,18 @@ from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import CurrentPrincipal, SessionDep, SettingsDep, StoreDep
-from ontology_api.services.authorization import PermissionDeniedError, require_namespace_role
+from ontology_api.repositories.access import AccessRepository
+from ontology_api.repositories.namespaces import NamespaceRepository
+from ontology_api.repositories.versions import VersionRepository
+from ontology_api.services.authorization import (
+    PermissionDeniedError,
+    principal_id_of,
+    require_namespace_role,
+)
+from ontology_core.access import build_access_record
 from ontology_core.deprecation import deprecated_iris_in_results
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
-from ontology_core.models import NamespaceRole
+from ontology_core.models import NamespaceRole, OntologyVersionStatus
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
 from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query
 
@@ -84,6 +92,52 @@ async def deprecated_terms_in_dataset(store: SparqlStore, *, namespace: str) -> 
     return frozenset(found)
 
 
+async def _record_access(
+    session: SessionDep,
+    *,
+    namespace: str,
+    actor: str,
+    query: str,
+    results: dict[str, Any],
+) -> None:
+    """アクセスログを記録する(`P2B-05`、ADR-0018)。
+
+    **失敗してもクエリを失敗させない**(決定3)。不変条件3(射影の失敗は正本への
+    書き込みを失敗させない)と同じ向きの判断である — アクセスログは読み取りの
+    副産物であって、読み取りの前提条件ではない。
+
+    **「記録できなかった」を黙って無かったことにはしない。** 警告としてログに
+    残す。
+    """
+    try:
+        ns = await NamespaceRepository(session).get(namespace)
+        if ns is None:
+            # 権限判定を通っている以上ここには来ないが、来たら記録しない。
+            return
+        current = next(
+            (
+                v
+                for v in await VersionRepository(session).list_for(namespace)
+                if v.status is OntologyVersionStatus.APPROVED
+            ),
+            None,
+        )
+        record = build_access_record(
+            namespace=namespace,
+            actor=actor,
+            query=query,
+            results=results,
+            base_iri=ns.base_iri,
+            default_graph_version=None if current is None else current.version,
+        )
+        await AccessRepository(session).record(record)
+    except Exception:
+        logger.exception(
+            "名前空間 '%s' のアクセスログを記録できませんでした。応答はそのまま返します",
+            namespace,
+        )
+
+
 @router.post("", summary="読み取り専用の SPARQL クエリを実行する")
 async def run_query(
     namespace: str,
@@ -110,6 +164,10 @@ async def run_query(
     **結果に廃止済みの用語が現れたら `X-Ontology-Deprecated-Terms` ヘッダに
     載せる**(`P2B-03`、ADR-0017 決定3)。本文は標準の SPARQL Results JSON の
     ままにする。
+
+    **アクセスログを記録する**(`P2B-05`、ADR-0018)。ADR-0006 決定4 が言う
+    「エージェントへ提供したコンテキスト」はこの経路である。**記録に失敗しても
+    クエリは失敗させない**(読み取りの副産物であって前提条件ではない)。
     """
     try:
         validate_namespace_name(namespace)
@@ -144,4 +202,14 @@ async def run_query(
     if found:
         # ヘッダの値は ASCII に限られる。IRI は ASCII なのでそのまま並べる。
         response.headers[DEPRECATED_TERMS_HEADER] = ", ".join(found)
+
+    # **コンテキストを渡した記録を残す**(P2B-05、ADR-0018 決定4)。
+    # ADR-0006 決定4 が言う「コンテキスト」はこの経路である。
+    await _record_access(
+        session,
+        namespace=namespace,
+        actor=principal_id_of(principal),
+        query=payload.query,
+        results=results,
+    )
     return results

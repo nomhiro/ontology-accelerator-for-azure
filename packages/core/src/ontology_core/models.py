@@ -122,6 +122,64 @@ class OwnerResolution(BaseModel):
     )
 
 
+class AccessEvent(BaseModel):
+    """コンテキストのアクセスログの 1 件(ADR-0018 決定1)。
+
+    **`AuditEvent` とは別物である。** あちらは人の決定(誰が承認したか)、
+    こちらは機械の参照(エージェントに何を渡したか)を記録する。ADR-0006 は
+    後者を「監査の最後のピース」と呼んでいる — オントロジーの履歴が完全でも、
+    実際に何が渡ったかが分からなければ判断の説明は完結しない。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    actor: str = Field(description="Entra のオブジェクト ID")
+    occurred_at: datetime
+    query_text: str = Field(description="クエリ本文(長い場合は切り詰められる)")
+    query_hash: str = Field(description="**全文**の SHA-256。同じクエリをまとめるのに使う")
+    query_truncated: bool = Field(description="`query_text` が切り詰められているか")
+    default_graph_version: str | None = Field(
+        default=None,
+        description="既定グラフの版(承認済みの現行版)。"
+        "**`used_graph_clause` が真なら、これは読んだ版の全体ではない**",
+    )
+    used_graph_clause: bool = Field(
+        description="クエリが `GRAPH` 句を含むか。真なら版の記録が不完全である"
+    )
+    returned_row_count: int
+    returned_term_count: int = Field(
+        description="返した用語のうち、その名前空間が発行した IRI の数"
+    )
+
+
+class AccessPage(BaseModel):
+    """アクセスログの 1 ページ。`AuditPage` と同じ形。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    events: tuple[AccessEvent, ...]
+    next_cursor: int | None = Field(
+        default=None,
+        description="次のページを取るときに `cursor` へ渡す値。`None` なら最後のページ",
+    )
+
+
+class TermAccess(BaseModel):
+    """用語ごとの参照の集約(ADR-0018 決定1)。
+
+    **イベントより長生きする。** 保持期間を過ぎたイベントを消しても
+    「最後にいつ参照されたか」は残らなければならない。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    term_iri: str
+    last_accessed_at: datetime
+    access_count: int
+
+
 class Namespace(BaseModel):
     """オントロジーを隔離する単位。
 

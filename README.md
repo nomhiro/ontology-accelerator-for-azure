@@ -49,10 +49,11 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
   | 操作 | 必要なロール |
   |---|---|
-  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 廃止の検査 / 用語の責任者の参照 | `data-analyst` |
+  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 廃止の検査 / 用語の責任者の参照 / 用語ごとの参照の集約 | `data-analyst` |
   | `publish` / `submit` | `data-steward` |
   | `approve` / `reject` | `maintainer` |
   | 用語の責任者の付与・取り消し | `maintainer` |
+  | アクセスログの照会・削除 | `owner` |
   | 名前空間の削除 / ロールの付与・取り消し | `owner` |
   | 名前空間の作成 / `POST /admin/reconcile` | `platform-admin`(Entra アプリロール) |
 
@@ -67,7 +68,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 416 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 459 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -167,8 +168,8 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
 
-現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、そして廃止のライフサイクルです。
-**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、アクセスログと健全性指標(`P2B-05` / `P2B-06`)、保持ポリシー(`P2B-02`)です。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、そしてコンテキストのアクセスログです。
+**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、健全性指標の集計と提示(`P2B-06`)、保持ポリシー(`P2B-02`)です。
 監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
@@ -458,6 +459,56 @@ curl -G "$API/namespaces/retail-core/versions/2.0.0/diff" \
 
 **監査に保存されるのは要約です。** 版は Blob に不変で残るため、厳密な差分はいつでも再計算できます（監査行に全トリプルを積むと行が非有界に育ちます）。用語の一覧は 50 件で切り、切った場合は `truncated` が `true` になります。
 
+#### エージェントに何を渡したかを記録する(アクセスログ)
+
+**SPARQL クエリを記録します**([ADR-0018](docs/adr/0018-context-access-log.md)、[ADR-0006](docs/adr/0006-ontology-versioning-and-audit.md) 決定4)。オントロジーの履歴が完全でも、**実際にエージェントへ何が渡ったか**が分からなければ判断の説明は完結しません。
+
+記録は 2 つに分かれます。**用途が違うものを 1 つの表で兼ねていません。**
+
+| 口 | 粒度 | 用途 | 権限 |
+|---|---|---|---|
+| `GET .../access-log` | クエリ 1 回 = 1 行 | 「いつ・誰に・どの版の何を返したか」 | **`owner`** |
+| `GET .../term-access` | 用語 1 件 = 1 行 | 「この用語は最後にいつ参照されたか」 | `data-analyst` |
+
+```bash
+# 誰がいつ何を問い合わせたか(owner が必要)
+curl -G "$API/namespaces/retail-core/access-log" \
+  --data-urlencode "actor=<Entra のオブジェクト ID>" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 用語ごとの参照(古い順。data-analyst で読める)
+curl "$API/namespaces/retail-core/term-access" -H "Authorization: Bearer $TOKEN"
+```
+
+**イベントの照会に `owner` を要求するのは、これが同僚の行動の記録だから**です。監査証跡（`GET .../audit`）を `data-analyst` に開いたのとは判断が違います — あちらは版単位の `decisions` から同じ情報が集められたので、集約を絞る意味がありませんでした。「誰がいつ何を問い合わせたか」は他のどの口からも導出できません。
+
+**集約は個人を特定しません**（用語と時刻と回数だけ）。健全性指標として広く見られるべきなので分析者に開いています。
+
+**`used_graph_clause` が真の行では、`default_graph_version` は読んだ版の全体ではありません。** `GRAPH` 句を明示したクエリは他の版を読みうるためです。どの版かを厳密に知るには SPARQL の解析器が必要になるので、**解析器を持ち込むより「不完全であることを記録する」ほうを選んでいます。**
+
+**参照回数はクエリ 1 回で 1 回**です（同じ用語が結果に何行現れても 1 回）。行数を数えると `LIMIT` の違いで指標が動いてしまいます。
+
+**集約されるのはその名前空間が発行した IRI だけです。** `rdf:type` の参照回数は指標になりませんし、**使われていない外部 IRI を「縮める」ことはできません**。副作用として、この表の行数はその名前空間の用語数で上限が付きます（エージェントの稼働に比例して増えません）。
+
+**記録に失敗してもクエリは失敗しません。** アクセスログは読み取りの副産物であって、読み取りの前提条件ではありません（不変条件3 と同じ向きの判断です）。
+
+##### 保持期間
+
+**`access_events` は運用者が明示的に削除できます。** 監査証跡（`audit_events`）は `DELETE` 権限を剥奪していますが（[ADR-0011](docs/adr/0011-database-privilege-separation.md) 決定2）、アクセスログは性質が違います — 人の決定の記録は緩やかに増えて消す理由がありませんが、機械の参照の記録はエージェントの稼働に比例して無限に伸びます。
+
+```bash
+curl -X POST "$API/namespaces/retail-core/access-log/purge" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"before": "2026-06-01T00:00:00Z", "reason": "保持期間 90 日の運用ポリシー"}'
+```
+
+**「消せる」を「黙って消える」にはしていません。**
+
+- **自動の削除ジョブはありません。** 運用者が `before` を明示して呼びます（既定値はありません）
+- **`reason` は必須です**
+- **削除したこと自体が `audit_events` に記録されます。** 監査証跡の側は追記専用なので、**この記録は消えません**
+- **`term_access`（集約）は消えません。** 消した瞬間に「90 日参照されていない」が計算不能になるためです
+
 #### 監査証跡を照会する
 
 **`GET /namespaces/{ns}/audit` で名前空間全体の監査を新しい順に読めます**（`data-analyst` が必要）。「先週この名前空間で何が起きたか」「この人が何をしたか」を追うための口です。版単位の `decisions` が「1 つの版の根拠」を起きた順に返すのに対し、こちらは絞り込みとページングつきで名前空間全体を返します。
@@ -695,7 +746,7 @@ AWS 版は Apache-2.0 で公開されており、フォークすることも法�
 - [`docs/architecture.md`](docs/architecture.md) — アーキテクチャ、グラフ永続化設計、Azure サービスマッピング、認証・認可・セキュリティ
 - [`docs/cost-estimate.md`](docs/cost-estimate.md) — 月額費用試算と単価の出典・計算式
 - [`docs/third-party-licenses.md`](docs/third-party-licenses.md) — 第三者コンポーネントのライセンス
-- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0017)。**却下した代替案とその理由**を残しています
+- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0018)。**却下した代替案とその理由**を残しています
 
 ## コントリビューション
 

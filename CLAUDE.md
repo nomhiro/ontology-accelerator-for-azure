@@ -65,7 +65,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 416 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 459 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -119,6 +119,8 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **FastAPI の `Query(...)` を既定値の位置に書くと、ハンドラを直接呼ぶテストで `Query` オブジェクトが値として流れ込む。** `limit: int = Query(default=50)` の既定値は `50` ではなく `Query` インスタンスである。FastAPI 経由なら解決されるので、**HTTP で叩くテストだけでは気づけない**。このリポジトリのルータのテストはハンドラを直接呼ぶため必ず踏む。`limit: Annotated[int, Query(...)] = 50` と書けば既定値は素の値になる。
 
 **rdflib の空白ノードの正規化は空白ノードの数だけで決まり、急激に伸びる。** トリプル総数はほとんど効かない。実測で 2 グラフの差分が空白ノード 300 個で 2〜4.5 秒、500 個で 8 秒、1,000 個で 42 秒（`graph_diff`）。SHACL の property shape は 1 つずつ空白ノードを作るので実用規模で数千に達しうる。**上限（`ontology_core.diff.MAX_BLANK_NODES`）を超えたら計算せず、「計算できなかった」と返す**（[ADR-0016](docs/adr/0016-semantic-diff.md) 決定5）。なお `graph_diff` は引数を内部で `to_canonical_graph` に通すので、外から `to_isomorphic` を挟む必要は無い。
+
+**`server_default` は挿入時にしか効かない。** `INSERT ... ON CONFLICT DO UPDATE` の更新側で列に触らないと、「最後に更新した時刻」が**最初の挿入時刻のまま止まる**。UPSERT で時刻を持つ列は `set_` に必ず含める（`term_access.last_accessed_at`）。**テストで `>=` を使うとこの不具合を見逃す** — 等号を許すと更新していない実装でも通る（変異テストで実際に見逃した）。
 
 **PostgreSQL の `now()` はトランザクション開始時刻を返す。** `server_default=now()` の列は、同一トランザクション内で挿入した複数行が**同じ値になる**。時系列で並べたいときは主キーを第二キーに加える（`audit_events` の決定記録の並び順で実際に必要になった）。
 

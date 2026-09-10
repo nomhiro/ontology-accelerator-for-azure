@@ -88,6 +88,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ontology_owner IN SCHEMA public
 
 **`audit_events` への `DELETE` は与えない。**監査は追記専用にする。
 
+> **`access_events`(`P2B-05`)には `DELETE` を与える([ADR-0018](0018-context-access-log.md) 決定2)。** 性質が違う — `audit_events` は人の決定の記録で件数が緩やかに増え、消す理由が無い。`access_events` は機械の参照の記録で、エージェントの稼働に比例して無限に伸びる。ただし削除は運用者の明示的な操作に限り、**削除したこと自体を `audit_events` に記録する**ので、消えた事実は消せない場所に残る。
+
 ```sql
 REVOKE DELETE ON audit_events FROM "<UAMI 名>";
 ```

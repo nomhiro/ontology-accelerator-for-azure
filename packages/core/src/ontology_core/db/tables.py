@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -141,6 +142,78 @@ class OntologyVersionRow(Base):
     approved_by: Mapped[str | None] = mapped_column(String(255), default=None)
     # 射影が完了した時刻。NULL なら未射影で、reconcile の対象になる。
     projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class AccessEventRow(Base):
+    """コンテキストのアクセスログ(ADR-0018 決定1)。**クエリ 1 回 = 1 行。**
+
+    `audit_events` とは**性質が違う**。あちらは人の決定の記録で件数が緩やかに
+    増え、消す理由が無いので追記専用にしている(ADR-0011 決定2)。こちらは
+    機械の参照の記録で、エージェントの稼働に比例して無限に伸びる。そのため
+    **保持期間があり、`DELETE` を与える**。ただし削除は運用者の明示的な操作に
+    限り、**削除したこと自体を `audit_events` に記録する**(決定2)。
+
+    **返した用語の一覧は載せない。** 1 クエリで数千の用語を返しうるので、
+    行が非有界に育つ。オントロジーは不変リビジョンなので(不変条件7)、
+    記録したクエリと版で再実行できる。件数だけを持つ。
+    """
+
+    __tablename__ = "access_events"
+    __table_args__ = (
+        Index("ix_access_events_namespace_occurred", "namespace", "occurred_at"),
+        Index("ix_access_events_actor", "actor"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(String(63), nullable=False)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # クエリは切り詰めて保存し、全文のハッシュを別に持つ。
+    # **同じクエリをまとめられるようにするため**にハッシュが要る(切り詰めた
+    # 文字列が一致しても元のクエリが同じとは限らない)。
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    query_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    query_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # `GRAPH` 句なしのクエリは承認済みの現行版だけを見る(ADR-0010 決定5)。
+    # 明示した場合は他の版を読みうるので、**版の欄が不完全であることを
+    # `used_graph_clause` で伝える**(ADR-0018 決定7)。
+    default_graph_version: Mapped[str | None] = mapped_column(String(64), default=None)
+    used_graph_clause: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    returned_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    returned_term_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class TermAccessRow(Base):
+    """用語ごとの参照の集約(ADR-0018 決定1)。**用語 1 件 = 1 行(更新)。**
+
+    **イベントから導出できるが、イベントより長生きする。** 保持期間を過ぎた
+    イベントを消しても「最後にいつ参照されたか」は残らなければならない
+    (消した瞬間に「90 日参照されていない」が計算不能になる)。そのため
+    再構築可能な派生物ではなく、独立した記録として扱う。
+
+    **その名前空間が発行した IRI だけを記録する**(決定6)。健全性指標が
+    答えたいのは「自分のオントロジーのどの用語が使われていないか」であり、
+    `rdf:type` の参照回数は指標にならない。副作用として行数に**その名前空間の
+    用語数で上限が付く**(エージェントの稼働に比例して増えない)。
+    """
+
+    __tablename__ = "term_access"
+    __table_args__ = (
+        UniqueConstraint("namespace", "term_iri", name="uq_term_access_ns_term"),
+        Index("ix_term_access_namespace_last", "namespace", "last_accessed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(
+        ForeignKey("namespaces.name", ondelete="CASCADE"), nullable=False
+    )
+    term_iri: Mapped[str] = mapped_column(String(1024), nullable=False)
+    last_accessed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    access_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class AuditEventRow(Base):

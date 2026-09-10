@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ontology_api import __version__
-from ontology_api.routers import audit, namespaces, sparql, term_owners, versions
+from ontology_api.routers import access, audit, namespaces, sparql, term_owners, versions
 from ontology_core.config import AuthMode, get_settings
 
 _settings = get_settings()
@@ -39,6 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(access.router)
 app.include_router(audit.router)
 app.include_router(namespaces.router)
 app.include_router(sparql.router)

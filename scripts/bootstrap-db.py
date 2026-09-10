@@ -241,6 +241,13 @@ async def _post(app_role: str, database: str) -> None:
         # 監査は追記専用にする(ADR-0011 決定2)。audit_events はマイグレーションで
         # 初めて作られるため、この post フェーズは alembic upgrade head の後で
         # なければならない。
+        #
+        # **`access_events` には DELETE を残す**(ADR-0018 決定2)。性質が違う —
+        # `audit_events` は人の決定の記録で件数が緩やかに増え、消す理由が無い。
+        # `access_events` は機械の参照の記録で、エージェントの稼働に比例して
+        # 無限に伸びる。ただし削除は運用者の明示的な操作
+        # (`POST /admin/access-log/purge`)に限り、**削除したこと自体を
+        # `audit_events` に記録する**ので、消えた事実は消せない場所に残る。
         await conn.execute(f"REVOKE DELETE ON audit_events FROM {quoted_role}")
     finally:
         await conn.close()
