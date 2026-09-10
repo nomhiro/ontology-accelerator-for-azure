@@ -61,6 +61,7 @@ from ontology_core.deprecation import (
 from ontology_core.diff import DiffError, OntologyDiff, diff_ontologies
 from ontology_core.graphs import dataset_name, version_graph_iri
 from ontology_core.models import OntologyVersion, OntologyVersionStatus
+from ontology_core.retention import ProjectionTarget, decide_projection
 from ontology_core.shacl import ShaclReport, validate_turtle_with_shacl
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
 from ontology_core.turtle import validate_turtle
@@ -130,21 +131,43 @@ class InvalidTransitionError(Exception):
     """現在の状態から許されない遷移を要求したことを表す(例: draft を approve)。"""
 
 
-def _build_manifest(namespace: str, versions: list[OntologyVersion]) -> dict[str, Any]:
+def _build_manifest(
+    namespace: str, versions: list[OntologyVersion], *, retain_superseded: int
+) -> dict[str, Any]:
     """PostgreSQL 上の状態からマニフェスト(ADR-0010 決定7)を組み立てる。
 
-    `draft` は含めない(ローダが射影しないため、渡す必要が無い)。`current` は
-    `approved` の版で、存在しなければ `None`(JSON では `null`)。
+    **schema 2 から、各版の射影先(`projection`)を載せる**(ADR-0019 決定1)。
+    保持ポリシーの判断は `ontology_core.retention` の 1 箇所にあり、**ローダは
+    判断済みの結果を解釈するだけ**である。以前は判断がローダのシェル関数に
+    あったため、`reconcile` は食い違いを避けて `superseded` の在否を不問に
+    しており、**保持ポリシーを誰も強制していなかった**。
+
+    `draft` は含めない(ローダが射影しないため渡す必要が無い。ADR-0010 決定8)。
+    `current` は `approved` の版で、存在しなければ `None`(JSON では `null`)。
     """
+    decided = decide_projection(versions, retain_superseded=retain_superseded)
     included = [v for v in versions if v.status is not OntologyVersionStatus.DRAFT]
     current = next(
-        (v.version for v in included if v.status is OntologyVersionStatus.APPROVED), None
+        (
+            v.version
+            for v in included
+            if decided.get(v.version) is ProjectionTarget.NAMED_AND_DEFAULT
+        ),
+        None,
     )
     return {
-        "schema": 1,
+        "schema": 2,
         "namespace": namespace,
         "current": current,
-        "versions": [{"version": v.version, "status": v.status.value} for v in included],
+        "retain_superseded": max(0, retain_superseded),
+        "versions": [
+            {
+                "version": v.version,
+                "status": v.status.value,
+                "projection": decided[v.version].value,
+            }
+            for v in included
+        ],
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
@@ -243,6 +266,11 @@ class ReconcileReport:
     # 正常な運用ではストアの内容が失われることはない。空でないなら、ローダの
     # スキップか、ストアの再作成か、手動操作が起きている。
     graphs_repaired: list[str] = field(default_factory=list)
+    # 保持ポリシーの外に出たので削除した名前付きグラフ(P2B-02、ADR-0019 決定4)。
+    #
+    # **`graphs_removed`(正本に無い残留)とは分ける。** 前者は「正本にあるが
+    # 載せない版」、後者は「正本に無い版」で、運用者が読むべき意味が違う。
+    retention_removed: list[str] = field(default_factory=list)
 
 
 def _next_version(previous: OntologyVersion | None) -> str:
@@ -278,11 +306,19 @@ class ProjectionService:
         blob: OntologyBlobStore,
         store: SparqlStore,
         graph_iri_base: str,
+        retain_superseded: int = 0,
     ) -> None:
+        """
+        Args:
+            retain_superseded: 名前付きグラフに残す `superseded` の個数
+                (ADR-0019 決定2)。**既定を 0 にしているのは既存の呼び出しを
+                壊さないため**で、ルータは `Settings.superseded_retain` を渡す。
+        """
         self._session = session
         self._blob = blob
         self._store = store
         self._base = graph_iri_base
+        self._retain_superseded = retain_superseded
 
     async def publish(
         self,
@@ -482,7 +518,9 @@ class ProjectionService:
         失敗しても永久には失われない。
         """
         versions_list = await VersionRepository(self._session).list_for(namespace)
-        manifest = _build_manifest(namespace, versions_list)
+        manifest = _build_manifest(
+            namespace, versions_list, retain_superseded=self._retain_superseded
+        )
         try:
             await self._blob.put_manifest(namespace, manifest)
         except BlobStoreError:
@@ -947,16 +985,28 @@ class ProjectionService:
                 for version in ns_versions
                 if version.status is not OntologyVersionStatus.DRAFT
             }
-            # 欠落の検出は `superseded` を除いた集合で行う(P1-19、ADR-0013 決定3)。
-            # `superseded` は既定でローダが読み込まないため、無いのが正常。
-            # **逆に、存在している `superseded` は残留として削除しない**
-            # (上の `expected` は draft 以外すべてを含む)。在否をどちらも
-            # 不問にすることで、ストアに載せるかの決定をローダ 1 箇所に保つ。
+            # ---- 保持ポリシーで在否を決める(P2B-02、ADR-0019 決定1・4) ----
+            #
+            # **以前は `superseded` の在否をどちらも不問にしていた。** 判断が
+            # ローダのシェル関数にあり、食い違いを避けるために「判断を持たない
+            # 側に降りた」結果である。**そのため保持ポリシーを誰も強制して
+            # いなかった** — `approve` は前の版の名前付きグラフを外さないので、
+            # ストアの内容が「再構築したかどうか」で変わっていた。
+            #
+            # 判断が `ontology_core.retention` の 1 箇所に集まったので、
+            # ここで在否を決められる。
+            decided = decide_projection(ns_versions, retain_superseded=self._retain_superseded)
             must_exist = {
                 version.graph_iri: version.status.value
                 for version in ns_versions
-                if version.status
-                in (OntologyVersionStatus.IN_REVIEW, OntologyVersionStatus.APPROVED)
+                if decided[version.version].loads_named
+            }
+            # 保持ポリシーが「載せない」と決めた版のグラフ。**正本にはあるが
+            # ストアには置かない**ので、残留していれば削除する。
+            must_not_exist = {
+                version.graph_iri: version.status.value
+                for version in ns_versions
+                if not decided[version.version].loads_named
             }
             # ---- 欠落した名前付きグラフを報告して修復する(ADR-0013) ----
             by_iri = {v.graph_iri: v for v in ns_versions}
@@ -969,14 +1019,35 @@ class ProjectionService:
                 else:
                     report.failures.append(f"{ns.name}: {graph_iri} の再射影に失敗")
 
+            # ---- 保持ポリシーの外に出たグラフを削除する(ADR-0019 決定4) ----
+            #
+            # **`approve` は外さない**(不変条件3: 正本への書き込みの成否を射影の
+            # 操作に依存させない)。回収する仕組みがあるなら、最初からそこに任せる。
+            for graph_iri in sorted(set(must_not_exist) & set(actual)):
+                try:
+                    await self._store.delete_graph(graph_iri, dataset=dataset)
+                except SparqlStoreError as exc:
+                    report.failures.append(f"{ns.name}: {graph_iri} の削除に失敗 ({exc})")
+                    continue
+                report.retention_removed.append(
+                    f"{ns.name}: {graph_iri} ({must_not_exist[graph_iri]})"
+                )
+
             # ---- 既定グラフが空でないことを別に確認する(ADR-0013 決定4) ----
             #
             # `list_graphs` は名前付きグラフしか返さないので、既定グラフの欠落は
             # 上のループには映らない。**エージェントが読むのは既定グラフ**
             # (ADR-0010 決定6)なので、ここを検査対象から外すと最も害の大きい
             # 障害を見逃す。
+            # **保持ポリシーの決定と同じ基準で現行版を選ぶ。** `approved` が
+            # 2 つある状態(本来起こらない)でも、既定グラフに載るのは
+            # `decide_projection` が選んだ 1 つだけである。
             current_approved = next(
-                (v for v in ns_versions if v.status is OntologyVersionStatus.APPROVED),
+                (
+                    v
+                    for v in ns_versions
+                    if decided[v.version] is ProjectionTarget.NAMED_AND_DEFAULT
+                ),
                 None,
             )
             if current_approved is not None:
@@ -1010,7 +1081,11 @@ class ProjectionService:
         # (ADR-0010 決定7)。マニフェストは射影であり正本ではないため、
         # reconcile が正本から作り直せることを保証する。
         for ns in namespaces:
-            manifest = _build_manifest(ns.name, await versions.list_for(ns.name))
+            manifest = _build_manifest(
+                ns.name,
+                await versions.list_for(ns.name),
+                retain_superseded=self._retain_superseded,
+            )
             try:
                 await self._blob.put_manifest(ns.name, manifest)
             except BlobStoreError as exc:

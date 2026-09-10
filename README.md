@@ -68,7 +68,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 459 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 477 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -168,8 +168,8 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
 
-現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、そしてコンテキストのアクセスログです。
-**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、健全性指標の集計と提示(`P2B-06`)、保持ポリシー(`P2B-02`)です。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、そして保持ポリシーです。
+**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、健全性指標の集計と提示(`P2B-06`)、OWL 推論器の CI 投入(`P2B-01`)です。
 監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
@@ -599,7 +599,7 @@ curl -X DELETE -G "$API/namespaces/retail-core/term-owners" \
 
 #### `POST /admin/reconcile` の報告の読み方
 
-トリプルストアは正本ではなく**再構築可能な射影**です（[ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md)）。`reconcile` は正本（PostgreSQL + Blob）を基準にストアの状態を揃えます。**背景では動きません** — 運用者が明示的に叩いたときだけ実行されます（[ADR-0013](docs/adr/0013-reconcile-repairs-observed-divergence.md) 決定6）。
+トリプルストアは正本ではなく**再構築可能な射影**です（[ADR-0002](docs/adr/0002-triple-store-as-rebuildable-projection.md)）。**保持ポリシーの外に出た版の削除（`retention_removed`）もここで行われます**（上記「ストアに載せる版を制御する」）。`reconcile` は正本（PostgreSQL + Blob）を基準にストアの状態を揃えます。**背景では動きません** — 運用者が明示的に叩いたときだけ実行されます（[ADR-0013](docs/adr/0013-reconcile-repairs-observed-divergence.md) 決定6）。
 
 報告の各項目は意味が違います。
 
@@ -616,6 +616,39 @@ curl -X DELETE -G "$API/namespaces/retail-core/term-owners" \
 **`graphs_repaired` が空でないことは成功報告ではありません。** 正常な運用でストアの内容が失われることはないので、空でないなら上流に原因があります（ローダのスキップ、ストアの再作成、手動操作）。`reconcile` はマニフェストも正本から再生成するため、原因がマニフェストの欠落・破損であれば原因自体も直りますが、それ以外（Blob へ到達できない、`GRAPH_IRI_BASE` の食い違い、ローダのクラッシュ）なら**毎回症状だけを消し続けます**。
 
 **`superseded` の版は `reconcile` の対象外です。** ストアに載せるかを決めるのはローダだけ（`SUPERSEDED_RETAIN`）で、`reconcile` は欠落を報告も修復もせず、存在していても削除しません。反映させる手段は再構築です。
+
+#### ストアに載せる版を制御する(保持ポリシー)
+
+**既定では、名前付きグラフに載るのは「承認済みの現行版」と「審査中の版」だけです。** 現行版に置き換わった版（`superseded`）は載りません（[ADR-0019](docs/adr/0019-retention-policy.md)）。
+
+`SUPERSEDED_RETAIN` で**直近 N 版**を残せます。
+
+```bash
+azd env set SUPERSEDED_RETAIN 2   # 直近 2 版を名前付きグラフに残す
+```
+
+| 状態 | 既定グラフ | 名前付きグラフ |
+|---|---|---|
+| `approved`（現行版） | 載る | 載る |
+| `in-review` | 載らない | 載る |
+| `superseded` | 載らない | **直近 `SUPERSEDED_RETAIN` 版だけ** |
+| `draft` | 載らない | 載らない |
+
+**「直近」は承認された時刻（`approved_at`）で決めます。** バージョン文字列では並べません — `1.0.0-rc1` や `2026-09` のような版を許しているため、文字列順は「直近」を意味しないからです。
+
+**判断は API 側で行い、マニフェスト（`_state.json`）の `projection` で運びます。** ローダは判断済みの結果を解釈するだけで、状態を再判定しません。**判断が 2 か所にあると、片方だけ直して食い違います。**
+
+```json
+{ "schema": 2, "current": "3.0.0", "retain_superseded": 1,
+  "versions": [
+    { "version": "3.0.0", "status": "approved",   "projection": "named default" },
+    { "version": "2.0.0", "status": "superseded", "projection": "named" },
+    { "version": "1.0.0", "status": "superseded", "projection": "skip:superseded-beyond-retain" } ] }
+```
+
+**保持ポリシーの外に出た版は `POST /admin/reconcile` が外します。** `approve` は外しません — 正本への書き込みの成否を射影の操作に依存させないためです（不変条件3）。`reconcile` の報告では `retention_removed` に出ます（`graphs_removed`（正本に無い残留）とは意味が違うので分けています）。
+
+> **`SUPERSEDED_RETAIN` の挙動を修正しました（2026-09-10）。** 以前は名前が「N 版保持」なのに実装は真偽値で、**`0` 以外にすると全部載っていました**。現在は個数として効きます。`0` 以外にしていた場合、載っていた版のうち直近 N 版を超えるものは `reconcile` で外れます（報告に出るので黙っては消えません）。
 
 #### Blob のレイアウト
 
@@ -746,7 +779,7 @@ AWS 版は Apache-2.0 で公開されており、フォークすることも法�
 - [`docs/architecture.md`](docs/architecture.md) — アーキテクチャ、グラフ永続化設計、Azure サービスマッピング、認証・認可・セキュリティ
 - [`docs/cost-estimate.md`](docs/cost-estimate.md) — 月額費用試算と単価の出典・計算式
 - [`docs/third-party-licenses.md`](docs/third-party-licenses.md) — 第三者コンポーネントのライセンス
-- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0018)。**却下した代替案とその理由**を残しています
+- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0019)。**却下した代替案とその理由**を残しています
 
 ## コントリビューション
 

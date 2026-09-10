@@ -84,6 +84,9 @@ param ontologyBlobContainer string
 @description('名前付きグラフ IRI の接頭辞。infra/modules/fuseki.bicep の graphIriBase と同じ値を main.bicep から渡すこと(値がずれると射影したグラフを ProjectionService が見つけられなくなる)。')
 param graphIriBase string = 'urn:ontology:graph'
 
+@description('名前付きグラフに残す superseded の個数(ADR-0019、P2B-02)。保持ポリシーの判断は API 側で行い、判断済みの結果をマニフェストで運ぶため、**この値を知る必要があるのは API だけである**(ローダ側の同名の環境変数は、projection を持たない古いマニフェストのためだけに残っている)。既定 0 は「載せない」。型が string なのは azd のパラメータ置換が文字列を渡すため。')
+param supersededRetain string = '0'
+
 @description('正本 TTL を置く Blob のプレフィックス。containers/fuseki/load-snapshot.sh の BLOB_PREFIX と揃える。ADR-0010 決定8で `approved/` から改名した。')
 param blobPrefix string = 'versions/'
 
@@ -250,6 +253,13 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'GRAPH_IRI_BASE'
               value: graphIriBase
+            }
+            {
+              // 保持ポリシー(ADR-0019 決定1)。**Fuseki 側には渡さない** —
+              // 値を 2 箇所に置くと食い違う。ローダはマニフェストの
+              // projection に従う。
+              name: 'SUPERSEDED_RETAIN'
+              value: supersededRetain
             }
             {
               name: 'BLOB_PREFIX'

@@ -132,7 +132,11 @@ async def publish_version(
     ここで 200 に落とす。
     """
     service = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+        session=session,
+        blob=blob,
+        store=store,
+        graph_iri_base=settings.graph_iri_base,
+        retain_superseded=settings.superseded_retain,
     )
     try:
         # `namespace` はこの後 Blob パス・グラフ IRI・Fuseki データセット名の
@@ -266,7 +270,11 @@ async def validate_version_shacl(
     「確かめられなかった」を混同すると、壊れた定義を通してしまう。
     """
     service = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+        session=session,
+        blob=blob,
+        store=store,
+        graph_iri_base=settings.graph_iri_base,
+        retain_superseded=settings.superseded_retain,
     )
     try:
         validate_namespace_name(namespace)
@@ -304,7 +312,11 @@ async def submit_version(
     validate_namespace_name(namespace)
     validate_version(version)
     service = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+        session=session,
+        blob=blob,
+        store=store,
+        graph_iri_base=settings.graph_iri_base,
+        retain_superseded=settings.superseded_retain,
     )
     try:
         await _require(
@@ -352,7 +364,11 @@ async def approve_version(
     validate_namespace_name(namespace)
     validate_version(version)
     service = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+        session=session,
+        blob=blob,
+        store=store,
+        graph_iri_base=settings.graph_iri_base,
+        retain_superseded=settings.superseded_retain,
     )
     try:
         await _require(
@@ -441,7 +457,11 @@ async def check_version_deprecations(
     )
 
     service = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+        session=session,
+        blob=blob,
+        store=store,
+        graph_iri_base=settings.graph_iri_base,
+        retain_superseded=settings.superseded_retain,
     )
     versions = VersionRepository(session)
     if base is None:
@@ -531,7 +551,11 @@ async def diff_version(
     )
 
     service = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+        session=session,
+        blob=blob,
+        store=store,
+        graph_iri_base=settings.graph_iri_base,
+        retain_superseded=settings.superseded_retain,
     )
     versions = VersionRepository(session)
     target = await versions.get(namespace, version)
@@ -595,7 +619,11 @@ async def reject_version(
     validate_namespace_name(namespace)
     validate_version(version)
     service = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+        session=session,
+        blob=blob,
+        store=store,
+        graph_iri_base=settings.graph_iri_base,
+        retain_superseded=settings.superseded_retain,
     )
     try:
         await _require(
@@ -633,6 +661,10 @@ async def reconcile(
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     service = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base=settings.graph_iri_base
+        session=session,
+        blob=blob,
+        store=store,
+        graph_iri_base=settings.graph_iri_base,
+        retain_superseded=settings.superseded_retain,
     )
     return await service.reconcile()

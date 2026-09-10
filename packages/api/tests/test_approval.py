@@ -127,7 +127,9 @@ async def test_submit_moves_draft_to_in_review_and_projects_named_graph(
 
     manifest = await _manifest(blob, "retail-core")
     assert manifest["current"] is None
-    assert manifest["versions"] == [{"version": draft.version, "status": "in-review"}]
+    assert manifest["versions"] == [
+        {"version": draft.version, "status": "in-review", "projection": "named"}
+    ]
 
 
 async def test_submit_rejects_non_draft_with_409(prepared: Prepared) -> None:
@@ -185,7 +187,9 @@ async def test_approve_projects_named_and_default_graph_and_writes_approved_by(
 
     manifest = await _manifest(blob, "retail-core")
     assert manifest["current"] == draft.version
-    assert manifest["versions"] == [{"version": draft.version, "status": "approved"}]
+    assert manifest["versions"] == [
+        {"version": draft.version, "status": "approved", "projection": "named default"}
+    ]
 
 
 async def test_approve_rejects_already_approved_with_409(prepared: Prepared) -> None:
@@ -231,13 +235,29 @@ async def test_approve_supersedes_previous_approved_automatically(prepared: Prep
 
     # 既定グラフは v2 の内容だけになっている(v1 は自動的に置き換わる)。
     assert store.default_graphs["retail-core"] == ttl2
-    # v1 の名前付きグラフ自体は残る(保持ポリシーの範囲、監査目的)。
+    # **`approve` は v1 の名前付きグラフを外さない**(ADR-0019 決定4)。
+    # 不変条件3 により、正本への書き込みの成否を射影の操作に依存させない。
+    # 保持ポリシーの外に出た版を外すのは `reconcile` の仕事である。
     assert store.graphs[("retail-core", v1.graph_iri)] == TTL
 
     manifest = await _manifest(blob, "retail-core")
     assert manifest["current"] == v2.version
-    assert {"version": v1.version, "status": "superseded"} in manifest["versions"]
-    assert {"version": v2.version, "status": "approved"} in manifest["versions"]
+    # **schema 2 から `projection` が入る**(ADR-0019 決定1)。保持ポリシーの
+    # 判断は `ontology_core.retention` の 1 箇所にあり、ローダは判断済みの
+    # 結果を解釈するだけになった。既定の `SUPERSEDED_RETAIN=0` では
+    # `superseded` は載せない。
+    assert manifest["schema"] == 2
+    assert manifest["retain_superseded"] == 0
+    assert {
+        "version": v1.version,
+        "status": "superseded",
+        "projection": "skip:superseded-beyond-retain",
+    } in manifest["versions"]
+    assert {
+        "version": v2.version,
+        "status": "approved",
+        "projection": "named default",
+    } in manifest["versions"]
 
 
 async def test_reject_moves_in_review_to_draft_and_removes_named_graph(prepared: Prepared) -> None:
@@ -357,7 +377,9 @@ async def test_reconcile_regenerates_manifest_from_postgres(prepared: Prepared) 
 
     manifest = await _manifest(blob, "retail-core")
     assert manifest["current"] == v1.version
-    assert manifest["versions"] == [{"version": v1.version, "status": "approved"}]
+    assert manifest["versions"] == [
+        {"version": v1.version, "status": "approved", "projection": "named default"}
+    ]
 
 
 # ---- P1-17: reject の名前付きグラフ削除が失敗したときの回収 ----
@@ -681,12 +703,19 @@ async def test_reconcile_does_not_repair_superseded_graphs(prepared: Prepared) -
     assert all(old.graph_iri not in m for m in report.missing_graphs)
 
 
-async def test_reconcile_keeps_a_present_superseded_graph(prepared: Prepared) -> None:
-    """存在している `superseded` のグラフは残留として削除しない(ADR-0013 決定3)。"""
-    session, blob = prepared
-    store = FakeStore()
+async def _two_approved_versions(
+    session: object, blob: object, store: FakeStore, *, retain: int
+) -> tuple[ProjectionService, str]:
+    """1 版を承認してから 2 版目を承認し、1 版目を `superseded` にする。
+
+    戻り値は (サービス, 1 版目のグラフ IRI)。
+    """
     svc = ProjectionService(
-        session=session, blob=blob, store=store, graph_iri_base="urn:ontology:graph"
+        session=session,  # type: ignore[arg-type]
+        blob=blob,  # type: ignore[arg-type]
+        store=store,
+        graph_iri_base="urn:ontology:graph",
+        retain_superseded=retain,
     )
     v1 = await svc.publish(namespace="retail-core", turtle=TTL, actor="alice")
     await svc.submit(namespace="retail-core", version=v1.version, actor="alice")
@@ -696,11 +725,53 @@ async def test_reconcile_keeps_a_present_superseded_graph(prepared: Prepared) ->
     )
     await svc.submit(namespace="retail-core", version=v2.version, actor="alice")
     await svc.approve(namespace="retail-core", version=v2.version, actor="bob")
-
     store.datasets = ["retail-core"]
+    return svc, old.graph_iri
+
+
+async def test_reconcile_removes_a_superseded_graph_beyond_retention(
+    prepared: Prepared,
+) -> None:
+    """**保持ポリシーの外に出た `superseded` のグラフを削除する**(ADR-0019 決定4)。
+
+    以前は「存在している `superseded` は残留として削除しない」としていた。
+    判断がローダのシェル関数にあり、食い違いを避けて**判断を持たない側に
+    降りていた**ためである。その結果**保持ポリシーを誰も強制しておらず**、
+    ストアの内容が「再構築したかどうか」で変わっていた。
+
+    判断が `ontology_core.retention` の 1 箇所に集まったので、ここで強制する。
+
+    **`graphs_removed`(正本に無い残留)とは別の欄に報告する。** 前者は
+    「正本にあるが載せない版」、後者は「正本に無い版」で意味が違う。
+    """
+    session, blob = prepared
+    store = FakeStore()
+    svc, old_iri = await _two_approved_versions(session, blob, store, retain=0)
+
+    assert ("retail-core", old_iri) in store.graphs, "approve は外さない(前提の確認)"
+
     report = await svc.reconcile()
 
-    assert ("retail-core", old.graph_iri) in store.graphs
+    assert ("retail-core", old_iri) not in store.graphs
+    assert any(old_iri in entry for entry in report.retention_removed)
+    assert report.graphs_removed == [], "正本に無い残留とは別の欄に出す"
+
+
+async def test_reconcile_keeps_a_superseded_graph_within_retention(
+    prepared: Prepared,
+) -> None:
+    """`SUPERSEDED_RETAIN=1` なら直近 1 版は残る(ADR-0019 決定2)。
+
+    **以前の実装では 0 以外なら全部載っていた**ので、この区別が付かなかった。
+    """
+    session, blob = prepared
+    store = FakeStore()
+    svc, old_iri = await _two_approved_versions(session, blob, store, retain=1)
+
+    report = await svc.reconcile()
+
+    assert ("retail-core", old_iri) in store.graphs
+    assert report.retention_removed == []
     assert report.graphs_removed == []
 
 

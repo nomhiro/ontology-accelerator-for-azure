@@ -56,6 +56,9 @@
     "logLevel": {
       "value": "${LOG_LEVEL=INFO}"
     },
+    "supersededRetain": {
+      "value": "${SUPERSEDED_RETAIN=0}"
+    },
     "apiImageName": {
       "value": "${SERVICE_API_IMAGE_NAME}"
     },

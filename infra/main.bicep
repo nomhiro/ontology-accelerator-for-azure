@@ -75,6 +75,8 @@ param entraApiAudience string = ''
 
 @description('アプリケーションのログレベル。')
 param logLevel string = 'INFO'
+@description('名前付きグラフに残す superseded の個数(ADR-0019、P2B-02)。0 は「載せない」。増やすと GRAPH 句で過去の版を参照できる期間が伸びるが、ストアの容量と再構築時間も増える。**型が string なのは azd のパラメータ置換が文字列を渡すため**(int で宣言すると ARM が型エラーになる。fusekiCpu が同じ理由で string になっている)。値の検証は API 側の Settings が行う。')
+param supersededRetain string = '0'
 
 // ---------------------------------------------------------------------------
 // PostgreSQL
@@ -130,6 +132,7 @@ var ontologyBlobContainer = 'ontologies'
 // プレフィックス。fuseki.bicep (ローダ) と api.bicep (ProjectionService) の
 // 両方が同じ値を見る必要があるため、main.bicep を単一の正本にして両モジュールへ渡す。
 var graphIriBase = 'urn:ontology:graph'
+
 // ADR-0010 決定8: `approved/` は draft を含む全版を格納するため実態と食い違って
 // いた。`versions/` に改名した(未リリースなので破壊的変更を許容)。
 var ontologyBlobPrefix = 'versions/'
@@ -267,6 +270,9 @@ module api './modules/api.bicep' = {
     logLevel: logLevel
     graphIriBase: graphIriBase
     blobPrefix: ontologyBlobPrefix
+    // 保持ポリシー(ADR-0019 決定1)。**API にだけ渡す** — マニフェストを
+    // 作るのは API で、ローダは判断済みの結果を解釈するだけである。
+    supersededRetain: supersededRetain
   }
 }
 

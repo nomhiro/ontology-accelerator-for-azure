@@ -133,10 +133,14 @@ async def test_publish_writes_source_of_truth_but_does_not_project(prepared: Pre
     import json
 
     manifest = json.loads(await blob.get_version(manifest_path))
+    # schema 2 から `projection`(判断済みの射影先)と `retain_superseded` が
+    # 入る(ADR-0019 決定1)。`draft` はマニフェストに載らないので `versions` は
+    # 空のまま。
     assert manifest == {
-        "schema": 1,
+        "schema": 2,
         "namespace": "retail-core",
         "current": None,
+        "retain_superseded": 0,
         "versions": [],
         "generated_at": manifest["generated_at"],
     }

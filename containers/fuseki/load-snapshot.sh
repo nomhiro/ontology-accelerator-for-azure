@@ -12,7 +12,11 @@
 #   FUSEKI_BASE                 Fuseki のサーバーエリア(既定 /fuseki)
 #   TDB_LOCATION                予約データセット "ds" の作成先(EmptyDir 上のパス)
 #   LOCAL_TTL_DIR               ローカル開発用。Blob の代わりにここから読む
-#   SUPERSEDED_RETAIN           superseded 版を名前付きグラフに読み込むか
+#   SUPERSEDED_RETAIN           **後方互換のためだけに残る**(ADR-0019 決定1)。
+#                               schema 2 のマニフェストは判断済みの projection を
+#                               運ぶので、この値は参照されない。projection を
+#                               持たない古いマニフェストのときだけ効き、
+#                               しかも個数ではなく真偽値としてしか効かない
 #                               (既定 0 = 読み込まない)。ADR-0010 が保持
 #                               ポリシーの既定値を未決としているため、
 #                               まず最小(0)にしている。0 以外を渡すと
@@ -147,7 +151,8 @@ fetch_manifest() {
 # 済み。P1-18)が行う。build_namespace_tdb はその出力を解釈するだけ。
 #   - approved(かつ current と一致): 名前付きグラフ + 既定グラフ
 #   - in-review: 名前付きグラフのみ
-#   - superseded: SUPERSEDED_RETAIN が 0 以外なら名前付きグラフのみ。既定 0 では読み込まない
+#   - superseded: マニフェストの projection に従う(ADR-0019)。古いマニフェスト
+#     では SUPERSEDED_RETAIN が 0 以外なら名前付きグラフのみ。既定 0 では読み込まない
 #   - マニフェストに載っていない版(draft の可能性): 読み込まない
 # 読み込まない場合、projection_targets は `skip:<理由>` を返す(P1-22)。
 # build_namespace_tdb はその理由をログに出す。
@@ -212,6 +217,12 @@ build_namespace_tdb() {
         # 存在すると、片方だけ直して食い違う(旧コードはここに case 文が
         # インラインで埋まっていて、再実行可能なテストが無かった)。
         if [ "${manifest_mode}" = "true" ]; then
+            # **schema 2 のマニフェストは判断済みの `projection` を運ぶ**
+            # (ADR-0019 決定1)。持っていないマニフェストは古いので、
+            # 従来の状態ベースの判断に落ちる。**黙って落ちない。**
+            if [ -z "$(manifest_projection_for_version "${manifest}" "${version}")" ]; then
+                log "マニフェストに projection がありません。古い形式として状態から判断します(SUPERSEDED_RETAIN=${SUPERSEDED_RETAIN} は個数ではなく真偽値としてしか効きません)。reconcile を実行するとマニフェストが更新されます [${namespace}]: ${version}"
+            fi
             targets="$(projection_targets "${manifest}" "${version}" "${SUPERSEDED_RETAIN}")"
         else
             # LOCAL_TTL_DIR 経路: マニフェスト対象外。単一ファイルを常に

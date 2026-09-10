@@ -65,7 +65,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 459 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 477 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -141,6 +141,8 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **`azd up` を `> log 2>&1` で包んで終了コードを見るときは、azd 自身の `$?` を取ること。** `azd up ... > log; echo $?` のように後続コマンドを挟むと、報告される終了コードは複合コマンド全体のものになり、**azd の失敗が成功に見える**（実際に一度誤読した）。
 
 **`azd provision` は Entra 管理者の登録について冪等でない。** 既存環境に再 provision すると `AadAuthPrincipalCreationFailed: role "..." already exists` で失敗する。同じ環境に作り直すのではなく `azd env new` で別環境を使うか、管理者登録を先に削除する。
+
+**Bicep のパラメータは `string` で宣言する（`int` にしない）。** azd の `main.parameters.json` の置換（`${SUPERSEDED_RETAIN=0}`）は**文字列**を渡すため、`int` で宣言すると ARM が型エラーで落ちる。既存のパラメータが全て `string` なのはこの理由である（`fusekiCpu` が `'0.5'` なのも同じ）。値の検証はアプリ側（`Settings`）で行う。
 
 **ARM の output 名は camelCase で返る。** `SERVICE_API_URI` は `servicE_API_URI` として返ってくる。復元するときは先頭 1 文字だけ大文字化するのではなく、キー全体を `upper()` する（`ServicE_API_URI` のような中途半端な名前を作らないため）。
 

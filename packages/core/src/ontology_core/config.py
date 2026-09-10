@@ -100,6 +100,20 @@ class Settings(BaseSettings):
     # 名前付きグラフ IRI の接頭辞。containers/fuseki/load-snapshot.sh と
     # infra/modules/fuseki.bicep の graphIriBase と同じ値でなければならない。
     graph_iri_base: str = Field(default="urn:ontology:graph", alias="GRAPH_IRI_BASE")
+    # 保持ポリシー(ADR-0019、P2B-02)。名前付きグラフに残す `superseded` の**個数**。
+    #
+    # **以前はローダ側の環境変数で、しかも実装は真偽値だった**(0 以外なら全部
+    # 載る)。`SUPERSEDED_RETAIN=2` と書いた運用者は「直近 2 版を残す」と読むので、
+    # 静かに期待と違う結果になっていた(ADR-0019 問題1)。
+    #
+    # **ポリシーを知る必要があるのは API だけである。** マニフェストを作るのは
+    # API で、ローダは判断済みの結果を解釈するだけになった(決定1)。ローダ側の
+    # 同名の環境変数は、`projection` を持たない古いマニフェストに落ちたときの
+    # ためだけに残っている。
+    #
+    # 既定は 0(載せない)。ADR-0010 が保持ポリシーの既定値を未決として残して
+    # いるため、**増やす方向の変更だけが必要**な安全側に置く。
+    superseded_retain: int = Field(default=0, alias="SUPERSEDED_RETAIN")
     # 公開済み TTL(状態は draft/in-review/approved/superseded 全部含む)を置く
     # Blob のプレフィックス。ローダの BLOB_PREFIX と揃える。
     # ADR-0010 決定8: `approved/` は draft を含む全版を格納するため実態と

@@ -157,7 +157,18 @@ manifest_status_for_version() {
     printf '%s' "$1" | jq -r --arg v "$2" '(.versions[] | select(.version == $v) | .status) // ""'
 }
 
-# 版の射影先を決める(ADR-0010 決定5、P1-18)。
+# マニフェストの `versions` から、指定した版の `projection` を返す(ADR-0019 決定1)。
+# 見つからない、または schema 1 のマニフェスト(この欄が無い)なら空文字。
+#
+# **schema 2 から、保持ポリシーの判断は正本側(Python)で行い、判断済みの結果を
+# この欄で運ぶ。** ローダは状態を再判定しない。以前は判断がこのファイルの
+# projection_targets にあり、`reconcile` は食い違いを避けて superseded の在否を
+# 不問にしていた。そのため保持ポリシーを誰も強制していなかった。
+manifest_projection_for_version() {
+    printf '%s' "$1" | jq -r --arg v "$2" '(.versions[] | select(.version == $v) | .projection) // ""'
+}
+
+# 版の射影先を決める(ADR-0010 決定5、P1-18、ADR-0019 決定1)。
 #
 # 状態別の振り分けは元々 load-snapshot.sh の build_namespace_tdb に case 文
 # としてインラインで埋まっていて、再実行可能なテストが無かった。判断を I/O
@@ -189,6 +200,24 @@ projection_targets() {
     version="$2"
     retain="$3"
 
+    # **マニフェストが判断済みならそれに従う**(ADR-0019 決定1)。
+    # 保持ポリシーの入力(`approved_at` の順序)はマニフェストに無いので、
+    # ここで「直近 N 版」を決めることはできない。決めるのは正本側である。
+    decided="$(manifest_projection_for_version "${manifest}" "${version}")"
+    if [ -n "${decided}" ]; then
+        printf '%s' "${decided}"
+        return 0
+    fi
+
+    # ---- 以下は後方互換のための経路(schema 1 のマニフェスト) ----
+    #
+    # `projection` を持たないマニフェストが残っている窓(デプロイの入れ替え中、
+    # `reconcile` を回す前)のために、従来の状態ベースの判断に落ちる。
+    # **`SUPERSEDED_RETAIN` はここでしか効かない**(しかも個数ではなく
+    # 真偽値としてしか効かない。これが ADR-0019 で直した元の不具合である)。
+    # **黙って落ちない** — 呼び出し元が警告を出せるよう、理由を返す値に
+    # `legacy` を含めない代わりに、load-snapshot.sh 側でこの経路を検出して
+    # ログに出す(manifest_projection_for_version が空を返したことで分かる)。
     status="$(manifest_status_for_version "${manifest}" "${version}")"
     case "${status}" in
         approved)

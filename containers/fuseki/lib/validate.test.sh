@@ -215,6 +215,30 @@ else
     unknown_status='{"schema":1,"namespace":"x","current":null,"versions":[{"version":"1.0.0","status":"quarantined"}],"generated_at":"t"}'
     check_eq3 "ローダが知らない状態 → 状態名を含む理由付きでスキップ" \
         projection_targets "${unknown_status}" "1.0.0" "0" "skip:unknown-status-quarantined"
+
+    # ---- schema 2: 判断済みの projection に従う (P2B-02、ADR-0019 決定1) ----
+    #
+    # **保持ポリシーの判断は正本側(Python)に移った。** 「直近 N 版」の順序を
+    # 決める approved_at はマニフェストに無いので、ここで決めることはできない。
+    # ローダは判断済みの結果を運ぶ `projection` をそのまま返す。
+    schema2='{"schema":2,"namespace":"x","current":"3.0.0","retain_superseded":1,"versions":[{"version":"3.0.0","status":"approved","projection":"named default"},{"version":"2.0.0","status":"superseded","projection":"named"},{"version":"1.0.0","status":"superseded","projection":"skip:superseded-beyond-retain"}],"generated_at":"t"}'
+
+    check_eq2 "schema 2 の projection を読める" \
+        manifest_projection_for_version "${schema2}" "2.0.0" "named"
+    check_eq2 "schema 1 のマニフェストには projection が無い(空文字)" \
+        manifest_projection_for_version "${manifest_ok}" "1.0.0" ""
+
+    check_eq3 "schema 2: 現行版は named default" \
+        projection_targets "${schema2}" "3.0.0" "0" "named default"
+    # **retain を 0 で渡しても、マニフェストの判断が優先される。**
+    # ここが逆になっていると、ローダ側の値が正本側の決定を上書きしてしまう。
+    check_eq3 "schema 2: 保持範囲内の superseded は named(retain=0 を渡しても)" \
+        projection_targets "${schema2}" "2.0.0" "0" "named"
+    # **retain を大きく渡しても、マニフェストの判断が優先される。**
+    check_eq3 "schema 2: 保持範囲外の superseded はスキップ(retain=99 を渡しても)" \
+        projection_targets "${schema2}" "1.0.0" "99" "skip:superseded-beyond-retain"
+    check_eq3 "schema 2: マニフェストに無い版は従来どおり理由付きでスキップ" \
+        projection_targets "${schema2}" "9.9.9" "0" "skip:not-in-manifest"
 fi
 
 if [ "${failures}" -gt 0 ]; then
