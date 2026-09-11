@@ -87,7 +87,7 @@ async def test_delete_is_rejected_with_409_when_blob_has_published_versions(
     try:
         with pytest.raises(HTTPException) as exc_info:
             await delete_namespace(
-                name=name,
+                namespace=name,
                 principal=_PRINCIPAL,
                 session=session,
                 store=store,
@@ -110,7 +110,7 @@ async def test_delete_succeeds_when_blob_has_no_versions(
     await _create_namespace(session, store, name)
 
     await delete_namespace(
-        name=name,
+        namespace=name,
         principal=_PRINCIPAL,
         session=session,
         store=store,
@@ -139,7 +139,7 @@ async def test_delete_is_rejected_when_blob_has_orphan_ttl_without_pg_version(
     try:
         with pytest.raises(HTTPException) as exc_info:
             await delete_namespace(
-                name=name,
+                namespace=name,
                 principal=_PRINCIPAL,
                 session=session,
                 store=store,

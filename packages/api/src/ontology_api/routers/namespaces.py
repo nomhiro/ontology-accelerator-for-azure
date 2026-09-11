@@ -135,8 +135,10 @@ async def create_namespace(
     return namespace
 
 
-@router.get("/{name}", summary="名前空間を 1 件取得する")
-async def get_namespace(name: str, principal: CurrentPrincipal, session: SessionDep) -> Namespace:
+@router.get("/{namespace}", summary="名前空間を 1 件取得する")
+async def get_namespace(
+    namespace: str, principal: CurrentPrincipal, session: SessionDep
+) -> Namespace:
     """名前空間を取得する。`data-analyst` 以上が必要(ADR-0014 決定2)。
 
     **存在確認を権限確認より先に行う。** 逆にすると、権限の無い呼び出し元が
@@ -146,28 +148,30 @@ async def get_namespace(name: str, principal: CurrentPrincipal, session: Session
     知っている必要がある。403/404 を統一して隠すのは、運用時の切り分けを
     難しくする割に得るものが小さい。
     """
-    namespace = await NamespaceRepository(session).get(name)
-    if namespace is None:
+    # **パスパラメータと取得結果で名前を分ける。** 同じ名前にすると
+    # 404 のメッセージが `Namespace` オブジェクトの repr になる。
+    found = await NamespaceRepository(session).get(namespace)
+    if found is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"名前空間 '{name}' が見つかりません",
+            detail=f"名前空間 '{namespace}' が見つかりません",
         )
     try:
         await require_namespace_role(
-            session, namespace=name, principal=principal, required=NamespaceRole.DATA_ANALYST
+            session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-    return namespace
+    return found
 
 
 @router.delete(
-    "/{name}",
+    "/{namespace}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="名前空間を削除する",
 )
 async def delete_namespace(
-    name: str,
+    namespace: str,
     principal: CurrentPrincipal,
     session: SessionDep,
     store: StoreDep,
@@ -192,19 +196,19 @@ async def delete_namespace(
     **削除には `owner` が必要**(ADR-0014 決定2)。名前空間の削除は
     取り返しがつかない操作なので最上位に置く。
     """
-    # `name` はこの後 Blob のプレフィックス・Fuseki のデータセット名の組み立てに
+    # `namespace` はこの後 Blob のプレフィックス・Fuseki のデータセット名の組み立てに
     # 使われる。DB に存在しない名前空間なら結局 404 になるが、それは「たまたま
     # 検証されている」だけであり、`publish_version` / `list_versions` /
     # `run_query` と同じく名前空間名がセキュリティ境界であることの明示的な契約に
     # するため、パスパラメータの入口で検証する(final-fix-brief.md 修正5 / O-2)。
     try:
-        validate_namespace_name(name)
+        validate_namespace_name(namespace)
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     try:
         await require_namespace_role(
-            session, namespace=name, principal=principal, required=NamespaceRole.OWNER
+            session, namespace=namespace, principal=principal, required=NamespaceRole.OWNER
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -217,10 +221,10 @@ async def delete_namespace(
     # commit してしまい、**Blob に TTL があって PostgreSQL には何も無い**
     # 状態が残る。ローダは Blob だけを見て再構築するので、削除したはずの
     # 名前空間が次のレプリカ再作成で復活する(`P2B-12`)。
-    if await NamespaceRepository(session).get_locked(name) is None:
+    if await NamespaceRepository(session).get_locked(namespace) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"名前空間 '{name}' が見つかりません",
+            detail=f"名前空間 '{namespace}' が見つかりません",
         )
 
     # Blob 一覧が取れないときは**削除を進めない**(fail-closed)。Blob は
@@ -229,9 +233,9 @@ async def delete_namespace(
     # (review-branch-report.md の C-1)。生の BlobStoreError を漏らすと
     # 原因の分からない 500 になるので、意図した拒否として 503 で返す。
     try:
-        remaining = await blob.list_versions(namespace=name)
+        remaining = await blob.list_versions(namespace=namespace)
     except BlobStoreError as exc:
-        logger.exception("名前空間 '%s' の Blob 一覧を取得できませんでした", name)
+        logger.exception("名前空間 '%s' の Blob 一覧を取得できませんでした", namespace)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
@@ -244,7 +248,7 @@ async def delete_namespace(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"名前空間 '{name}' には公開済みオントロジーの Blob が "
+                f"名前空間 '{namespace}' には公開済みオントロジーの Blob が "
                 f"{len(remaining)} 件残っているため削除できません: "
                 f"{', '.join(remaining)}. "
                 "公開済みオントロジーを含む名前空間の削除は Phase 2(監査経路)で"
@@ -252,11 +256,11 @@ async def delete_namespace(
             ),
         )
 
-    deleted = await NamespaceRepository(session).delete(name)
+    deleted = await NamespaceRepository(session).delete(namespace)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"名前空間 '{name}' が見つかりません",
+            detail=f"名前空間 '{namespace}' が見つかりません",
         )
 
     # 正本(PostgreSQL)の削除をここで commit してから射影(データセット)を消す。
@@ -268,17 +272,17 @@ async def delete_namespace(
     await session.commit()
 
     try:
-        await store.delete_dataset(dataset_name(name))
+        await store.delete_dataset(dataset_name(namespace))
     except SparqlStoreError:
         logger.exception(
             "名前空間 '%s' のデータセット削除に失敗しました。reconcile で回復します",
-            name,
+            namespace,
         )
 
 
-@router.get("/{name}/roles", summary="名前空間のロール付与を一覧する")
+@router.get("/{namespace}/roles", summary="名前空間のロール付与を一覧する")
 async def list_namespace_roles(
-    name: str, principal: CurrentPrincipal, session: SessionDep
+    namespace: str, principal: CurrentPrincipal, session: SessionDep
 ) -> list[NamespaceRoleAssignment]:
     """付与の一覧を返す。`owner` が必要(ADR-0014 決定2)。
 
@@ -286,26 +290,26 @@ async def list_namespace_roles(
     その名前空間を管理する立場の人が知るべき情報である。
     """
     try:
-        validate_namespace_name(name)
+        validate_namespace_name(namespace)
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    if await NamespaceRepository(session).get(name) is None:
+    if await NamespaceRepository(session).get(namespace) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"名前空間 '{name}' が見つかりません",
+            detail=f"名前空間 '{namespace}' が見つかりません",
         )
     try:
         await require_namespace_role(
-            session, namespace=name, principal=principal, required=NamespaceRole.OWNER
+            session, namespace=namespace, principal=principal, required=NamespaceRole.OWNER
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-    return await RoleRepository(session).list_for(name)
+    return await RoleRepository(session).list_for(namespace)
 
 
-@router.put("/{name}/roles", summary="ロールを付与する(既存があれば置き換える)")
+@router.put("/{namespace}/roles", summary="ロールを付与する(既存があれば置き換える)")
 async def grant_namespace_role(
-    name: str,
+    namespace: str,
     payload: RoleGrant,
     principal: CurrentPrincipal,
     session: SessionDep,
@@ -316,23 +320,23 @@ async def grant_namespace_role(
     1 つなので、付与のやり直しは昇格・降格であり重複エラーにする理由がない。
     """
     try:
-        validate_namespace_name(name)
+        validate_namespace_name(namespace)
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    if await NamespaceRepository(session).get(name) is None:
+    if await NamespaceRepository(session).get(namespace) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"名前空間 '{name}' が見つかりません",
+            detail=f"名前空間 '{namespace}' が見つかりません",
         )
     try:
         await require_namespace_role(
-            session, namespace=name, principal=principal, required=NamespaceRole.OWNER
+            session, namespace=namespace, principal=principal, required=NamespaceRole.OWNER
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     return await RoleRepository(session).grant(
-        namespace=name,
+        namespace=namespace,
         principal_id=payload.principal_id,
         role=payload.role,
         granted_by=principal_id_of(principal),
@@ -340,12 +344,12 @@ async def grant_namespace_role(
 
 
 @router.delete(
-    "/{name}/roles/{principal_id}",
+    "/{namespace}/roles/{principal_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="ロールを取り消す",
 )
 async def revoke_namespace_role(
-    name: str,
+    namespace: str,
     principal_id: str,
     principal: CurrentPrincipal,
     session: SessionDep,
@@ -358,28 +362,28 @@ async def revoke_namespace_role(
     ここでは数に入れない(付与として存在しないため)。
     """
     try:
-        validate_namespace_name(name)
+        validate_namespace_name(namespace)
     except NamespaceNameError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    if await NamespaceRepository(session).get(name) is None:
+    if await NamespaceRepository(session).get(namespace) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"名前空間 '{name}' が見つかりません",
+            detail=f"名前空間 '{namespace}' が見つかりません",
         )
     try:
         await require_namespace_role(
-            session, namespace=name, principal=principal, required=NamespaceRole.OWNER
+            session, namespace=namespace, principal=principal, required=NamespaceRole.OWNER
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     repo = RoleRepository(session)
-    assignments = await repo.list_for(name)
+    assignments = await repo.list_for(namespace)
     target = next((a for a in assignments if a.principal_id == principal_id), None)
     if target is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"名前空間 '{name}' に '{principal_id}' の付与はありません",
+            detail=f"名前空間 '{namespace}' に '{principal_id}' の付与はありません",
         )
     if target.role is NamespaceRole.OWNER:
         owners = sum(1 for a in assignments if a.role is NamespaceRole.OWNER)
@@ -387,8 +391,8 @@ async def revoke_namespace_role(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"名前空間 '{name}' の最後の owner は取り消せません。"
+                    f"名前空間 '{namespace}' の最後の owner は取り消せません。"
                     "先に別の主体へ owner を付与してください"
                 ),
             )
-    await repo.revoke(namespace=name, principal_id=principal_id)
+    await repo.revoke(namespace=namespace, principal_id=principal_id)

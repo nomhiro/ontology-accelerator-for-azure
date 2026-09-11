@@ -142,7 +142,7 @@ async def _cleanup(*sessions: AsyncSession) -> AsyncIterator[list[asyncio.Task[N
 
 async def _delete(session: AsyncSession, blob_store: OntologyBlobStore) -> None:
     await delete_namespace(
-        name=_NS,
+        namespace=_NS,
         principal=_OWNER,
         session=session,
         store=_NullStore(),
