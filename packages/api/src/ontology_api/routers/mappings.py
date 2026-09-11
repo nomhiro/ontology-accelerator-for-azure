@@ -41,7 +41,9 @@ from ontology_api.repositories.mappings import MappingRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import AuditRepository
 from ontology_api.services.authorization import (
+    NamespaceRetiredError,
     PermissionDeniedError,
+    ensure_not_retired,
     require_namespace_role,
 )
 from ontology_api.services.mapping_targets import resolve_target_lifecycles
@@ -269,6 +271,12 @@ async def declare_mapping(
     **逆向きは作らない**(決定3)。相手側は相手が宣言する。
     """
     await _prepare(session, namespace=namespace, principal=principal, required=NamespaceRole.OWNER)
+    # **退役した領域から新しい主張はしない**(ADR-0032 決定5)。
+    # 取り消し(`DELETE`)は片付けなので通す。
+    try:
+        await ensure_not_retired(session, namespace=namespace, doing="マッピングの宣言")
+    except NamespaceRetiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     try:
         source, target, predicate = validate_mapping(
             source_term=payload.source_term,

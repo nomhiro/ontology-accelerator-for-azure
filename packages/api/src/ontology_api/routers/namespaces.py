@@ -12,15 +12,26 @@ import logging
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, StoreDep
+from ontology_api.dependencies import (
+    BlobDep,
+    CurrentPrincipal,
+    SessionDep,
+    SettingsDep,
+    StoreDep,
+)
 from ontology_api.repositories.namespaces import NamespaceExistsError, NamespaceRepository
 from ontology_api.repositories.roles import RoleRepository
 from ontology_api.services.authorization import (
+    NamespaceRetiredError,
     PermissionDeniedError,
     effective_role,
     principal_id_of,
     require_namespace_role,
     require_platform_admin,
+)
+from ontology_api.services.projection import (
+    ProjectionService,
+    UnknownNamespaceError,
 )
 from ontology_core.blob import BlobStoreError
 from ontology_core.graphs import NamespaceNameError, dataset_name, validate_namespace_name
@@ -29,6 +40,24 @@ from ontology_core.sparql.client import SparqlStoreError
 
 router = APIRouter(prefix="/namespaces", tags=["namespaces"])
 logger = logging.getLogger(__name__)
+
+
+class NamespaceRetire(BaseModel):
+    """退役 / 退役の解除の要求(ADR-0032)。"""
+
+    reason: str = Field(
+        min_length=1,
+        description="**必須**。監査証跡に残り、消せない。「なぜこの名前空間を使わなくなったか」を書く",
+    )
+
+
+class RetireResult(BaseModel):
+    """退役 / 解除の結果(ADR-0032)。"""
+
+    namespace: Namespace
+    note: str = Field(
+        description="運用者への申し送り。**解除の直後はストアが空である**ことを含む(ADR-0032 決定3)"
+    )
 
 
 class NamespaceCreate(BaseModel):
@@ -165,6 +194,143 @@ async def get_namespace(
     return found
 
 
+async def _retire_common(
+    *,
+    namespace: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    store: StoreDep,
+    settings: SettingsDep,
+    reason: str,
+    unretire: bool,
+) -> RetireResult:
+    """退役 / 解除の共通処理(ADR-0032)。
+
+    **`owner` が必要。** 名前空間の退役は射影を止める操作なので、削除と同じ
+    最上位に置く(ADR-0014 決定2)。
+    """
+    try:
+        validate_namespace_name(namespace)
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    try:
+        await require_namespace_role(
+            session, namespace=namespace, principal=principal, required=NamespaceRole.OWNER
+        )
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+    service = ProjectionService(
+        session=session,
+        blob=blob,
+        store=store,
+        graph_iri_base=settings.graph_iri_base,
+        retain_superseded=settings.superseded_retain,
+    )
+    actor = principal_id_of(principal)
+    try:
+        if unretire:
+            updated = await service.unretire(namespace=namespace, actor=actor, reason=reason)
+            note = (
+                "退役を解除しました。**この時点でストアは空です** — "
+                "POST /admin/reconcile を実行するか、次のレプリカ再作成を待って"
+                "ください(ADR-0032 決定3)。"
+            )
+        else:
+            updated = await service.retire(namespace=namespace, actor=actor, reason=reason)
+            note = (
+                "退役しました。**正本(Blob の TTL・版・監査)は残っています**"
+                "(不変条件7)。止まったのは射影と内容の増設だけです。"
+                "版の一覧・決定記録・監査・PROV-O は引き続き読めます。"
+            )
+    except UnknownNamespaceError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except NamespaceRetiredError as exc:
+        # **403 にしない。** 権限の問題ではないのでロールを付与しても解決しない。
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return RetireResult(namespace=updated, note=note)
+
+
+@router.post(
+    "/{namespace}/retire",
+    summary="名前空間を退役させる(削除ではない。`owner` が必要)",
+)
+async def retire_namespace(
+    namespace: str,
+    payload: NamespaceRetire,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    store: StoreDep,
+    settings: SettingsDep,
+) -> RetireResult:
+    """名前空間を退役させる([ADR-0032](../../../../../docs/adr/0032-namespace-retirement.md))。
+
+    **削除ではない。** Blob の TTL も PostgreSQL の版と監査もそのまま残る
+    (不変条件7)。止まるのは**射影**と**内容の増設**だけである。
+
+    | 経路 | 退役中 |
+    |---|---|
+    | `publish` / `submit` / `approve` / `reject` | **409** |
+    | `POST .../sparql` | **409**(0 行を静かに返さない) |
+    | `POST .../questions`(改訂) | **409** |
+    | `PUT .../mappings`(宣言) | **409** |
+    | 版の一覧・決定記録・監査・PROV-O・健全性・差分 | 通る |
+    | ロール・用語の責任者・マッピングの取り消し | 通る(片付け) |
+
+    **`DELETE /namespaces/{ns}` が 409 で案内する先がここである。** 公開済み
+    オントロジーを含む名前空間は削除しない(ADR-0024 決定4 の選択肢 2)。
+
+    **戻せる**(`POST .../unretire`)。正本は無傷なので、戻すのは列を消すだけ
+    である。
+    """
+    return await _retire_common(
+        namespace=namespace,
+        principal=principal,
+        session=session,
+        blob=blob,
+        store=store,
+        settings=settings,
+        reason=payload.reason,
+        unretire=False,
+    )
+
+
+@router.post(
+    "/{namespace}/unretire",
+    summary="名前空間の退役を解除する(`owner` が必要)",
+)
+async def unretire_namespace(
+    namespace: str,
+    payload: NamespaceRetire,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    store: StoreDep,
+    settings: SettingsDep,
+) -> RetireResult:
+    """退役を解除する(ADR-0032 決定1)。
+
+    **解除の直後はストアが空である。** `retire` が `projected_at` を `NULL` に
+    戻してあるので、`POST /admin/reconcile` を回すか次のレプリカ再作成を
+    待てば射影が戻る。**応答の `note` がそのことを伝える。**
+
+    退役していない名前空間に対しては **409** を返す(何も起きないことを
+    成功として返さない)。
+    """
+    return await _retire_common(
+        namespace=namespace,
+        principal=principal,
+        session=session,
+        blob=blob,
+        store=store,
+        settings=settings,
+        reason=payload.reason,
+        unretire=True,
+    )
+
+
 @router.delete(
     "/{namespace}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -251,8 +417,10 @@ async def delete_namespace(
                 f"名前空間 '{namespace}' には公開済みオントロジーの Blob が "
                 f"{len(remaining)} 件残っているため削除できません: "
                 f"{', '.join(remaining)}. "
-                "公開済みオントロジーを含む名前空間の削除は Phase 2(監査経路)で"
-                "対応します。"
+                "**公開済みオントロジーは削除しません**(不変条件7)。"
+                f"使わなくなった名前空間は POST /namespaces/{namespace}/retire で"
+                "退役させてください(正本は残り、射影と内容の増設だけが止まります。"
+                "ADR-0032)。"
             ),
         )
 

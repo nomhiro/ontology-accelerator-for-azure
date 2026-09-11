@@ -53,7 +53,10 @@ from ontology_api.repositories.mappings import MappingRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.questions import QuestionSetRepository
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
-from ontology_api.services.authorization import TwoPersonApprovalError
+from ontology_api.services.authorization import (
+    NamespaceRetiredError,
+    TwoPersonApprovalError,
+)
 from ontology_core.blob import BlobStoreError, OntologyBlobStore
 from ontology_core.competency import (
     CompetencyReport,
@@ -70,7 +73,7 @@ from ontology_core.deprecation import (
 )
 from ontology_core.diff import DiffError, OntologyDiff, diff_ontologies
 from ontology_core.graphs import dataset_name, version_graph_iri
-from ontology_core.models import OntologyVersion, OntologyVersionStatus
+from ontology_core.models import Namespace, OntologyVersion, OntologyVersionStatus
 from ontology_core.retention import ProjectionTarget, decide_projection
 from ontology_core.shacl import ShaclReport, validate_turtle_with_shacl
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
@@ -219,10 +222,31 @@ class InvalidTransitionError(Exception):
     """現在の状態から許されない遷移を要求したことを表す(例: draft を approve)。"""
 
 
+#: 退役した名前空間の版に入れる `projection` の値(ADR-0032 決定2)。
+#:
+#: **`schema` を上げずに退役を表現するための鍵である。** `projection` は
+#: schema 2 のローダが**そのまま従う**欄で、`skip:*` は「読み込まない。理由を
+#: ログに出す」として既に実装されている(`projection_targets` /
+#: `build_namespace_tdb`)。つまり**ローダを 1 行も変えずに退役が効く。**
+#:
+#: `P2B-C1` の教訓(安全に関わる指示を新しい schema にだけ載せない)を
+#: そのまま適用した形である。
+RETIRED_PROJECTION = "skip:retired"
+
+
 def _build_manifest(
-    namespace: str, versions: list[OntologyVersion], *, retain_superseded: int
+    namespace: str,
+    versions: list[OntologyVersion],
+    *,
+    retain_superseded: int,
+    retired: bool = False,
 ) -> dict[str, Any]:
     """PostgreSQL 上の状態からマニフェスト(ADR-0010 決定7)を組み立てる。
+
+    **退役している名前空間は 1 版も射影しない**(ADR-0032 決定2)。
+    `current` を `null` にし、全版の `projection` を `skip:retired` にする。
+    `retired: true` も載せるが、**それは観測のためだけ**で、無視されても
+    安全は崩れない。
 
     **schema 2 から、各版の射影先(`projection`)を載せる**(ADR-0019 決定1)。
     保持ポリシーの判断は `ontology_core.retention` の 1 箇所にあり、**ローダは
@@ -246,13 +270,15 @@ def _build_manifest(
     return {
         "schema": 2,
         "namespace": namespace,
-        "current": current,
+        # **退役していれば現行版は無い**(ADR-0032 決定2)。
+        "current": None if retired else current,
         "retain_superseded": max(0, retain_superseded),
+        "retired": retired,
         "versions": [
             {
                 "version": v.version,
                 "status": v.status.value,
-                "projection": decided[v.version].value,
+                "projection": (RETIRED_PROJECTION if retired else decided[v.version].value),
             }
             for v in included
         ],
@@ -359,6 +385,16 @@ class ReconcileReport:
     # **`graphs_removed`(正本に無い残留)とは分ける。** 前者は「正本にあるが
     # 載せない版」、後者は「正本に無い版」で、運用者が読むべき意味が違う。
     retention_removed: list[str] = field(default_factory=list)
+    # 退役しているので射影しなかった名前空間(ADR-0032 決定4)。
+    #
+    # **黙って飛ばさない。** 報告に出ないと、運用者は「reconcile を回したのに
+    # 射影が戻らない」を故障として調べ始める。退役は意図した状態である。
+    retired_namespaces: list[str] = field(default_factory=list)
+    # 退役した名前空間にまだ残っていたので消した名前付きグラフ(決定4)。
+    #
+    # `retire` の `delete_dataset` は失敗を握り潰す(不変条件3)ので、
+    # ここが最後の回収経路である。
+    retired_graphs_removed: list[str] = field(default_factory=list)
 
 
 def _next_version(previous: OntologyVersion | None) -> str:
@@ -466,8 +502,18 @@ class ProjectionService:
         # あって PostgreSQL には何も無い**状態ができる。ローダは PostgreSQL を
         # 見ず Blob だけを見て再構築するので、**削除したはずの名前空間が次の
         # レプリカ再作成で復活する**。
-        if await namespaces.get_locked(namespace) is None:
+        locked = await namespaces.get_locked(namespace)
+        if locked is None:
             raise UnknownNamespaceError(f"名前空間 '{namespace}' が見つかりません")
+        # **退役した名前空間には内容を増やせない**(ADR-0032 決定5)。
+        # 行ロックを取った直後に見る — 退役の処理も同じ行ロックを取るので、
+        # 「退役中でないことを確かめてから Blob に書く」までが排他される。
+        if locked.retired:
+            raise NamespaceRetiredError(
+                f"名前空間 '{namespace}' は退役しています"
+                f"(理由: {locked.retired_reason})。publish はできません。"
+                "続けるなら POST /namespaces/{namespace}/unretire で戻してください"
+            )
 
         versions = VersionRepository(self._session)
         content_hash = hashlib.sha256(turtle.encode("utf-8")).hexdigest()
@@ -630,6 +676,119 @@ class ProjectionService:
 
         return recorded, outcome
 
+    async def retire(self, *, namespace: str, actor: str, reason: str) -> Namespace:
+        """名前空間を退役させる(ADR-0032)。**削除ではない。**
+
+        正本(Blob の TTL・PostgreSQL の版と監査)はそのまま残る(不変条件7)。
+        止まるのは射影と内容の増設だけである。
+
+        順序には理由がある。
+
+        1. **行ロックを取る**(ADR-0024 決定1 と同じ経路)。`publish` も同じ
+           行ロックを取るので、「退役を書く」と「Blob に書く」が排他される
+        2. 退役の状態を書き、監査に記録する(**同一トランザクション**)
+        3. 全版の `projected_at` を `NULL` に戻す。`unretire` したときに
+           `reconcile` が拾えるようにするため(不変条件10 —
+           `projected_at` は書き込み経路の知識である)
+        4. マニフェストを更新する(全版 `skip:retired`。決定2)
+        5. ストアからデータセットを消す
+
+        **4 と 5 が失敗しても退役は失敗させない**(不変条件3)。マニフェストが
+        既に `skip:retired` なので、**次の再構築で必ず止まる**。
+
+        Raises:
+            UnknownNamespaceError: 名前空間が無いとき。
+            NamespaceRetiredError: 既に退役しているとき(冪等にしない —
+                理由と時刻を黙って上書きすると、最初の退役の記録が消える)。
+        """
+        namespaces = NamespaceRepository(self._session)
+        locked = await namespaces.get_locked(namespace)
+        if locked is None:
+            raise UnknownNamespaceError(f"名前空間 '{namespace}' が見つかりません")
+        if locked.retired:
+            raise NamespaceRetiredError(
+                f"名前空間 '{namespace}' は既に退役しています"
+                f"({locked.retired_at:%Y-%m-%dT%H:%M:%SZ}、理由: {locked.retired_reason})"
+            )
+
+        updated = await namespaces.set_retired(
+            namespace, actor=actor, reason=reason, at=datetime.now(UTC)
+        )
+        assert updated is not None  # 行ロックを持っているので消えない
+        await AuditRepository(self._session).record(
+            namespace=namespace,
+            action="retired",
+            actor=actor,
+            subject=namespace,
+            reason=reason,
+        )
+        versions = VersionRepository(self._session)
+        for version in await versions.list_for(namespace):
+            await versions.clear_projected(namespace, version.version)
+        await self._session.commit()
+
+        await self._refresh_manifest(namespace)
+        try:
+            await self._store.delete_dataset(dataset_name(namespace))
+        except SparqlStoreError:
+            # **退役は失敗させない**(不変条件3)。マニフェストが既に
+            # `skip:retired` なので次の再構築で必ず止まり、`reconcile` も
+            # 残骸を消す(決定4)。
+            logger.exception(
+                "名前空間 '%s' のデータセット削除に失敗しました。reconcile で回収します",
+                namespace,
+            )
+        return updated
+
+    async def unretire(self, *, namespace: str, actor: str, reason: str) -> Namespace:
+        """退役を解除する(ADR-0032 決定1)。
+
+        **正本は無傷なので、戻すのは列を消すだけである。** 戻せないと、
+        誤って退役させた運用者に DB を直接触る以外の回復手段が無い。
+
+        **解除の直後はストアが空である。** `projected_at` は `retire` で
+        `NULL` に戻してあるので、`POST /admin/reconcile` を回すか次の
+        レプリカ再作成を待てば射影が戻る。**そのことを呼び出し元が伝える。**
+
+        Raises:
+            UnknownNamespaceError: 名前空間が無いとき。
+            NamespaceRetiredError: 退役していないとき(何も起きないことを
+                成功として返さない)。
+        """
+        namespaces = NamespaceRepository(self._session)
+        locked = await namespaces.get_locked(namespace)
+        if locked is None:
+            raise UnknownNamespaceError(f"名前空間 '{namespace}' が見つかりません")
+        if not locked.retired:
+            raise NamespaceRetiredError(f"名前空間 '{namespace}' は退役していません")
+
+        updated = await namespaces.set_retired(namespace, actor=None, reason=None, at=None)
+        assert updated is not None
+        await AuditRepository(self._session).record(
+            namespace=namespace,
+            action="unretired",
+            actor=actor,
+            subject=namespace,
+            reason=reason,
+        )
+        await self._session.commit()
+        await self._refresh_manifest(namespace)
+        return updated
+
+    async def _ensure_not_retired(self, namespace: str) -> None:
+        """退役していないことを確かめる(ADR-0032 決定5)。
+
+        **状態遷移の入口で呼ぶ。** 退役した名前空間で版の状態を動かすと、
+        マニフェストは `skip:retired` のままなのに PostgreSQL の状態だけが
+        変わり、**正本とマニフェストが食い違う**。
+        """
+        row = await NamespaceRepository(self._session).get(namespace)
+        if row is not None and row.retired:
+            raise NamespaceRetiredError(
+                f"名前空間 '{namespace}' は退役しています"
+                f"(理由: {row.retired_reason})。版の状態は変えられません"
+            )
+
     async def _refresh_manifest(self, namespace: str) -> None:
         """PostgreSQL の現在の状態からマニフェストを作り直して Blob へ書く。
 
@@ -639,8 +798,15 @@ class ProjectionService:
         失敗しても永久には失われない。
         """
         versions_list = await VersionRepository(self._session).list_for(namespace)
+        # **退役の状態を読む**(ADR-0032 決定2)。ここを読み忘れると、
+        # 退役した名前空間の次の publish 以外の更新でマニフェストが現役に
+        # 戻り、射影が復活する。
+        row = await NamespaceRepository(self._session).get(namespace)
         manifest = _build_manifest(
-            namespace, versions_list, retain_superseded=self._retain_superseded
+            namespace,
+            versions_list,
+            retain_superseded=self._retain_superseded,
+            retired=row is not None and row.retired,
         )
         try:
             await self._blob.put_manifest(namespace, manifest)
@@ -691,6 +857,7 @@ class ProjectionService:
         self, *, namespace: str, version: str, actor: str, reason: str = ""
     ) -> OntologyVersion:
         """`draft` を `in-review` にし、名前付きグラフへ射影する(ADR-0010 決定1)。"""
+        await self._ensure_not_retired(namespace)
         versions = VersionRepository(self._session)
         current = await versions.get(namespace, version)
         if current is None:
@@ -1005,6 +1172,9 @@ class ProjectionService:
 
         呼び出し元のロール判定(`maintainer` 以上)はルータで行う。
         """
+        # **退役した名前空間では承認しない**(ADR-0032 決定5)。承認は
+        # 既定グラフへの射影を伴うので、退役の目的(射影を止める)と衝突する。
+        await self._ensure_not_retired(namespace)
         versions = VersionRepository(self._session)
         current = await versions.get(namespace, version)
         if current is None:
@@ -1203,6 +1373,7 @@ class ProjectionService:
         self, *, namespace: str, version: str, actor: str, reason: str
     ) -> OntologyVersion:
         """`in-review` を `draft` に戻す(理由必須)。名前付きグラフから外す。"""
+        await self._ensure_not_retired(namespace)
         versions = VersionRepository(self._session)
         current = await versions.get(namespace, version)
         if current is None:
@@ -1259,6 +1430,10 @@ class ProjectionService:
 
         for ns in namespaces:
             dataset = dataset_name(ns.name)
+            # **退役した名前空間のデータセットは作り直さない**(ADR-0032 決定4)。
+            # `retire` が消したものを reconcile が作り直すと、退役が効かない。
+            if ns.retired:
+                continue
             if dataset not in existing:
                 try:
                     await self._store.create_dataset(dataset)
@@ -1286,7 +1461,14 @@ class ProjectionService:
         # 増分回復)には適用しない(ADR-0010 が既定値を未決としているのは
         # 「再構築時に何を読み込むか」であり、既に承認済みだった版の射影を
         # 事後的に取り除く話ではないため)。
+        # **退役した名前空間は射影しない**(ADR-0032 決定4)。`retire` は
+        # `projected_at` を `NULL` に戻すので(決定3)、これが無いと
+        # **reconcile が即座に再射影してしまう**。
+        retired_names = {ns.name for ns in namespaces if ns.retired}
+        report.retired_namespaces = sorted(retired_names)
         for version in await versions.unprojected():
+            if version.namespace in retired_names:
+                continue
             try:
                 turtle = await self._blob.get_version(version.blob_path)
                 await self._store.put_graph(
@@ -1322,7 +1504,26 @@ class ProjectionService:
             try:
                 actual = await self._store.list_graphs(dataset)
             except SparqlStoreError as exc:
+                if ns.retired:
+                    # 退役してデータセットを消してあるなら一覧は失敗する。
+                    # **これは故障ではない。**
+                    continue
                 report.failures.append(f"{ns.name}: 名前付きグラフ一覧の取得に失敗 ({exc})")
+                continue
+            if ns.retired:
+                # **退役した名前空間は「1 版も載せない」が正本の主張である**
+                # (ADR-0032 決定2)。残っていれば乖離なので消す(決定4)。
+                # ADR-0013 の「観測された乖離を直す」そのものである。
+                for graph_iri in sorted(actual):
+                    if not graph_iri.startswith(prefix):
+                        report.foreign_graphs.append(f"{ns.name}: {graph_iri}")
+                        continue
+                    try:
+                        await self._store.delete_graph(graph_iri, dataset=dataset)
+                    except SparqlStoreError as exc:
+                        report.failures.append(f"{ns.name}: {graph_iri} の削除に失敗 ({exc})")
+                        continue
+                    report.retired_graphs_removed.append(f"{ns.name}: {graph_iri}")
                 continue
             ns_versions = await versions.list_for(ns.name)
             expected = {

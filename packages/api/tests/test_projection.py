@@ -135,12 +135,14 @@ async def test_publish_writes_source_of_truth_but_does_not_project(prepared: Pre
     manifest = json.loads(await blob.get_version(manifest_path))
     # schema 2 から `projection`(判断済みの射影先)と `retain_superseded` が
     # 入る(ADR-0019 決定1)。`draft` はマニフェストに載らないので `versions` は
-    # 空のまま。
+    # 空のまま。`retired` は ADR-0032(`P2B-19`)で足した — **schema は
+    # 上げていない**(古いローダが無視しても安全は崩れない欄である。決定2)。
     assert manifest == {
         "schema": 2,
         "namespace": "retail-core",
         "current": None,
         "retain_superseded": 0,
+        "retired": False,
         "versions": [],
         "generated_at": manifest["generated_at"],
     }

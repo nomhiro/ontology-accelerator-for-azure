@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +31,9 @@ def _to_model(row: NamespaceRow) -> Namespace:
         created_at=row.created_at,
         created_by=row.created_by,
         require_two_person_approval=row.require_two_person_approval,
+        retired_at=row.retired_at,
+        retired_by=row.retired_by,
+        retired_reason=row.retired_reason,
     )
 
 
@@ -128,3 +133,25 @@ class NamespaceRepository:
         await self._session.delete(row)
         await self._session.flush()
         return True
+
+    async def set_retired(
+        self, name: str, *, actor: str | None, reason: str | None, at: datetime | None
+    ) -> Namespace | None:
+        """退役の状態を書く(ADR-0032 決定1)。存在しなければ `None`。
+
+        `at` が `None` なら**退役の解除**である(3 列すべてを `NULL` に戻す)。
+        **戻せるようにしている** — 正本は無傷なので、戻すのは列を消すだけで
+        ある。戻せないと、誤って退役させた運用者に DB を直接触る以外の回復
+        手段が無い(決定1)。
+
+        commit は呼び出し側が行う(監査記録と同一トランザクションにするため)。
+        """
+        row = await self._session.get(NamespaceRow, name)
+        if row is None:
+            return None
+        row.retired_at = at
+        row.retired_by = actor if at is not None else None
+        row.retired_reason = reason if at is not None else None
+        await self._session.flush()
+        await self._session.refresh(row)
+        return _to_model(row)

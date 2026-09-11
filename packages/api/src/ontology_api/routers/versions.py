@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, SettingsDep, StoreDep
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
 from ontology_api.services.authorization import (
+    NamespaceRetiredError,
     PermissionDeniedError,
     TwoPersonApprovalError,
     require_namespace_role,
@@ -167,6 +168,10 @@ async def publish_version(
             status.HTTP_200_OK if outcome is PublishOutcome.REUSED else status.HTTP_201_CREATED
         )
         return published
+    except NamespaceRetiredError as exc:
+        # P2B-19: 退役した名前空間では内容を増やせない(ADR-0032 決定5)。
+        # **403 にしない** — 権限の問題ではない。
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except UnknownNamespaceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except NamespaceNameError as exc:
@@ -331,6 +336,10 @@ async def submit_version(
             actor=principal.object_id or principal.subject,
             reason=(payload.reason if payload is not None else ""),
         )
+    except NamespaceRetiredError as exc:
+        # P2B-19: 退役した名前空間では内容を増やせない(ADR-0032 決定5)。
+        # **403 にしない** — 権限の問題ではない。
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except UnknownVersionError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except InvalidTransitionError as exc:
@@ -388,6 +397,11 @@ async def approve_version(
             actor=principal.object_id or principal.subject,
             reason=(payload.reason if payload is not None else ""),
         )
+    except NamespaceRetiredError as exc:
+        # P2B-19: 退役した名前空間では内容を増やせない(ADR-0032 決定5)。
+        # **403 にしない** — 権限の問題ではないのでロールを付与しても
+        # 解決しない(`TwoPersonApprovalError` と同じ判断)。
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except TwoPersonApprovalError as exc:
         # **`PermissionDeniedError`(403)と分ける。** 権限不足ならロールを付与
         # すれば解決するが、四眼原則違反は「別の人に承認してもらう」しかない。
@@ -666,6 +680,10 @@ async def reject_version(
             actor=principal.object_id or principal.subject,
             reason=payload.reason,
         )
+    except NamespaceRetiredError as exc:
+        # P2B-19: 退役した名前空間では内容を増やせない(ADR-0032 決定5)。
+        # **403 にしない** — 権限の問題ではない。
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except UnknownVersionError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except InvalidTransitionError as exc:

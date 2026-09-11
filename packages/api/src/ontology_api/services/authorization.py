@@ -25,17 +25,31 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_core.auth.entra import Principal
-from ontology_core.db import NamespaceRoleRow
+from ontology_core.db import NamespaceRoleRow, NamespaceRow
 from ontology_core.models import NamespaceRole, PlatformRole
 
 __all__ = [
+    "NamespaceRetiredError",
     "PermissionDeniedError",
     "TwoPersonApprovalError",
     "effective_role",
+    "ensure_not_retired",
     "principal_id_of",
     "require_namespace_role",
     "require_platform_admin",
 ]
+
+
+class NamespaceRetiredError(Exception):
+    """退役した名前空間に、退役中は行えない操作を要求した(ADR-0032 決定5)。
+
+    呼び出し元は **409** にする。**403 にしない** — 権限の問題ではないので
+    ロールを付与しても解決しない(`TwoPersonApprovalError` と同じ判断)。
+
+    退役が止めるのは「**内容を増やすこと**」と「**射影を通じて提供する
+    こと**」だけである。版の一覧・決定記録・監査・PROV-O・健全性・差分は
+    通る(**それを残すために退役している**)。
+    """
 
 
 class PermissionDeniedError(Exception):
@@ -50,6 +64,29 @@ class TwoPersonApprovalError(Exception):
     承認してもらう」しかない。同じ 403 に混ぜると、ロールを足して解決しようと
     して解決しない。
     """
+
+
+async def ensure_not_retired(session: AsyncSession, *, namespace: str, doing: str) -> None:
+    """退役していないことを確かめる(ADR-0032 決定5)。
+
+    退役が止めるのは「**内容を増やすこと**」と「**射影を通じて提供する
+    こと**」だけである。版の一覧・決定記録・監査・PROV-O・健全性・差分は
+    通る(**それを残すために退役している**)。
+
+    `doing` には止めた操作を書く。**何ができないかを言わないと、運用者は
+    権限の問題だと思ってロールを足しに行く。**
+
+    Raises:
+        NamespaceRetiredError: 退役しているとき。呼び出し元は **409** に
+            する(403 にしない — ロールを付与しても解決しない)。
+    """
+    row = await session.get(NamespaceRow, namespace)
+    if row is not None and row.retired_at is not None:
+        raise NamespaceRetiredError(
+            f"名前空間 '{namespace}' は退役しています"
+            f"(理由: {row.retired_reason})。{doing}はできません。"
+            f"続けるなら POST /namespaces/{namespace}/unretire で戻してください"
+        )
 
 
 def principal_id_of(principal: Principal) -> str:

@@ -139,6 +139,22 @@ class VersionRepository:
         row.projected_at = datetime.now(UTC)
         await self._session.flush()
 
+    async def clear_projected(self, namespace: str, version: str) -> None:
+        """`projected_at` を `NULL` に戻す(ADR-0032 決定3)。
+
+        **射影を止めたなら NULL に戻すのが正しい。** `projected_at` は
+        「書き込み経路の知識」であって「ストアの現在の状態」ではない
+        (不変条件10)が、**こちらから射影を取り消した**なら、
+        次に射影が必要になったときに `reconcile` が拾えなければならない。
+        """
+        stmt = select(OntologyVersionRow).where(
+            OntologyVersionRow.namespace == namespace,
+            OntologyVersionRow.version == version,
+        )
+        row = (await self._session.execute(stmt)).scalar_one()
+        row.projected_at = None
+        await self._session.flush()
+
     async def set_status(
         self,
         namespace: str,

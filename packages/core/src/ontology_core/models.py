@@ -198,6 +198,24 @@ class Namespace(BaseModel):
     created_by: str
     # 四眼原則(ADR-0014 決定4)。既定は有効。
     require_two_person_approval: bool = True
+    # 退役(ADR-0032、`P2B-19`)。**削除ではない。**
+    #
+    # 正本は残り、止まるのは射影と内容の増設である。`retired_at` が `None` なら
+    # 現役。一覧から隠さない(隠すと `unretire` できない。決定7)。
+    retired_at: datetime | None = Field(
+        default=None,
+        description="退役した時刻。**`null` なら現役**。退役中は publish / SPARQL / "
+        "想定質問の改訂 / マッピングの宣言が 409 になる(ADR-0032 決定5)",
+    )
+    retired_by: str | None = None
+    retired_reason: str | None = Field(
+        default=None, description="退役の理由。**退役には必須**(監査に残る)"
+    )
+
+    @property
+    def retired(self) -> bool:
+        """退役しているか。**判定を 1 か所に閉じる。**"""
+        return self.retired_at is not None
 
 
 class OntologyVersion(BaseModel):

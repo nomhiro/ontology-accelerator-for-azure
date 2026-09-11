@@ -29,7 +29,9 @@ from ontology_api.repositories.access import AccessRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import VersionRepository
 from ontology_api.services.authorization import (
+    NamespaceRetiredError,
     PermissionDeniedError,
+    ensure_not_retired,
     principal_id_of,
     require_namespace_role,
 )
@@ -204,6 +206,14 @@ async def run_query(
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+    # **退役した名前空間では 0 行を静かに返さない**(ADR-0032 決定5)。
+    # `retire` はデータセットを消すので、通すとクエリは空の結果を返す。
+    # **エージェントはそれを「該当なし」と読んで回答を作る。**
+    try:
+        await ensure_not_retired(session, namespace=namespace, doing="SPARQL クエリ")
+    except NamespaceRetiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     try:
         ensure_agent_safe_query(payload.query, allow_service=settings.sparql_allow_service)

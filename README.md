@@ -27,7 +27,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   ([ADR-0025](docs/adr/0025-result-limit-enforcement.md)、`P2A-08`)。
   件数の上限は**クエリに `LIMIT` を後付けするのではなく、API の境界で応答の行数を
   切り、切り詰めたことを必ず知らせます**(下記「結果件数の上限は切り詰めて知らせます」)
-- 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)。削除(`DELETE /namespaces/{namespace}`)は、公開済みバージョンが Blob に1件でも残っていれば 409 Conflict で拒否する(オントロジーは不変リビジョンであり、レプリカ再作成後に削除済みのはずのデータが Blob から復活することを防ぐため)。
+- 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)。削除(`DELETE /namespaces/{namespace}`)は、公開済みバージョンが Blob に1件でも残っていれば 409 Conflict で拒否する(オントロジーは不変リビジョンであり、レプリカ再作成後に削除済みのはずのデータが Blob から復活することを防ぐため)。**使わなくなった名前空間は削除ではなく退役させる**(`POST /namespaces/{namespace}/retire`。[ADR-0032](docs/adr/0032-namespace-retirement.md))。
   **この判定と行の削除の間に同時 publish が割り込む競合は閉じました**([ADR-0024](docs/adr/0024-namespace-delete-locking.md)、`P2B-12`)。削除と publish が**同じ行ロック**(`SELECT ... FOR UPDATE`)を取ります。削除は **Blob の検査より前**に、publish は **Blob への書き込みより前**に取るので、どちらが先でも「Blob に TTL があって PostgreSQL には何も無い」状態(= レプリカ再作成で名前空間が復活する状態)になりません。**`DELETE` 文が暗黙に取る行ロックでは遅すぎます** — その時点では既に Blob に TTL が書かれています。「後から Blob を再検査する」でも窓は閉じません(publish が Blob を書く前に削除が commit してしまう順序が残ります)。
   なお**公開済みオントロジーを含む名前空間の退役**(409 を返している側)は未決のままです(`P2B-19`)。不変条件「公開済みの版は削除しない」との関係を決める必要があります
 - **最小の承認フローが動作します(ADR-0010)。** `POST /namespaces/{ns}/versions` は版を
@@ -56,7 +56,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   | `approve` / `reject` | `maintainer` |
   | 用語の責任者の付与・取り消し | `maintainer` |
   | アクセスログの照会・削除 / 領域間マッピングの宣言・取り消し | `owner` |
-  | 名前空間の削除 / ロールの付与・取り消し | `owner` |
+  | 名前空間の削除・退役 / ロールの付与・取り消し | `owner` |
   | 名前空間の作成 / `POST /admin/reconcile` | `platform-admin`(Entra アプリロール) |
 
   **付与が 1 件も無い名前空間は「誰も権限を持たない」として扱います。**
@@ -70,7 +70,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 795 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 818 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -977,6 +977,39 @@ curl -G "$API/namespaces/retail-core/mappings/export" \
 | d | **権限の粒度が合いません。** ADR-0030 決定1 は「相手を読めなければ生死を返さない」と決めましたが、射影したグラフは**名前空間のデータセット単位でしか権限を持てません** |
 
 **書き出しは運用者が明示的に取得する行為**で、射影は**エージェントが知らないまま引く静かな事実**です。同じ情報の欠落でも、**誰がそれを引き受けるかが違います**(決定5)。
+
+#### 使わなくなった名前空間は削除ではなく退役させる
+
+**公開済みオントロジーを含む名前空間は削除しません**(不変条件7)。代わりに**退役**させます([ADR-0032](docs/adr/0032-namespace-retirement.md)、`P2B-19`)。
+
+```bash
+# 退役させる(owner が必要。reason は必須で監査に残る)
+curl -X POST "$API/namespaces/retail-core/retire"   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'   -d '{"reason": "この領域は finance-core に統合したため使わなくなった"}'
+
+# 戻す
+curl -X POST "$API/namespaces/retail-core/unretire"   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'   -d '{"reason": "やはり参照が必要になった"}'
+```
+
+**削除ではありません。** Blob の TTL も PostgreSQL の版と監査もそのまま残ります。**止まるのは射影と内容の増設だけ**です。
+
+| 経路 | 退役中 |
+|---|---|
+| `publish` / `submit` / `approve` / `reject` | **409** |
+| `POST .../sparql` | **409**(**0 行を静かに返しません**) |
+| `POST .../questions`(改訂) | **409** |
+| `PUT .../mappings`(宣言) | **409** |
+| 版の一覧・決定記録・監査・PROV-O・健全性・差分 | 通る |
+| ロール・用語の責任者・マッピングの取り消し | 通る(片付け) |
+
+**SPARQL を 409 にしているのが要点です。** 退役はデータセットを消すので、クエリを通すと**空の結果が返ります** — エージェントはそれを「該当なし」と読んで回答を作ります。退役した名前空間への問い合わせと、本当に該当が無いのは別の事実です。
+
+**なぜ退役が必要なのか。** [ADR-0006](docs/adr/0006-ontology-versioning-and-audit.md) の中核価値「誰が承認した定義に基づく答えかを説明できること」は、**その名前空間が使われなくなった後こそ効きます** — 過去の回答の根拠を辿るために監査証跡が要るからです。
+
+**実装の要点**: マニフェスト(`_state.json`)の各版の `projection` を **`skip:retired`** にすることで射影を止めます。`projection` は**ローダが既に従う欄**なので、**ローダを 1 行も変えずに退役が効きます**。マニフェストの `schema` は上げていません — 安全に関わる指示を新しい schema にだけ載せると、**古いローダが無視して事故になります**(`P2B-C1` で実際に踏みました)。
+
+**戻せます。** 正本は無傷なので、戻すのは列を消すだけです。**ただし解除の直後はストアが空です** — `POST /admin/reconcile` を実行するか、次のレプリカ再作成を待ってください(応答の `note` がそれを伝えます)。
+
+**退役した名前空間の名前は再利用できません。** 行が残るためです。これは意図した振る舞いで、同名で作り直せると監査証跡が別のオントロジーの記録と混ざります。
 
 #### `POST /admin/reconcile` の報告の読み方
 

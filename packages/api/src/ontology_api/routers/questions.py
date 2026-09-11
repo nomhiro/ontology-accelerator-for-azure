@@ -27,7 +27,9 @@ from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.questions import QuestionSetRepository
 from ontology_api.repositories.versions import AuditRepository
 from ontology_api.services.authorization import (
+    NamespaceRetiredError,
     PermissionDeniedError,
+    ensure_not_retired,
     require_namespace_role,
 )
 from ontology_api.services.projection import (
@@ -168,6 +170,12 @@ async def revise_question_set(
     するため(決定6)。
     """
     await _prepare(session, namespace=namespace, principal=principal, required=NamespaceRole.OWNER)
+    # **退役した名前空間では基準を改訂しない**(ADR-0032 決定5)。
+    # 作れない版の受け入れ基準を書き換える意味が無い。
+    try:
+        await ensure_not_retired(session, namespace=namespace, doing="想定質問の改訂")
+    except NamespaceRetiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     try:
         questions = parse_questions(payload.content, where=f"'{namespace}' の質問集合")
     except QuestionFileError as exc:

@@ -49,6 +49,17 @@ class NamespaceRow(Base):
     require_two_person_approval: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )
+    # 退役(ADR-0032、`P2B-19`)。**削除ではない。**
+    #
+    # **`retired_at` が NULL かどうかが唯一の判定である。** 文字列の状態機械に
+    # しないのは、名前空間の状態が他に無く、値を足すたびに移行が要る形を
+    # 作らないためである。
+    #
+    # 正本(Blob の TTL・PostgreSQL の版と監査)はそのまま残る(不変条件7)。
+    # 止まるのは**射影**と**内容の増設**だけである(ADR-0032 決定5)。
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    retired_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    retired_reason: Mapped[str | None] = mapped_column(Text, default=None)
 
 
 class NamespaceRoleRow(Base):
