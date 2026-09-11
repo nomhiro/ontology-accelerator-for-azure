@@ -234,6 +234,12 @@ async def run_question_set(
 
     **質問集合が無ければ `revision` が `None` で `conforms` は真になる。**
     「基準を定めていない」は「基準を満たしていない」ではない(決定7)。
+
+    **`criteria_self_revised` が埋まっていたら必ず読むこと**(ADR-0029)。
+    その版を書いた主体が、版を publish した後に受け入れ基準を書き換えている。
+    四眼原則が有効な名前空間では `approve` が 422 で止まる。
+    **無効な名前空間でも埋まる** — 止まらないが、承認する前に見えるべき
+    事実である(決定6)。
     """
     try:
         validate_namespace_name(namespace)
@@ -263,6 +269,10 @@ async def run_question_set(
             detail=f"想定質問を評価できませんでした: {exc}",
         ) from exc
 
+    # **基準の出自も返す**(ADR-0029 決定6)。四眼原則の設定に関わらず、
+    # 事実は見えるべきである。止めるのは `approve` の仕事。
+    self_revision = await service.check_criteria_authorship(namespace=namespace, version=version)
+
     return CompetencyRunReport(
         namespace=namespace,
         version=version,
@@ -271,4 +281,5 @@ async def run_question_set(
         results=_to_outcomes(report),
         not_evaluated=report.not_evaluated,
         elapsed_seconds=report.elapsed_seconds,
+        criteria_self_revised=None if self_revision is None else self_revision.message(),
     )

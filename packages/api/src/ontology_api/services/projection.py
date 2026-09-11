@@ -79,6 +79,8 @@ __all__ = [
     "AutoVersionError",
     "CompetencyEvaluationError",
     "CompetencyViolationError",
+    "CriteriaSelfRevision",
+    "CriteriaSelfRevisionError",
     "InvalidTransitionError",
     "ProjectionService",
     "ReconcileReport",
@@ -142,6 +144,53 @@ class CompetencyViolationError(Exception):
     def __init__(self, message: str, *, report: CompetencyReport) -> None:
         super().__init__(message)
         self.report = report
+
+
+@dataclass(frozen=True)
+class CriteriaSelfRevision:
+    """審査される側が受け入れ基準を書き換えたという事実(ADR-0029 決定2)。
+
+    **事実の検出と、止めるかの判断を分ける**(決定6)。このオブジェクトは
+    四眼原則が無効な名前空間でも作られ、レビュー用の口から見える。
+    止めるかどうかだけを `require_two_person_approval` で分岐させる。
+
+    Attributes:
+        revision: 有効な質問集合の改訂番号。
+        author: 版を書いた主体(= 基準を書き換えた主体)。
+        revised_at: 基準が書き換えられた時刻。
+        version_created_at: 版が publish された時刻。**境界はこちら** —
+            版の内容は publish で固定されるので、著者はその時点で合否を
+            知っている(ADR-0029 決定2)。
+    """
+
+    revision: int
+    author: str
+    revised_at: datetime
+    version_created_at: datetime
+
+    def message(self) -> str:
+        return (
+            f"この版を書いた主体 '{self.author}' が、版を publish した後に"
+            f"受け入れ基準(質問集合の改訂 {self.revision})を書き換えています"
+            f"(版: {self.version_created_at.isoformat()} / "
+            f"改訂: {self.revised_at.isoformat()})。"
+            "**受け入れ基準は、その基準で審査される側が書き換えてはなりません。**"
+            "別の主体が基準を改訂し直して(内容が同じでもよい)から承認してください"
+        )
+
+
+class CriteriaSelfRevisionError(Exception):
+    """審査される側が基準を書き換えたため承認できない(ADR-0029 決定2)。
+
+    **`CompetencyViolationError` と分ける。** どちらも 422 だが、
+    運用者が取るべき対処が違う — あちらは「オントロジーか基準を直す」、
+    こちらは「**別の主体に基準を確認してもらう**」である。同じ例外に混ぜると、
+    基準をさらに緩めて解決しようとして解決しない(むしろ悪化する)。
+    """
+
+    def __init__(self, message: str, *, detail: CriteriaSelfRevision) -> None:
+        super().__init__(message)
+        self.detail = detail
 
 
 class CompetencyEvaluationError(Exception):
@@ -693,6 +742,62 @@ class ProjectionService:
         # 別スレッドへ逃がす。イベントループを塞ぐと他のリクエストが進めない。
         return await asyncio.to_thread(validate_turtle_with_shacl, turtle)
 
+    async def check_criteria_authorship(
+        self, *, namespace: str, version: str
+    ) -> CriteriaSelfRevision | None:
+        """審査される側が受け入れ基準を書き換えていないか調べる(ADR-0029 決定2)。
+
+        **状態を変えない。** レビュー用の口と `approve` の両方から呼ぶ
+        (`validate_shacl` / `evaluate_competency_questions` と同じ形)。
+
+        **事実を返すだけで、止めるかは判断しない**(決定6)。
+        `approve` が `require_two_person_approval` を見て 422 にする。
+        四眼原則を切っている運用者にも、何が起きたかは見えるべきである。
+
+        条件は 2 つの一致である。
+
+        1. 有効な質問集合の改訂の `created_by` == その版の `created_by`
+        2. その改訂の `created_at` >= その版の `created_at`
+
+        **境界は版の `created_at`(publish した時刻)である**(決定2)。
+        版の内容は publish の時点で固定されるので(不変条件7)、著者はそこで
+        合否を知っている。submit の時刻にすると、publish から submit までの
+        間の書き換えを見逃す。
+
+        **基準が「緩くなった」かは判定しない**(決定2)。緩めたのか締めたのかを
+        機械的に決めるには改訂前後で同じ版を評価して比べる必要があり、
+        その評価自体が未評価になりうる(ADR-0022 決定5)。**測れないものを
+        条件に入れない** — 規則は「審査される側が基準を書かない」であって、
+        方向は問わない。
+
+        **ストアには問い合わせない**(不変条件15)。質問集合も版も正本
+        (PostgreSQL)にある。
+
+        Raises:
+            UnknownVersionError: 版が無いとき。
+        """
+        current = await VersionRepository(self._session).get(namespace, version)
+        if current is None:
+            raise UnknownVersionError(f"'{namespace}@{version}' が見つかりません")
+
+        question_set = await QuestionSetRepository(self._session).active(namespace)
+        if question_set is None:
+            # 基準を定めていない。審査されるものが無いので問題も無い
+            # (ADR-0022 決定7)。
+            return None
+        if question_set.created_by != current.created_by:
+            return None
+        if question_set.created_at < current.created_at:
+            # 版より前に定められた基準である。**これは正常な統制である**
+            # (ADR-0029 のコンテキストの経路 3)。
+            return None
+        return CriteriaSelfRevision(
+            revision=question_set.revision,
+            author=current.created_by,
+            revised_at=question_set.created_at,
+            version_created_at=current.created_at,
+        )
+
     async def evaluate_competency_questions(
         self, *, namespace: str, version: str
     ) -> tuple[int | None, CompetencyReport]:
@@ -935,6 +1040,28 @@ class ProjectionService:
         # **質問集合が無い名前空間は素通りする**(決定7)。「基準を定めて
         # いない」は「基準を満たしていない」ではない。定めていないことは
         # 健全性指標(`competency_question_count`)で見える。
+        #
+        # **基準の出自を先に見る**(ADR-0029 決定2)。位置が本質 —
+        # 基準そのものが正当でないなら、その基準で評価しても意味が無い。
+        #
+        # **検出は常に行い、止めるかだけを四眼原則の設定で分岐させる**
+        # (決定6)。設定を別に作らないのは、片方だけ切って「四眼原則を
+        # 有効にしたつもり」になれる状態を作らないためである(決定3)。
+        #
+        # **`platform-admin` の分岐は無い**(決定4)。管理者が飛び越えられる
+        # なら、四眼原則が「管理者以外への制約」に成り下がる(不変条件12)。
+        self_revision = await self.check_criteria_authorship(namespace=namespace, version=version)
+        if (
+            self_revision is not None
+            and namespace_row is not None
+            and namespace_row.require_two_person_approval
+        ):
+            raise CriteriaSelfRevisionError(
+                f"'{namespace}@{version}' は受け入れ基準の出自のため承認できません: "
+                + self_revision.message(),
+                detail=self_revision,
+            )
+
         question_revision, competency = await self.evaluate_competency_questions(
             namespace=namespace, version=version
         )

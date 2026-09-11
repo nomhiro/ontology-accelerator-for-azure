@@ -362,6 +362,14 @@ class CompetencyRunReport(BaseModel):
         description="予算を超えて評価しなかった質問の id。**空でなければ「確かめられなかった」**",
     )
     elapsed_seconds: float = 0.0
+    criteria_self_revised: str | None = Field(
+        default=None,
+        description="**審査される側が基準を書き換えている**ことの説明"
+        "(ADR-0029 決定2、不変条件14)。`null` ならその事実は無い。"
+        "四眼原則が有効な名前空間では `approve` が 422 で止まる。"
+        "**無効な名前空間でもこの欄は埋まる** — 止まらないが、"
+        "何が起きたかは見えるべきである(決定6)",
+    )
 
 
 class TermMapping(BaseModel):

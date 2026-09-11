@@ -20,6 +20,7 @@ from ontology_api.services.projection import (
     CompetencyEvaluationError,
     CompetencyViolationError,
     ConcurrentUpdateError,
+    CriteriaSelfRevisionError,
     DeprecationViolationError,
     InvalidTransitionError,
     ProjectionService,
@@ -404,6 +405,16 @@ async def approve_version(
         # P2B-14: 合意済みの規約に反するので承認を止める(ADR-0009 決定1、
         # ADR-0022 決定3)。**SHACL 違反とも廃止違反とも別の例外にしている** —
         # 対処が「オントロジーを直す」か「基準を改訂する」かの分岐になる。
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except CriteriaSelfRevisionError as exc:
+        # P2B-16: 審査される側が受け入れ基準を書き換えた(ADR-0029 決定2、
+        # 不変条件14)。**`CompetencyViolationError` と分けている** — あちらの
+        # 対処は「オントロジーか基準を直す」だが、こちらは「**別の主体に
+        # 基準を確認してもらう**」である。混ぜると、基準をさらに緩めて
+        # 解決しようとして解決しない(むしろ悪化する)。
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
