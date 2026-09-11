@@ -72,6 +72,9 @@ param sparqlQueryTimeoutSeconds string = '30'
 @description('SPARQL クエリの最大結果件数。')
 param sparqlMaxResults string = '10000'
 
+@description('CONSTRUCT / DESCRIBE が返すトリプル数の上限（ADR-0034、P2A-14）。行数とは別の量で、超えたら切り詰めずに 413 で断る。')
+param sparqlMaxTriples string = '50000'
+
 var placeholderImage = 'mcr.microsoft.com/k8se/quickstart:latest'
 var resolvedImage = empty(imageName) ? placeholderImage : imageName
 var resolvedTenantId = empty(entraTenantId) ? subscription().tenantId : entraTenantId
@@ -191,6 +194,10 @@ resource mcp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'SPARQL_MAX_RESULTS'
               value: sparqlMaxResults
+            }
+            {
+              name: 'SPARQL_MAX_TRIPLES'
+              value: sparqlMaxTriples
             }
           ]
           // /healthz は認証不要でプロセスの生存だけを返す (Core API・ストアの到達性は

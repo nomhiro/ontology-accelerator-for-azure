@@ -147,7 +147,17 @@ class AccessEvent(BaseModel):
     used_graph_clause: bool = Field(
         description="クエリが `GRAPH` 句を含むか。真なら版の記録が不完全である"
     )
-    returned_row_count: int
+    returned_row_count: int | None = Field(
+        default=None,
+        description="返した行数。**`CONSTRUCT` / `DESCRIBE` では `null`**"
+        "(行の概念が無い。ADR-0034 決定7)。量は `returned_triple_count` を見ること。"
+        "**`ASK` は既存の振る舞いで `0` である**(`P2B-22`)",
+    )
+    returned_triple_count: int | None = Field(
+        default=None,
+        description="返したトリプル数。**`CONSTRUCT` / `DESCRIBE` のときだけ入る**。"
+        "`SELECT` / `ASK` では `null`(トリプルの概念が無い)",
+    )
     returned_term_count: int = Field(
         description="返した用語のうち、その名前空間が発行した IRI の数"
     )

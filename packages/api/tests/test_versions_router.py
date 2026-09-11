@@ -53,6 +53,9 @@ class _NullStore(SparqlStore):
     async def query(self, sparql: str, *, dataset: str) -> dict:  # type: ignore[type-arg]
         return {"results": {"bindings": []}}
 
+    async def construct(self, sparql: str, *, dataset: str) -> str:
+        return ""
+
     async def update(self, sparql: str, *, dataset: str) -> None:
         return None
 

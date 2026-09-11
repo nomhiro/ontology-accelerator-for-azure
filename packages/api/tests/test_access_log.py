@@ -63,6 +63,9 @@ class _Store(SparqlStore):
             "results": {"bindings": [{"s": {"type": "uri", "value": v}} for v in values]},
         }
 
+    async def construct(self, sparql: str, *, dataset: str) -> str:
+        return ""
+
     async def update(self, sparql: str, *, dataset: str) -> None: ...
     async def put_graph(self, graph_iri: str, turtle: str, *, dataset: str) -> None: ...
     async def put_default_graph(self, turtle: str, *, dataset: str) -> None: ...
@@ -135,6 +138,10 @@ async def _run(
         store=store,
         response=Response(),
     )
+    # **`run_query` の戻り値は `dict | Response` である**(ADR-0034 決定3)。
+    # ここは `SELECT` / `ASK` の経路なので `dict` に絞る。**絞ったことを
+    # 明示する** — `Response` が来ていたら経路の取り違えである。
+    assert isinstance(result, dict), "SELECT の経路が Response を返している"
     await session.commit()
     return result
 

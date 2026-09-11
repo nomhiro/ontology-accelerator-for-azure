@@ -197,3 +197,76 @@ async def test_unexpected_json_shape_is_wrapped_in_has_default_graph_content() -
     finally:
         await store.aclose()
         await client.aclose()
+
+
+# ------------------------------------------- construct(P2A-14、ADR-0034)
+
+
+def _recording_store() -> tuple[FusekiStore, httpx.AsyncClient, list[httpx.Request]]:
+    """送ったリクエストを記録するストア。"""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="<urn:s> <urn:p> <urn:o> .\n")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    store = FusekiStore(
+        query_endpoint=f"{_UNREACHABLE}/{{dataset}}/sparql",
+        update_endpoint=f"{_UNREACHABLE}/{{dataset}}/update",
+        gsp_endpoint=f"{_UNREACHABLE}/{{dataset}}/data",
+        admin_endpoint=f"{_UNREACHABLE}/$/",
+        client=client,
+    )
+    return store, client, seen
+
+
+async def test_construct_は_turtle_を_Accept_で要求する() -> None:
+    """**プロトコルとしての正しさを固定する**(ADR-0034 決定2)。
+
+    **実測では Fuseki は `Accept` に関わらず Turtle を返す** — 502 の原因は
+    `Accept` ではなく `response.json()` だった(ADR-0034 のコンテキスト)。
+
+    それでも `Accept: text/turtle` を送るのは、**持ち込みストア**
+    (ADR-0001 設計原則3)が `Accept` を尊重する実装かもしれないからである。
+    **Fuseki だけを見て「不要」と結論しない。**
+    """
+    store, client, seen = _recording_store()
+    try:
+        body = await store.construct("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", dataset="ds")
+    finally:
+        await store.aclose()
+        await client.aclose()
+
+    assert body == "<urn:s> <urn:p> <urn:o> .\n"
+    assert len(seen) == 1
+    assert seen[0].headers["accept"] == "text/turtle"
+    assert seen[0].headers["content-type"].startswith("application/sparql-query")
+    # **クエリのエンドポイントへ送る**(更新でも GSP でもない)。
+    assert seen[0].url.path.endswith("/ds/sparql")
+
+
+async def test_construct_は本文を解析しない() -> None:
+    """**`_send_json` を通さない**(ADR-0034 決定2)。
+
+    通すと `response.json()` が Turtle に対して失敗し、**ADR-0025 決定8 が
+    記録した 502 が戻る**。ここで「Turtle をそのまま返す」ことを固定する。
+    """
+    store, client, _ = _recording_store()
+    try:
+        assert await store.construct("DESCRIBE <urn:s>", dataset="ds") == (
+            "<urn:s> <urn:p> <urn:o> .\n"
+        )
+    finally:
+        await store.aclose()
+        await client.aclose()
+
+
+async def test_construct_のトランスポート例外も包まれる() -> None:
+    """不変条件4: ストアの失敗は必ず `SparqlStoreError` として表面化する。"""
+    store = _store()
+    try:
+        with pytest.raises(SparqlStoreError):
+            await store.construct("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", dataset="ds")
+    finally:
+        await store.aclose()

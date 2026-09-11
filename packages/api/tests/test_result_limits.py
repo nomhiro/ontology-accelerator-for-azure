@@ -10,7 +10,8 @@
 1. **上限を超えたら切り詰める**
 2. **切り詰めたことをヘッダで必ず知らせる**(決定4)
 3. **アクセスログには切り詰める前の行数を記録する**(決定6)
-4. **`CONSTRUCT` / `DESCRIBE` は 502 ではなく 400 で断る**(決定8)
+4. **`CONSTRUCT` / `DESCRIBE` はこの上限を通らない**(ADR-0034 決定4 で
+   トリプル数の上限に分かれた。決定8 の 400 は解除された)
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from fastapi import HTTPException, Response
+from fastapi import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.access import AccessRepository
@@ -62,6 +63,9 @@ class _RowStore(SparqlStore):
             return {"head": {"vars": ["term"]}, "results": {"bindings": []}}
         bindings = [{"s": {"type": "uri", "value": f"{_BASE}T{i}"}} for i in range(self._rows)]
         return {"head": {"vars": ["s"]}, "results": {"bindings": bindings}}
+
+    async def construct(self, sparql: str, *, dataset: str) -> str:
+        return ""
 
     async def update(self, sparql: str, *, dataset: str) -> None: ...
     async def put_graph(self, graph_iri: str, turtle: str, *, dataset: str) -> None: ...
@@ -119,6 +123,10 @@ async def _run(
         store=_RowStore(rows),
         response=response,
     )
+    # **`run_query` の戻り値は `dict | Response` である**(ADR-0034 決定3)。
+    # ここは `SELECT` / `ASK` の経路なので `dict` に絞る。**絞ったことを
+    # 明示する** — `Response` が来ていたら経路の取り違えである。
+    assert isinstance(result, dict), "SELECT の経路が Response を返している"
     return result, response
 
 
@@ -190,6 +198,7 @@ async def test_ASK_は切り詰めの対象外(session: AsyncSession) -> None:
         store=_AskStore(0),
         response=response,
     )
+    assert isinstance(result, dict), "ASK の経路が Response を返している"
     assert result["boolean"] is True
     assert RESULT_TRUNCATED_HEADER not in response.headers
 
@@ -226,18 +235,33 @@ async def test_アクセスログには切り詰める前の行数を記録す�
         "DESCRIBE <https://e.example/#T0>",
     ],
 )
-async def test_RDF_を返す形は_400_で断る(session: AsyncSession, query: str) -> None:
-    """**502 ではなく 400 である**(ADR-0025 決定8)。
+async def test_RDF_を返す形は行数の上限を通らない(session: AsyncSession, query: str) -> None:
+    """**ADR-0025 決定8 の 400 は ADR-0034(`P2A-14`)で解除された。**
 
-    以前はガードが通し、`FusekiStore.query` が JSON の解析に失敗して 502 に
-    なっていた(実測)。**エージェントから見るとクエリの誤りとサーバの障害が
-    区別できない。**
+    以前は「この経路では扱えません」と 400 で断っていた。いまは
+    `text/turtle` が返り、**行数ではなくトリプル数の上限**
+    (`SPARQL_MAX_TRIPLES`)が効く(ADR-0034 決定4)。
+
+    ここで固定するのは「**行数の上限の経路を通らない**」ことである。
+    行数の上限をトリプル数に流用すると、1 行が何トリプルにもなる
+    `CONSTRUCT` で実質の上限が変わってしまう。
     """
     await _setup(session)
-    with pytest.raises(HTTPException) as exc:
-        await _run(session, rows=1, limit=10, query=query)
-    assert exc.value.status_code == 400
-    assert "SELECT と ASK" in exc.value.detail
+    response = Response()
+    result = await run_query(
+        namespace=_NS,
+        payload=SparqlQueryRequest(query=query),
+        principal=_ANALYST,
+        session=session,
+        settings=_settings(1),  # 行数の上限は 1 だが、RDF には効かない
+        store=_RowStore(25),
+        response=response,
+    )
+    assert not isinstance(result, dict), "RDF を返す形が JSON を返している"
+    assert result.media_type is not None
+    assert result.media_type.startswith("text/turtle")
+    # 行数の上限のヘッダは付かない。
+    assert RESULT_TRUNCATED_HEADER not in response.headers
 
 
 # ---------------------------------------------------------------- 設定の検証

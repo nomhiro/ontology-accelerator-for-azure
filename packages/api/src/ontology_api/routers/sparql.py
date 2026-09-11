@@ -18,6 +18,7 @@ SPARQL Update をここから公開することはない。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -35,13 +36,21 @@ from ontology_api.services.authorization import (
     principal_id_of,
     require_namespace_role,
 )
-from ontology_core.access import build_access_record
+from ontology_core.access import build_access_record, build_rdf_access_record
 from ontology_core.deprecation import deprecated_iris_in_results
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.models import NamespaceRole, OntologyVersionStatus
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
-from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query
+from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query, query_form
 from ontology_core.sparql.limits import cap_bindings
+from ontology_core.sparql.rdf_results import (
+    RdfParseError,
+    RdfResult,
+    TripleLimitExceededError,
+    load_construct_result,
+    terms_in_graph,
+)
+from ontology_core.turtle import TURTLE_MEDIA_TYPE
 
 router = APIRouter(prefix="/namespaces/{namespace}/sparql", tags=["sparql"])
 logger = logging.getLogger(__name__)
@@ -111,9 +120,13 @@ async def _record_access(
     namespace: str,
     actor: str,
     query: str,
-    results: dict[str, Any],
+    results: dict[str, Any] | None = None,
+    rdf: RdfResult | None = None,
 ) -> None:
     """アクセスログを記録する(`P2B-05`、ADR-0018)。
+
+    `results`(`SELECT` / `ASK`)と `rdf`(`CONSTRUCT` / `DESCRIBE`)の
+    どちらか一方を渡す。**行とトリプルを混ぜない**(ADR-0034 決定7)。
 
     **失敗してもクエリを失敗させない**(決定3)。不変条件3(射影の失敗は正本への
     書き込みを失敗させない)と同じ向きの判断である — アクセスログは読み取りの
@@ -135,14 +148,25 @@ async def _record_access(
             ),
             None,
         )
-        record = build_access_record(
-            namespace=namespace,
-            actor=actor,
-            query=query,
-            results=results,
-            base_iri=ns.base_iri,
-            default_graph_version=None if current is None else current.version,
-        )
+        version = None if current is None else current.version
+        if rdf is not None:
+            record = build_rdf_access_record(
+                namespace=namespace,
+                actor=actor,
+                query=query,
+                triple_count=rdf.triple_count,
+                terms=terms_in_graph(rdf.turtle, base_iri=ns.base_iri),
+                default_graph_version=version,
+            )
+        else:
+            record = build_access_record(
+                namespace=namespace,
+                actor=actor,
+                query=query,
+                results=results,
+                base_iri=ns.base_iri,
+                default_graph_version=version,
+            )
         await AccessRepository(session).record(record)
     except Exception:
         logger.exception(
@@ -151,7 +175,84 @@ async def _record_access(
         )
 
 
-@router.post("", summary="読み取り専用の SPARQL クエリを実行する")
+async def _run_rdf_query(
+    *,
+    namespace: str,
+    query: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    settings: SettingsDep,
+    store: StoreDep,
+) -> Response:
+    """`CONSTRUCT` / `DESCRIBE` を実行して `text/turtle` を返す(ADR-0034)。
+
+    **権限・退役・ガードの検査は呼び出し元(`run_query`)で済んでいる。**
+    ここは実行と上限の検査だけを行う。
+
+    **上限を超えたら切り詰めずに 413 で断る**(決定4)。行数(ADR-0025 決定5)
+    とは意図的に違う判断である — **RDF には「切り詰めた」と書く封筒が無く**、
+    ヘッダに書いてもエージェントは見ない(ADR-0017 決定3)ので、
+    **不完全なグラフが完全なものとして届く**。
+
+    **廃止済み用語のヘッダは付けない。** `deprecated_iris_in_results` は
+    SPARQL Results JSON の形を前提にしている。RDF の結果に対して同じ警告を
+    出す設計は別途必要なので、**出せないものを出したふりをしない**
+    (`P2B-23` として記録する)。
+    """
+    try:
+        body = await store.construct(query, dataset=namespace)
+    except SparqlStoreError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    # **解析は CPU バウンドなので別スレッドへ逃がす**(SHACL 検証・意味的差分と
+    # 同じ扱い)。イベントループを塞ぐと他のリクエストが進めない。
+    try:
+        result = await asyncio.to_thread(
+            load_construct_result, body, limit=settings.sparql_max_triples
+        )
+    except TripleLimitExceededError as exc:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)) from exc
+    except RdfParseError as exc:
+        # **空のグラフを返さない。** 「解析できなかった」を「該当なし」と
+        # 混同すると、エージェントが誤った結論を出す。
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    await _record_access(
+        session,
+        namespace=namespace,
+        actor=principal_id_of(principal),
+        query=query,
+        rdf=result,
+    )
+    return Response(content=result.turtle, media_type=TURTLE_MEDIA_TYPE)
+
+
+@router.post(
+    "",
+    summary="読み取り専用の SPARQL クエリを実行する",
+    # **`response_model=None` が必要である**(ADR-0034 決定3)。
+    # 戻り値の注釈が `dict[str, Any] | Response` になった時点で FastAPI は
+    # 応答モデルを組み立てられず、**収集時に `FastAPIError` で全テストが
+    # 落ちる**(実測)。無効にする代わりに、応答の形を `responses` で明示する。
+    response_model=None,
+    responses={
+        200: {
+            "description": (
+                "`SELECT` / `ASK` は SPARQL Results JSON、`CONSTRUCT` / `DESCRIBE` は Turtle"
+            ),
+            "content": {
+                "application/sparql-results+json": {},
+                "text/turtle": {},
+            },
+        },
+        413: {
+            "description": (
+                "`CONSTRUCT` / `DESCRIBE` の結果が `SPARQL_MAX_TRIPLES` を超えた。"
+                "**切り詰めて返さない**(ADR-0034 決定4)"
+            ),
+        },
+    },
+)
 async def run_query(
     namespace: str,
     payload: SparqlQueryRequest,
@@ -160,8 +261,14 @@ async def run_query(
     settings: SettingsDep,
     store: StoreDep,
     response: Response,
-) -> dict[str, Any]:
-    """クエリを検査してからストアへ渡し、SPARQL Results JSON を返す。
+) -> dict[str, Any] | Response:
+    """クエリを検査してからストアへ渡し、結果を返す。
+
+    **応答の型はクエリの形で決まる**(ADR-0034 決定3)。`SELECT` / `ASK` は
+    SPARQL Results JSON、`CONSTRUCT` / `DESCRIBE` は `text/turtle` である。
+    **URL は分けない** — それが SPARQL 1.1 Protocol の振る舞いで、ADR-0001 は
+    そのプロトコルをハード境界にすると決めている。URL を分けると、
+    クライアントがクエリを送る前に形を判定しなければならない。
 
     ガードは多層防御の外側であり、権威ある制御はストア側の設定
     (`containers/fuseki/config.ttl` の `SERVICE` 無効化)にある。
@@ -219,6 +326,19 @@ async def run_query(
         ensure_agent_safe_query(payload.query, allow_service=settings.sparql_allow_service)
     except QueryRejectedError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # **RDF を返す形は別の経路に分ける**(ADR-0034 決定1・2)。判定は
+    # `query_form` にしか置かない — ガードが通した形とここで扱う形が食い違うと、
+    # ADR-0025 決定8 が直したのと同じ不具合(502)になる。
+    if query_form(payload.query).returns_rdf:
+        return await _run_rdf_query(
+            namespace=namespace,
+            query=payload.query,
+            principal=principal,
+            session=session,
+            settings=settings,
+            store=store,
+        )
 
     try:
         results = await store.query(payload.query, dataset=namespace)

@@ -52,7 +52,12 @@ from starlette.routing import Route
 
 from ontology_core.auth.entra import TokenVerificationError, TokenVerifier
 from ontology_core.config import AuthMode, get_settings
-from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query
+from ontology_core.sparql.guards import (
+    QueryRejectedError,
+    ensure_agent_safe_query,
+    query_form,
+)
+from ontology_core.sparql.rdf_results import count_triples
 from ontology_mcp import __version__
 
 _settings = get_settings()
@@ -202,8 +207,9 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
 
     Args:
         namespace: 対象の名前空間の名前。`list_namespaces` で取得できる。
-        query: SPARQL の SELECT または ASK クエリ。更新操作と SERVICE 句は
-            使えない。**推論は行われないのでプロパティパスを使うこと**(上記)。
+        query: SPARQL の SELECT / ASK / CONSTRUCT / DESCRIBE クエリ。
+            更新操作と SERVICE 句は使えない。
+            **推論は行われないのでプロパティパスを使うこと**(上記)。
 
     Returns:
         SPARQL Results JSON 形式の結果。
@@ -214,6 +220,15 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
         「少なくとも N 件あり、上限で切られている」が正確である。絞り込みの
         条件を足して問い直すか、そのことを回答に添えること。
         切り詰めが無い場合これらのキーは付かない。
+
+        **`turtle` が来たら RDF として読むこと**(`CONSTRUCT` / `DESCRIBE`)。
+        その場合 **`results` は無い** — `form` が `construct` か `describe` に
+        なり、`turtle`(Turtle 形式の RDF)と `triple_count` が入る。
+        **`results` が無いことを「0 件だった」と読んではいけない。**
+
+        `CONSTRUCT` / `DESCRIBE` の結果が上限を超えると **413 でエラーになる**
+        (切り詰めた RDF は「切り詰めた」と書く場所が無いため)。その場合は
+        条件を足して問い直すこと。
 
         **`deprecation_warnings` が付いていたら必ず読むこと。** 結果に現れた
         用語のうち、**廃止済み(`owl:deprecated`)のもの**の IRI が入る。
@@ -241,6 +256,24 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
             json={"query": query},
         )
         response.raise_for_status()
+
+        # ---- `CONSTRUCT` / `DESCRIBE` は RDF が返る(ADR-0034 決定8) ----
+        #
+        # **`head` / `results` を偽造しない。** 空の `results` を付けると、
+        # エージェントは「0 行だった」と読む。**形が違うことを形で伝える。**
+        if (response.headers.get("content-type") or "").startswith("text/turtle"):
+            turtle = response.text
+            rdf_result: dict[str, Any] = {
+                "form": query_form(query).value,
+                "turtle": turtle,
+            }
+            # **数えられなければキーを付けない**(`0` を書かない)。
+            # 「トリプルが 0 件」と「数えられなかった」は違う。
+            triples = count_triples(turtle)
+            if triples is not None:
+                rdf_result["triple_count"] = triples
+            return rdf_result
+
         result: dict[str, Any] = response.json()
 
     # ---- 廃止された用語の警告(P2B-03、ADR-0017 決定3) ----

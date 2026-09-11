@@ -84,6 +84,9 @@ class _RecordingStore(SparqlStore):
     async def query(self, sparql: str, *, dataset: str) -> dict[str, Any]:
         return {"head": {"vars": []}, "results": {"bindings": []}}
 
+    async def construct(self, sparql: str, *, dataset: str) -> str:
+        return ""
+
     async def update(self, sparql: str, *, dataset: str) -> None: ...
 
     async def put_graph(self, graph_iri: str, turtle: str, *, dataset: str) -> None:

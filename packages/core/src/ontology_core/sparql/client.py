@@ -44,6 +44,23 @@ class SparqlStore(ABC):
         """SELECT / ASK を実行し SPARQL Results JSON を返す。"""
 
     @abstractmethod
+    async def construct(self, sparql: str, *, dataset: str) -> str:
+        """`CONSTRUCT` / `DESCRIBE` を実行し **Turtle** を返す(ADR-0034 決定2)。
+
+        **`query` と別のメソッドにする。** `query` は `dict` を返す契約で、
+        そこを `dict | str` に広げると**呼び出し側が毎回型を判定する**ことに
+        なる(`list_graphs` / `has_default_graph_content` のような内部利用も
+        含めて全箇所)。ADR-0025 はその契約を根拠にストリーミングを却下して
+        いるので、契約は維持する。
+
+        **抽象メソッドにする。** 既定実装で例外を投げる形にすると、持ち込み
+        ストア(ADR-0001 設計原則3)で**黙って 500 になる**。抽象にすれば
+        実装し忘れはインスタンス化の時点で分かる。
+
+        失敗は `SparqlStoreError` として表面化する(不変条件4)。
+        """
+
+    @abstractmethod
     async def update(self, sparql: str, *, dataset: str) -> None:
         """SPARQL Update を実行する。Core API からのみ呼ぶこと。"""
 
@@ -173,6 +190,30 @@ class FusekiStore(SparqlStore):
             },
         )
         return result
+
+    async def construct(self, sparql: str, *, dataset: str) -> str:
+        # **`_send`(生のテキスト)を使う。`_send_json` ではない。**
+        #
+        # ADR-0025 決定8 が `CONSTRUCT` を断っていた理由は 502 だったが、
+        # **原因は `Accept` の食い違いではなかった**(ADR-0034 のコンテキストで
+        # 実測し直した)。Fuseki は `CONSTRUCT` に対して `Accept` に関わらず
+        # Turtle を返すので、502 は `query` が `response.json()` を呼んで
+        # いたことによる。**ここを `_send_json` に変えると 502 が戻る。**
+        #
+        # それでも `Accept: text/turtle` を送るのは**プロトコルとしての
+        # 正しさ**である。持ち込みストア(ADR-0001 設計原則3)は `Accept` を
+        # 尊重するかもしれない。**Fuseki だけを見て「不要」と結論しない。**
+        response = await self._send(
+            "POST",
+            self._resolve(self._query_endpoint, dataset),
+            operation="クエリ(RDF)",
+            content=sparql.encode("utf-8"),
+            headers={
+                "Content-Type": "application/sparql-query; charset=utf-8",
+                "Accept": "text/turtle",
+            },
+        )
+        return response.text
 
     async def update(self, sparql: str, *, dataset: str) -> None:
         await self._send(

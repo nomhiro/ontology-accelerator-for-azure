@@ -102,6 +102,18 @@ class Settings(BaseSettings):
     # いう解釈を作らない — この設定の目的は上限をかけることである。
     sparql_max_results: int = Field(default=10_000, ge=1, alias="SPARQL_MAX_RESULTS")
 
+    # `CONSTRUCT` / `DESCRIBE` が返すトリプル数の上限(ADR-0034 決定4、`P2A-14`)。
+    #
+    # **行数とは別の量である。** 行数の上限をトリプル数に流用すると、
+    # 1 行が何トリプルにもなる `CONSTRUCT` で実質の上限が変わってしまう。
+    #
+    # **超えたら切り詰めずに 413 で断る**(行数とは違う判断)。RDF には
+    # 「切り詰めた」と書く封筒が無く、ヘッダに書いてもエージェントは見ない
+    # (ADR-0017 決定3)ので、**不完全なグラフが完全なものとして届く**。
+    #
+    # 0 以下は設定の誤りとして起動時に落とす(`SPARQL_MAX_RESULTS` と同じ)。
+    sparql_max_triples: int = Field(default=50_000, ge=1, alias="SPARQL_MAX_TRIPLES")
+
     # ---- 正本(PostgreSQL) ----
     postgres_host: str = Field(default="localhost", alias="POSTGRES_HOST")
     postgres_port: int = Field(default=5432, alias="POSTGRES_PORT")

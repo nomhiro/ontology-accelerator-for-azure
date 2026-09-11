@@ -65,6 +65,9 @@ class _NullStore(SparqlStore):
     async def query(self, sparql: str, *, dataset: str) -> dict:  # type: ignore[type-arg]
         return {"results": {"bindings": []}}
 
+    async def construct(self, sparql: str, *, dataset: str) -> str:
+        return ""
+
     async def update(self, sparql: str, *, dataset: str) -> None: ...
     async def put_graph(self, graph_iri: str, turtle: str, *, dataset: str) -> None: ...
     async def put_default_graph(self, turtle: str, *, dataset: str) -> None: ...
@@ -323,7 +326,7 @@ class _FailingDeprecationStore(_NullStore):
 async def _run(
     session: AsyncSession, settings: Settings, store: SparqlStore, response: Response
 ) -> dict[str, Any]:
-    return await run_query(
+    result = await run_query(
         namespace=_NS,
         payload=SparqlQueryRequest(query="SELECT ?s WHERE { ?s ?p ?o }"),
         principal=_ANALYST,
@@ -332,6 +335,10 @@ async def _run(
         store=store,
         response=response,
     )
+    # **`run_query` の戻り値は `dict | Response` である**(ADR-0034 決定3)。
+    # ここは `SELECT` の経路なので `dict` に絞る。
+    assert isinstance(result, dict), "SELECT の経路が Response を返している"
+    return result
 
 
 @pytest.mark.integration

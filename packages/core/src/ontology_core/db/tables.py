@@ -211,7 +211,19 @@ class AccessEventRow(Base):
     # `used_graph_clause` で伝える**(ADR-0018 決定7)。
     default_graph_version: Mapped[str | None] = mapped_column(String(64), default=None)
     used_graph_clause: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    returned_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # **`CONSTRUCT` / `DESCRIBE` では NULL である**(ADR-0034 決定7)。
+    # 「0 行返した」と「行という概念が無い」は違う。量は
+    # `returned_triple_count` を見ること。
+    #
+    # **`ASK` は既存の振る舞い(0)を変えていない**(`P2B-22`)。あれも同じ
+    # 混同だが、意味を変えると既存の記録の読み方が変わる。
+    # **`default=0` を付けてはいけない。** SQLAlchemy は `None` を
+    # 「設定されていない」と見なして Python 側の既定値を当てるので、
+    # `None` を渡しても `0` が入る(実測でテストが落ちた)。
+    returned_row_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # `CONSTRUCT` / `DESCRIBE` が返したトリプル数(ADR-0034 決定7)。
+    # `SELECT` / `ASK` では NULL(トリプルの概念が無い)。
+    returned_triple_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     returned_term_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 

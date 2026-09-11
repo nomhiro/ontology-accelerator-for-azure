@@ -38,6 +38,7 @@ def _to_event(row: AccessEventRow) -> AccessEvent:
         default_graph_version=row.default_graph_version,
         used_graph_clause=row.used_graph_clause,
         returned_row_count=row.returned_row_count,
+        returned_triple_count=row.returned_triple_count,
         returned_term_count=row.returned_term_count,
     )
 
@@ -77,6 +78,7 @@ class AccessRepository:
                 default_graph_version=record.default_graph_version,
                 used_graph_clause=record.used_graph_clause,
                 returned_row_count=record.returned_row_count,
+                returned_triple_count=record.returned_triple_count,
                 returned_term_count=record.returned_term_count,
             )
         )

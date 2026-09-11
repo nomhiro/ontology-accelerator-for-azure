@@ -70,7 +70,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 829 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 883 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -349,9 +349,43 @@ MCP は受け取ったトークンを**自分で検証してから** Core API �
 ではなく「**何行返ろうとしたか**」でなければ、上限に張り付いているクエリを
 見つけられません。
 
-**`CONSTRUCT` と `DESCRIBE` はこの経路では使えません(400)。** 以前はガードが通し、
-RDF を JSON として解析しようとして 502 になっていました — **エージェントから見ると
-クエリの誤りとサーバの障害が区別できません**。対応は `P2A-14` です。
+**`CONSTRUCT` と `DESCRIBE` は使えます**([ADR-0034](docs/adr/0034-construct-describe.md)、
+`P2A-14`)。**同じエンドポイント**が `text/turtle` を返します — それが
+SPARQL 1.1 Protocol の振る舞いで、URL を分けるとクライアントがクエリを送る前に
+形を判定しなければならなくなります。
+
+```bash
+curl -X POST "$API/namespaces/retail-core/sparql" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"query": "CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }"}'
+# -> Content-Type: text/turtle
+```
+
+**トリプル数の上限は行数とは別です**(`SPARQL_MAX_TRIPLES`、既定 50,000)。
+1 行が何トリプルにもなるので、行数の上限を流用すると実質の上限が変わります。
+
+**上限を超えたら切り詰めずに 413 で断ります。** 行数(上記)とは**意図的に違う
+判断**です — 理由は 1 つで十分に強いものです。
+
+> **RDF には封筒が無い。**
+
+`SELECT` の結果は JSON の封筒(`head` / `results`)なので「切り詰めた」と書く
+場所がありますが、**Turtle にはありません**。トリプルを足せば**利用者のグラフに
+こちらが作った主張を混ぜる**ことになります。ヘッダに書く手はありますが、
+**エージェントはヘッダを見ません**(ADR-0017 決定3)。つまり
+**切り詰めた RDF は、切り詰めたと言えないまま完全な RDF として届きます**。
+413 の本文には実際のトリプル数が入るので、どれだけ絞ればよいか分かります。
+
+**アクセスログは行とトリプルを混ぜません。** `CONSTRUCT` / `DESCRIBE` では
+`returned_row_count` が `null`(行の概念が無い)で、`returned_triple_count` に
+トリプル数が入ります。**`0` を書きません** — 「0 行返した」と「行という概念が
+無い」は違います。
+
+**502 の原因は測り直して訂正しました。** 以前は「`Accept` が食い違って JSON の
+解析に失敗する」と書いていましたが、実測すると **Fuseki は `CONSTRUCT` に対して
+`Accept` に関わらず Turtle を返します**。原因は `response.json()` を呼んでいた
+ことでした。`Accept: text/turtle` を送るのは**プロトコルとしての正しさ**であり、
+持ち込みストアが `Accept` を尊重するかもしれないので続けています。
 
 #### SHACL 検証は承認を止めます
 

@@ -38,6 +38,7 @@ __all__ = [
     "AccessRecord",
     "QueryFingerprint",
     "build_access_record",
+    "build_rdf_access_record",
     "query_fingerprint",
     "returned_terms",
     "uses_graph_clause",
@@ -80,8 +81,12 @@ class AccessRecord:
     query: QueryFingerprint
     default_graph_version: str | None
     used_graph_clause: bool
-    returned_row_count: int
-    terms: tuple[str, ...]
+    # **`CONSTRUCT` / `DESCRIBE` では `None`**(ADR-0034 決定7)。
+    # 「0 行返した」と「行という概念が無い」は違う。
+    returned_row_count: int | None = None
+    # `CONSTRUCT` / `DESCRIBE` が返したトリプル数。`SELECT` / `ASK` では `None`。
+    returned_triple_count: int | None = None
+    terms: tuple[str, ...] = ()
 
     @property
     def returned_term_count(self) -> int:
@@ -162,7 +167,11 @@ def build_access_record(
     base_iri: str,
     default_graph_version: str | None,
 ) -> AccessRecord:
-    """1 回のクエリからアクセスログの記録を組み立てる。"""
+    """1 回のクエリからアクセスログの記録を組み立てる(`SELECT` / `ASK`)。
+
+    `CONSTRUCT` / `DESCRIBE` は `build_rdf_access_record` を使う
+    (行とトリプルを混ぜない。ADR-0034 決定7)。
+    """
     return AccessRecord(
         namespace=namespace,
         actor=actor,
@@ -171,4 +180,35 @@ def build_access_record(
         used_graph_clause=uses_graph_clause(query),
         returned_row_count=_row_count(results),
         terms=returned_terms(results, base_iri=base_iri),
+    )
+
+
+def build_rdf_access_record(
+    *,
+    namespace: str,
+    actor: str,
+    query: str,
+    triple_count: int,
+    terms: tuple[str, ...],
+    default_graph_version: str | None,
+) -> AccessRecord:
+    """`CONSTRUCT` / `DESCRIBE` の記録を組み立てる(ADR-0034 決定7)。
+
+    **`returned_row_count` は `None` のままにする。** 「0 行返した」と
+    「行という概念が無い」は違う — `0` を書くと、アクセスログを読んだ人が
+    「何も返さなかったクエリ」として数える。
+
+    `terms` は呼び出し側が `ontology_core.sparql.rdf_results.terms_in_graph`
+    で数えたものを渡す。グラフから数えるほうが `SELECT` の束縛より**むしろ
+    正確**である(束縛に現れない IRI も拾える)。
+    """
+    return AccessRecord(
+        namespace=namespace,
+        actor=actor,
+        query=query_fingerprint(query),
+        default_graph_version=default_graph_version,
+        used_graph_clause=uses_graph_clause(query),
+        returned_row_count=None,
+        returned_triple_count=triple_count,
+        terms=terms,
     )

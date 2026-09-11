@@ -88,7 +88,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 829 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 883 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -212,6 +212,12 @@ CRLF になる**。シェルスクリプトでこれをやると Alpine の `sh`
 残っていた)。**復元の対象は絶対パスで持ち、変異を当てたファイルと復元するファイルが
 一致していることを `diff` で確認する**。テストファイルの基底名を 3 ディレクトリで
 一意にしている理由と同じ形の罠である。
+
+**マシンが混んでいると Fuseki の `$/datasets` が `ReadTimeout` になる。** 実測で、変異テストを
+長く回した直後の全テストで `test_competency_run.py` の 2 件が**セットアップ段階で**落ちた
+(`GET http://localhost:3131/$/datasets` の読み取りタイムアウト)。**落ちる場所が変更と無関係**
+なので原因を探しに行きたくなるが、**単独で回し直すと通る**。全体が通常の 2 倍以上の時間
+(3 分半 → 8 分半)かかっていたら、まずマシンの負荷を疑う。
 
 **`uv run pytest` を 2 つ同時に走らせてはいけない。** `packages/api/tests/conftest.py` の
 `session` フィクスチャは**テストごとにスキーマを作り直す**(`drop_all` / `create_all`)ため、

@@ -12,8 +12,9 @@
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 
-__all__ = ["QueryRejectedError", "ensure_agent_safe_query"]
+__all__ = ["QueryForm", "QueryRejectedError", "ensure_agent_safe_query", "query_form"]
 
 
 class QueryRejectedError(ValueError):
@@ -29,16 +30,13 @@ _UPDATE_KEYWORDS = re.compile(
 # 連邦クエリ。任意の URL へリクエストを飛ばせるため SSRF の踏み台になる。
 _SERVICE_KEYWORD = re.compile(r"\bSERVICE\b", re.IGNORECASE)
 
-# RDF を返すクエリの形。**この経路では扱えない**(ADR-0025 決定8)。
+# クエリの形を表す語。**判定はここにしか置かない**(ADR-0034 決定1)。
 #
-# `FusekiStore.query` は `Accept: application/sparql-results+json` を送るが、
-# Fuseki はクエリの形に従って Turtle を返すため JSON の解析に失敗し、
-# **`SparqlStoreError`(502)になる**(実測)。ガードが通したクエリが 502 で
-# 落ちる状態は、エージェントに「サーバが壊れている」と誤解させる。
-#
-# 対応するには内容交渉と戻り値の型、そしてトリプル数の上限という別の設計が
-# 要るので `P2A-14` に分離した。それまでは**理由を添えて 400 で断る**。
-_RDF_RESULT_FORMS = re.compile(r"\b(CONSTRUCT|DESCRIBE)\b", re.IGNORECASE)
+# ガードが「通す」と決めた形とルータが「こう扱う」と決めた形が食い違うと、
+# **ガードを通ったクエリが別の経路で落ちる** — ADR-0025 決定8 が直したのと
+# 同じ形の不具合である(`Accept: application/sparql-results+json` を送るのに
+# Fuseki が Turtle を返し、JSON の解析に失敗して 502 になっていた)。
+_FORM_KEYWORDS = re.compile(r"\b(SELECT|ASK|CONSTRUCT|DESCRIBE)\b", re.IGNORECASE)
 
 # 文字列リテラルとコメントを取り除いてからキーワードを探すための正規表現。
 # リテラル内の "DELETE" のような語で誤検知しないようにする。
@@ -51,6 +49,43 @@ _LITERALS_AND_COMMENTS = re.compile(
     r"|#[^\n]*",  # 行コメント
     re.DOTALL,
 )
+
+
+class QueryForm(StrEnum):
+    """クエリの形(ADR-0034 決定1)。
+
+    **判定はこのモジュールにしか置かない。** ガードとルータが別々に判定すると、
+    ガードが通した形とルータが扱う形が食い違う。
+    """
+
+    SELECT = "select"
+    ASK = "ask"
+    CONSTRUCT = "construct"
+    DESCRIBE = "describe"
+    #: 4 つのどれでもない。**推測して扱わない。**
+    UNKNOWN = "unknown"
+
+    @property
+    def returns_rdf(self) -> bool:
+        """結果が RDF グラフか(`SELECT` / `ASK` は違う)。"""
+        return self in (QueryForm.CONSTRUCT, QueryForm.DESCRIBE)
+
+
+def query_form(query: str) -> QueryForm:
+    """クエリの形を判定する(ADR-0034 決定1)。
+
+    **リテラル・IRI・コメントを取り除いてから探す。** `'SELECT'` という
+    文字列リテラルを含む `CONSTRUCT` を `SELECT` と判定してはいけない。
+
+    **最初に現れた語で決める。** `CONSTRUCT { } WHERE { SELECT ... }`
+    (副問い合わせ)の形は `CONSTRUCT` である。
+
+    4 つのどれも見つからなければ `UNKNOWN` を返す。**推測しない。**
+    """
+    match = _FORM_KEYWORDS.search(_strip_noise(query))
+    if match is None:
+        return QueryForm.UNKNOWN
+    return QueryForm(match.group(0).lower())
 
 
 def _strip_noise(query: str) -> str:
@@ -67,8 +102,11 @@ def ensure_agent_safe_query(query: str, *, allow_service: bool = False) -> None:
             allowlist 化できている場合にのみ有効にする。
 
     Raises:
-        QueryRejectedError: 更新操作、許可されていない `SERVICE` 句、または
-            この経路が扱えないクエリの形(`CONSTRUCT` / `DESCRIBE`)を含むとき。
+        QueryRejectedError: 空のクエリ、更新操作、許可されていない `SERVICE` 句、
+            またはクエリの形が判定できないとき。
+
+    **`CONSTRUCT` / `DESCRIBE` はここでは弾かない**(ADR-0034 決定1)。
+    `P2A-14` で通るようになった。呼び出し側は `query_form` で分岐する。
     """
     if not query.strip():
         raise QueryRejectedError("クエリが空です")
@@ -85,11 +123,14 @@ def ensure_agent_safe_query(query: str, *, allow_service: bool = False) -> None:
             "SERVICE 句は許可されていません。任意の URL への到達を防ぐため既定で禁止しています"
         )
 
-    # **RDF を返す形は 502 になる前にここで断る**(ADR-0025 決定8)。
-    # 「使えるように見えて 502」は、エージェントにクエリの誤りとサーバの障害を
-    # 区別させない。
-    if match := _RDF_RESULT_FORMS.search(body):
+    # **知らない形は通さない**(ADR-0034 決定1)。
+    #
+    # `CONSTRUCT` / `DESCRIBE` は `P2A-14` で通るようになった(ADR-0034)。
+    # 代わりに、**4 つのどれでもないクエリを推測して扱わない** — 呼び出し側は
+    # `query_form` で分岐するので、判定できない形を通すと「SELECT のつもりで
+    # 扱われる」ことになる(`skip:unknown-status-*` と同じ方針)。
+    if query_form(query) is QueryForm.UNKNOWN:
         raise QueryRejectedError(
-            f"{match.group(0).upper()} はこの経路では扱えません。"
-            "SELECT と ASK だけを受け付けます(RDF を返す形への対応は P2A-14)"
+            "クエリの形(SELECT / ASK / CONSTRUCT / DESCRIBE)を判定できません。"
+            "この経路はこの 4 つだけを受け付けます"
         )
