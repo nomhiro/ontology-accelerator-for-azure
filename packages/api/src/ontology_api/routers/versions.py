@@ -156,6 +156,7 @@ async def publish_version(
             namespace=namespace,
             turtle=payload.turtle,
             actor=principal.object_id or principal.subject,
+            actor_type=principal.actor_type,
             version=payload.version,
             base_version=payload.base_version,
             reason=payload.reason,
@@ -335,6 +336,7 @@ async def submit_version(
             version=version,
             actor=principal.object_id or principal.subject,
             reason=(payload.reason if payload is not None else ""),
+            actor_type=principal.actor_type,
         )
     except NamespaceRetiredError as exc:
         # P2B-19: 退役した名前空間では内容を増やせない(ADR-0032 決定5)。
@@ -396,6 +398,7 @@ async def approve_version(
             version=version,
             actor=principal.object_id or principal.subject,
             reason=(payload.reason if payload is not None else ""),
+            actor_type=principal.actor_type,
         )
     except NamespaceRetiredError as exc:
         # P2B-19: 退役した名前空間では内容を増やせない(ADR-0032 決定5)。
@@ -679,6 +682,7 @@ async def reject_version(
             version=version,
             actor=principal.object_id or principal.subject,
             reason=payload.reason,
+            actor_type=principal.actor_type,
         )
     except NamespaceRetiredError as exc:
         # P2B-19: 退役した名前空間では内容を増やせない(ADR-0032 決定5)。

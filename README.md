@@ -170,9 +170,9 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を記録し、`GET /namespaces/{namespace}/provenance` が W3C PROV-O の Turtle として書き出します
 
-現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、保持ポリシー、健全性指標、そして監査証跡の PROV-O 書き出しです。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、保持ポリシー、健全性指標、監査証跡の PROV-O 書き出し、そして主体の種別（人間 / サービスプリンシパル）の記録です。
 **未実装のもの**は、R2RML による連邦クエリ(Phase 3)、LLM によるオントロジー生成(Phase 2)です。
-PROV-O の書き出しで **`prov:wasDerivedFrom` が出るのは、`publish` に `base_version` を渡した版だけ**です — **承認の順序は派生ではない**ため、渡されなかった版には辺を出さず `ont:editedFromRecorded false` を出します([ADR-0026](docs/adr/0026-provenance-export.md) 決定2、[ADR-0027](docs/adr/0027-revision-lineage.md))。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
+PROV-O の書き出しは**測った事実だけを標準語彙で主張します**。**`prov:wasDerivedFrom` が出るのは、`publish` に `base_version` を渡した版だけ**です — **承認の順序は派生ではない**ため、渡されなかった版には辺を出さず `ont:editedFromRecorded false` を出します([ADR-0026](docs/adr/0026-provenance-export.md) 決定2、[ADR-0027](docs/adr/0027-revision-lineage.md))。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
 
@@ -854,7 +854,32 @@ curl -G "$API/namespaces/retail-core/provenance" \
 
 **`prov:wasRevisionOf` は使いません。** `wasDerivedFrom` の下位で「改訂である」とより強く主張しますが、記録しているのは「この版を編集するとき基準にした版」であって、両者が改訂の関係にあるとまでは言えません。
 
-**主体は `prov:Agent` のままで、`prov:Person` / `prov:SoftwareAgent` に分けません**（決定3）。`actor` は Entra のオブジェクト ID だけで、人間かサービスプリンシパルかを記録していません。**四眼原則を記録する監査証跡で、人間の承認を自動化された行為として見せるのは最悪の誤りです**（`P2A-16`）。
+**主体の種別は、記録されていて矛盾しないときだけ `prov:Person` / `prov:SoftwareAgent` として出ます**（[ADR-0035](docs/adr/0035-actor-type.md)、`P2A-16`）。**四眼原則を記録する監査証跡で、人間の承認を自動化された行為として見せるのは最悪の誤りです** — だから記録していないものは主張しません。
+
+種別は Entra の `idtyp` クレームから**記録の時点で**保存します（書き出しの時点でEntra へ問い合わせると、監査の書き出しが Entra の可用性に依存します）。値は**3 つ**です。
+
+| 記録 | 意味 | 書き出し |
+|---|---|---|
+| `user` | 人間である | `prov:Person`（条件付き） |
+| `service-principal` | サービスプリンシパルである | `prov:SoftwareAgent`（条件付き） |
+| `unknown` | **問うて、分からなかった**（`idtyp` が無かった） | `ont:actorType "unknown"` のみ |
+| （列が `NULL`） | **問うていない**（この機能より前の行） | **何も出ません** |
+
+**真偽値ではありません。** `idtyp` は任意クレームで、設定していないテナントでは**サービスプリンシパルのトークンにも付きません**。つまり「クレームが無い」は「人間である」を意味しません。
+
+**`idtyp` を設定するのは `just setup-app-role` です。** 設定しないとこの機能は永久に `unknown` を記録します（設定するのはリソース側、つまりこの API のアプリ登録です — アクセストークンはリソースが所有します）。
+
+```turtle
+# 人間の主体（この書き出しに含まれる行為がすべて user のとき）
+<urn:ontology:agent/alice-oid> a prov:Agent, prov:Person ;
+    ont:principalId "alice-oid" .
+
+# 種別は主体ではなく**行為**に付きます
+<urn:ontology:activity/41> a prov:Activity, ont:Publish ;
+    ont:actorType "user" .
+```
+
+**種別を主体ではなく行為に付けるのは、主体の IRI が主体ごとだからです。** `idtyp` を設定する前と後の行為が同じ書き出しに混ざると、主体に付けた種別は1 つの IRI に複数の値としてぶら下がり「この主体は user でも unknown でもある」と読めてしまいます。**主体のクラス（`prov:Person` など）は、その書き出しに含まれるその主体の行為がすべて一致しているときだけ出ます** — 行為ごとの記録は測った事実ですが、主体のクラスは主体についての主張であり、主張には一致が要ります。
 
 **`cursor` は受けません**（決定1）。RDF は順序を持たないため、カーソルで切り出した断片を RDF として渡す意味が薄いからです。代わりに**切り詰めたことを Turtle の中に書きます**（`ont:truncated`）。件数が多い名前空間は `since` / `until` で期間を区切ってください。
 
@@ -1140,9 +1165,15 @@ azd down --purge   # just destroy でも同じ
   just setup-app-role --dry-run
   # エージェントのサービスプリンシパルに割り当てる
   just setup-app-role --principal-id <オブジェクト ID>
+  # `idtyp` 任意クレームの設定を飛ばす(アプリ登録の書き込み権限が無いとき)
+  just setup-app-role --skip-optional-claims
   ```
 
   `ENTRA_API_AUDIENCE` を azd 環境から拾います。別のアプリ登録を対象にするときは `--app-id <appId>` を渡してください。
+
+  **同時に `idtyp` 任意クレームも設定します**([ADR-0035](docs/adr/0035-actor-type.md) 決定7、`P2A-16`)。これが無いと、監査証跡は**人間とサービスプリンシパルを永久に区別できません**(すべて `unknown` として記録されます)。`idtyp` は任意クレームで、**リソース側**(この API のアプリ登録)が設定しなければ発行されません — アクセストークンはリソースが所有するためです。**既存の任意クレームは 1 件も落としません**(`optionalClaims` は複合プロパティで、部分更新すると丸ごと消えます)。
+
+  **人間側(`idtyp: "user"`)が実際に出るかは実機で未確認です**(`P2A-18`)。`include_user_token` 追加プロパティが v2.0 のアクセストークンに効くことを Entra の文書から確定できませんでした。効かない場合、人間は `unknown` のまま記録されます — **偽の主張はしませんが `prov:Person` は出ません**。
 
   **`azd provision` の前に自動で確認します。** `preprovision` が発行済みトークンの `roles` クレームを見て、`platform-admin` が無ければ**プロビジョニングを始めずに止めます**(そこまで進んでから `postdeploy` で 403 になると、約 11 分と課金を無駄にするためです)。**確認できなかったときは止めません** — 「権限が無い」と「確認できなかった」は違い、後者でデプロイを止めると確認の仕組み自体が障害になります。
 

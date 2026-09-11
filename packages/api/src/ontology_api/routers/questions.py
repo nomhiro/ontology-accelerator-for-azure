@@ -211,6 +211,7 @@ async def revise_question_set(
         namespace=namespace,
         action="questions-revised",
         actor=actor,
+        actor_type=principal.actor_type,
         subject=f"{namespace}#questions@{created.revision}",
         reason=f"{payload.reason} / {note}",
     )

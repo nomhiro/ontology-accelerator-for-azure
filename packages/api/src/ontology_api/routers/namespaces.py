@@ -231,14 +231,24 @@ async def _retire_common(
     actor = principal_id_of(principal)
     try:
         if unretire:
-            updated = await service.unretire(namespace=namespace, actor=actor, reason=reason)
+            updated = await service.unretire(
+                namespace=namespace,
+                actor=actor,
+                reason=reason,
+                actor_type=principal.actor_type,
+            )
             note = (
                 "退役を解除しました。**この時点でストアは空です** — "
                 "POST /admin/reconcile を実行するか、次のレプリカ再作成を待って"
                 "ください(ADR-0032 決定3)。"
             )
         else:
-            updated = await service.retire(namespace=namespace, actor=actor, reason=reason)
+            updated = await service.retire(
+                namespace=namespace,
+                actor=actor,
+                reason=reason,
+                actor_type=principal.actor_type,
+            )
             note = (
                 "退役しました。**正本(Blob の TTL・版・監査)は残っています**"
                 "(不変条件7)。止まったのは射影と内容の増設だけです。"

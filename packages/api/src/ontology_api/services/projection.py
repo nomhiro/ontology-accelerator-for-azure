@@ -78,7 +78,12 @@ from ontology_core.graphs import (
     validate_namespace_name,
     version_graph_iri,
 )
-from ontology_core.models import Namespace, OntologyVersion, OntologyVersionStatus
+from ontology_core.models import (
+    ActorType,
+    Namespace,
+    OntologyVersion,
+    OntologyVersionStatus,
+)
 from ontology_core.retention import ProjectionTarget, decide_projection
 from ontology_core.shacl import ShaclReport, validate_turtle_with_shacl
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
@@ -465,6 +470,7 @@ class ProjectionService:
         namespace: str,
         turtle: str,
         actor: str,
+        actor_type: ActorType = ActorType.UNKNOWN,
         version: str | None = None,
         base_version: str | None = None,
         reason: str = "",
@@ -480,6 +486,7 @@ class ProjectionService:
             namespace=namespace,
             turtle=turtle,
             actor=actor,
+            actor_type=actor_type,
             version=version,
             base_version=base_version,
             reason=reason,
@@ -492,6 +499,7 @@ class ProjectionService:
         namespace: str,
         turtle: str,
         actor: str,
+        actor_type: ActorType = ActorType.UNKNOWN,
         version: str | None = None,
         base_version: str | None = None,
         reason: str = "",
@@ -504,6 +512,9 @@ class ProjectionService:
             base_version: 編集の基準にした版(P1-13)。渡した場合、名前空間の
                 最新版と一致しなければ `ConcurrentUpdateError` にする。
                 省略すると検査しない(既存の呼び出しとの後方互換)。
+            actor_type: 主体の種別(ADR-0035 決定6)。**既定は `UNKNOWN`** —
+                安全な向きである(渡し忘れは情報を落とすだけで、偽の主張は
+                しない)。ルータは `principal.actor_type` を渡す。
 
         Raises:
             ConcurrentUpdateError: `base_version` が最新版と一致しないとき。
@@ -663,6 +674,7 @@ class ProjectionService:
                 namespace=namespace,
                 action="published",
                 actor=actor,
+                actor_type=actor_type,
                 subject=f"{namespace}@{resolved}",
                 reason=reason,
             )
@@ -728,7 +740,14 @@ class ProjectionService:
             except BlobStoreError as exc:
                 report.failures.append(f"{namespace}: マニフェストの削除に失敗 ({exc})")
 
-    async def retire(self, *, namespace: str, actor: str, reason: str) -> Namespace:
+    async def retire(
+        self,
+        *,
+        namespace: str,
+        actor: str,
+        reason: str,
+        actor_type: ActorType = ActorType.UNKNOWN,
+    ) -> Namespace:
         """名前空間を退役させる(ADR-0032)。**削除ではない。**
 
         正本(Blob の TTL・PostgreSQL の版と監査)はそのまま残る(不変条件7)。
@@ -771,6 +790,7 @@ class ProjectionService:
             namespace=namespace,
             action="retired",
             actor=actor,
+            actor_type=actor_type,
             subject=namespace,
             reason=reason,
         )
@@ -792,7 +812,14 @@ class ProjectionService:
             )
         return updated
 
-    async def unretire(self, *, namespace: str, actor: str, reason: str) -> Namespace:
+    async def unretire(
+        self,
+        *,
+        namespace: str,
+        actor: str,
+        reason: str,
+        actor_type: ActorType = ActorType.UNKNOWN,
+    ) -> Namespace:
         """退役を解除する(ADR-0032 決定1)。
 
         **正本は無傷なので、戻すのは列を消すだけである。** 戻せないと、
@@ -820,6 +847,7 @@ class ProjectionService:
             namespace=namespace,
             action="unretired",
             actor=actor,
+            actor_type=actor_type,
             subject=namespace,
             reason=reason,
         )
@@ -906,7 +934,13 @@ class ProjectionService:
         return True
 
     async def submit(
-        self, *, namespace: str, version: str, actor: str, reason: str = ""
+        self,
+        *,
+        namespace: str,
+        version: str,
+        actor: str,
+        reason: str = "",
+        actor_type: ActorType = ActorType.UNKNOWN,
     ) -> OntologyVersion:
         """`draft` を `in-review` にし、名前付きグラフへ射影する(ADR-0010 決定1)。"""
         await self._ensure_not_retired(namespace)
@@ -930,6 +964,7 @@ class ProjectionService:
             namespace=namespace,
             action="submitted",
             actor=actor,
+            actor_type=actor_type,
             subject=f"{namespace}@{version}",
             reason=reason,
         )
@@ -1202,7 +1237,13 @@ class ProjectionService:
         return json.dumps(summary, ensure_ascii=False)
 
     async def approve(
-        self, *, namespace: str, version: str, actor: str, reason: str = ""
+        self,
+        *,
+        namespace: str,
+        version: str,
+        actor: str,
+        reason: str = "",
+        actor_type: ActorType = ActorType.UNKNOWN,
     ) -> OntologyVersion:
         """`in-review` を `approved` にする。前の `approved` は自動で `superseded`
         にする(ADR-0010 決定3)。既定グラフ + 名前付きグラフへ射影する(決定5・6)。
@@ -1389,6 +1430,7 @@ class ProjectionService:
             namespace=namespace,
             action="approved",
             actor=actor,
+            actor_type=actor_type,
             subject=f"{namespace}@{version}",
             reason=audit_reason,
             diff=diff_summary,
@@ -1404,6 +1446,10 @@ class ProjectionService:
                 namespace=namespace,
                 action="superseded",
                 actor=actor,
+                # **`superseded` は承認した主体の種別で記録する。** 行為者は
+                # 承認者であり、自動遷移はその承認の結果である(ADR-0035 決定4 の
+                # 「行為ごとに記録する」に従う)。
+                actor_type=actor_type,
                 subject=f"{namespace}@{previous_approved.version}",
                 reason=f"'{namespace}@{version}' の承認による自動遷移",
             )
@@ -1422,7 +1468,13 @@ class ProjectionService:
         return updated
 
     async def reject(
-        self, *, namespace: str, version: str, actor: str, reason: str
+        self,
+        *,
+        namespace: str,
+        version: str,
+        actor: str,
+        reason: str,
+        actor_type: ActorType = ActorType.UNKNOWN,
     ) -> OntologyVersion:
         """`in-review` を `draft` に戻す(理由必須)。名前付きグラフから外す。"""
         await self._ensure_not_retired(namespace)
@@ -1446,6 +1498,7 @@ class ProjectionService:
             namespace=namespace,
             action="rejected",
             actor=actor,
+            actor_type=actor_type,
             subject=f"{namespace}@{version}",
             reason=reason,
         )

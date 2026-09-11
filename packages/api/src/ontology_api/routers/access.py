@@ -192,6 +192,7 @@ async def purge_access_log(
         namespace=namespace,
         action="access-log-purged",
         actor=principal_id_of(principal),
+        actor_type=principal.actor_type,
         subject=f"{namespace}/access-log",
         reason=f"{payload.before.isoformat()} より前の {deleted} 件を削除: {payload.reason}",
     )

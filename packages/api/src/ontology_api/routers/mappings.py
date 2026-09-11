@@ -302,6 +302,7 @@ async def declare_mapping(
         namespace=namespace,
         action="mapping-declared",
         actor=actor,
+        actor_type=principal.actor_type,
         subject=f"{source} {predicate.value} {target}",
         reason=payload.reason,
     )
@@ -353,6 +354,7 @@ async def revoke_mapping(
         namespace=namespace,
         action="mapping-revoked",
         actor=actor,
+        actor_type=principal.actor_type,
         subject=f"{source_term} -> {target_term}",
     )
     await session.commit()

@@ -1,4 +1,7 @@
-"""Entra アプリ登録に `platform-admin` アプリロールを定義し、割り当てる(`P2A-09`)。
+"""Entra アプリ登録に `platform-admin` アプリロールと `idtyp` 任意クレームを設定する。
+
+`P2A-09`(アプリロール)と `P2A-16`(`idtyp` 任意クレーム、
+[ADR-0035](../docs/adr/0035-actor-type.md) 決定7)。
 
 `P2A-06` で名前空間の作成と `POST /admin/reconcile` に `platform-admin` が必要に
 なった([ADR-0014](../docs/adr/0014-namespace-rbac.md) 決定2・3)。**割り当てが
@@ -15,6 +18,9 @@
     # 何をするかだけ見る
     uv run python scripts/setup-app-role.py --dry-run
 
+    # 任意クレームの設定を飛ばす(アプリ登録の書き込み権限が無いとき)
+    uv run python scripts/setup-app-role.py --skip-optional-claims
+
 **なぜ Bicep でやらないのか**: Entra のアプリ登録は ARM のリソースではなく
 `azd` の管理外にある(`azd down` でも消えない永続的な成果物。`P1-09` に記録)。
 Bicep からアプリロールを定義することはできない。
@@ -22,6 +28,17 @@ Bicep からアプリロールを定義することはできない。
 **なぜシェルスクリプトではないのか**: `appRoles` は JSON の配列で、
 POSIX sh と PowerShell の両方で正しくクォートするのが困難である。`az` を
 呼ぶだけなら Python が最も移植性が高い(このリポジトリは既に uv に依存する)。
+
+## `idtyp` 任意クレーム(`P2A-16`)
+
+**設定しないと、監査証跡は人間と機械を永久に区別できない。** `idtyp` は
+任意クレームで、設定していないテナントでは**サービスプリンシパルの
+トークンにも付かない**。付かなければ `actor_type` は `unknown` のまま
+記録され、PROV-O の `prov:Person` / `prov:SoftwareAgent` は出ない
+(ADR-0035 決定1)。
+
+設定するのは**リソース側**(この API のアプリ登録)である。クライアント側
+ではない — アクセストークンはリソースが所有する。
 
 **冪等である。** 既に同じ定義と割り当てがあれば何も送らない。同名のロールが
 あれば **ID を再利用する** — ID を作り直すと既存の割り当て
@@ -41,6 +58,7 @@ import sys
 from typing import Any
 
 from ontology_core.auth.app_roles import merge_app_role
+from ontology_core.auth.optional_claims import merge_optional_claim
 from ontology_core.console import say, warn
 from ontology_core.models import PlatformRole
 
@@ -48,6 +66,19 @@ _GRAPH = "https://graph.microsoft.com/v1.0"
 _ROLE_VALUE = PlatformRole.PLATFORM_ADMIN.value
 _ROLE_DISPLAY_NAME = "Platform administrator"
 _ROLE_DESCRIPTION = "名前空間の作成と POST /admin/reconcile を行える(ADR-0014)"
+
+#: 主体の種別を判別するための任意クレーム(ADR-0035 決定7)。
+_CLAIM_NAME = "idtyp"
+# **変数名に "token" を入れない。** 静的解析ツールが S105
+# (ハードコードされた資格情報)として誤検知する。
+_CLAIM_TARGET = "accessToken"
+#: ユーザートークンにも `idtyp` を出させる追加プロパティ。
+#:
+#: **効くことを実機で確かめていない**(ADR-0035 の受け入れるコスト)。
+#: 文書では v1.0 固有の節に載っている。効かなければ人間は `unknown` の
+#: まま記録される — 設計はその場合も正しい(偽の主張はしない)。
+#: 実機確認は `P2A-18`。
+_CLAIM_ADDITIONAL = ("include_user_token",)
 
 
 class AzError(RuntimeError):
@@ -189,6 +220,49 @@ def _define_role(app_id: str, *, dry_run: bool) -> str:
     return merged.role_id
 
 
+def _ensure_optional_claim(app_id: str, *, dry_run: bool) -> None:
+    """`idtyp` を任意クレームとして設定する(ADR-0035 決定7)。
+
+    **完全な `optionalClaims` を送る。** `appRoles` と同じ複合プロパティで、
+    部分更新すると既存の任意クレームが丸ごと消える(`P1-09` の罠1)。
+    """
+    app = _az_json("ad", "app", "show", "--id", app_id)
+    if not isinstance(app, dict):
+        raise AzError(f"アプリ登録 '{app_id}' を取得できません")
+    object_id = str(app.get("id") or "")
+    if not object_id:
+        raise AzError("アプリ登録のオブジェクト ID が取得できません")
+
+    existing = app.get("optionalClaims")
+    merged = merge_optional_claim(
+        existing if isinstance(existing, dict) else None,
+        token_type=_CLAIM_TARGET,
+        name=_CLAIM_NAME,
+        additional_properties=_CLAIM_ADDITIONAL,
+    )
+    if not merged.changed:
+        say(f"setup-app-role: 任意クレーム '{_CLAIM_NAME}' は既に設定されています")
+        return
+
+    kept = sum(
+        len([c for c in claims if c.get("name") != _CLAIM_NAME])
+        for claims in merged.optional_claims.values()
+    )
+    say(
+        f"setup-app-role: 任意クレーム '{_CLAIM_NAME}' を {_CLAIM_TARGET} に設定します。"
+        f"同時に送る既存のクレーム: {kept} 件"
+    )
+    if dry_run:
+        say("setup-app-role: --dry-run のため送信しません")
+        return
+    _graph_send(
+        "PATCH",
+        f"{_GRAPH}/applications/{object_id}",
+        {"optionalClaims": merged.optional_claims},
+    )
+    say("setup-app-role: 設定しました")
+
+
 def _assign(
     *, sp_object_id: str, role_id: str, principal_id: str, principal_type: str, dry_run: bool
 ) -> None:
@@ -229,12 +303,26 @@ def main() -> int:
         action="store_true",
         help="何をするかだけ表示し、Entra を変更しない",
     )
+    parser.add_argument(
+        "--skip-optional-claims",
+        action="store_true",
+        help=f"'{_CLAIM_NAME}' 任意クレームの設定を飛ばす(ADR-0035 決定7)。"
+        "飛ばすと監査証跡は主体の種別を unknown のまま記録する",
+    )
     args = parser.parse_args()
 
     try:
         app_id = _resolve_app_id(args.app_id)
         say(f"setup-app-role: アプリ登録 {app_id} を対象にします")
         role_id = _define_role(app_id, dry_run=args.dry_run)
+        if args.skip_optional_claims:
+            warn(
+                f"setup-app-role: --skip-optional-claims のため '{_CLAIM_NAME}' を"
+                "設定しません。**監査証跡は主体の種別を unknown のまま記録します**"
+                "(ADR-0035 決定7)"
+            )
+        else:
+            _ensure_optional_claim(app_id, dry_run=args.dry_run)
         sp_object_id = _ensure_service_principal(app_id)
         if args.principal_id:
             principal_id, principal_type = args.principal_id, "指定された主体"

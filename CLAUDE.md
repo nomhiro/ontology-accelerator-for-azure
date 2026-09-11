@@ -88,7 +88,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 883 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 944 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -175,6 +175,10 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **シェルスクリプトで素の `python` を呼んではいけない。** 多くの現代的な Linux には `python` が無く `python3` しかない（Python 3 が既定になった時点で各ディストリが無印の提供をやめた）。実測で Azure Linux 3.0 には無い。**`uv run python` を使う**（このリポジトリのスクリプトは既に uv に依存しているため、前提を増やさない）。`scripts/lint-shell.sh` が機械的に検査する。
 
 **シェルの単一引用符で囲んだ埋め込み Python のコメントに、バッククォートを書いてはいけない。** shellcheck がコマンド置換と誤認して SC2016(`Expressions don't expand in single quotes`)を出し、**検査が落ちる**（shellcheck は info でも終了コード 1 を返す）。`uv run python -c '...'` の中で識別子を強調したいときは「」で囲む。
+
+**変数名に `token` / `password` / `secret` を含めてはいけない(値が秘密でなくても)。**
+静的解析ツールが S105(ハードコードされた資格情報)として**誤検知し、検査が落ちる**。
+`_CLAIM_TOKEN_TYPE = "accessToken"` で踏んだ(値は Microsoft Graph のプロパティ名であって秘密ではない)。`noqa` を足すのではなく名前を変える(`_CLAIM_TARGET`)—— 抑制コメントは本当の検出も黙らせる。
 
 **コメント行を静的解析ツールの名前だけで始めてはいけない。** `#` の直後にツール名が来ると、ツール自身がディレクティブ指定として解釈して SC1072 / SC1073 で失敗する。説明したいときは「静的解析ツール」と書くか、行頭に別の語を置く（2 回踏んだ）。
 

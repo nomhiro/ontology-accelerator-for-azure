@@ -274,6 +274,18 @@ class AuditEventRow(Base):
     subject: Mapped[str] = mapped_column(Text)
     reason: Mapped[str] = mapped_column(Text, default="")
     diff: Mapped[str | None] = mapped_column(Text, default=None)
+    # 主体の種別(ADR-0035 決定3)。**`NULL` は「問うていない」** —
+    # この機能より前に書かれた行である。`'unknown'` は「問うて、分からな
+    # かった」で、意味が違う(書き出しは前者に `ont:actorType` を出さない)。
+    #
+    # **`server_default` を置かない。** 既存の行を `'unknown'` で埋めると
+    # 「問うていない」が「問うて、分からなかった」に化ける(決定3、
+    # ADR-0027 決定4 と同じ形)。
+    #
+    # **Entra の `idtyp` をそのまま入れない**(決定2)。`ActorType` は
+    # 「人間が説明責任を負うか」への意図的な射影であり、`AUTH_MODE=disabled`
+    # でも Entra 以外の検証器でも同じ意味を持つ。
+    actor_type: Mapped[str | None] = mapped_column(String(32), default=None)
 
 
 class CompetencyQuestionSetRow(Base):

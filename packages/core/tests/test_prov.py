@@ -10,8 +10,11 @@ ADR-0006 決定3 は「監査証跡を PROV-O で表現する」と決め、`pro
 2. **「記録していない」が読み取れる**(ADR-0027 決定5)。`ont:editedFromRecorded`
    は真偽どちらでも出し、**版の行が引けなかったときは出さない**
    (3 段の「分からなさ」を区別する)
-3. **主体を `prov:Person` / `prov:SoftwareAgent` に分けない**(ADR-0026 決定3)。
-   人間かサービスプリンシパルかを記録していない
+3. **主体のクラスは矛盾しないときだけ出す**(ADR-0035 決定4)。種別は
+   **行為ごと**に `ont:actorType` として出し、`prov:Person` /
+   `prov:SoftwareAgent` はその主体のすべての行為が一致しているときだけ出す。
+   **`actor_type` が `None`(問うていない)なら `ont:actorType` すら出さない**
+   (決定5)
 4. **行為の種類を落とさない**(ADR-0026 決定4)
 5. **切り詰めを RDF の中に書く**(ADR-0026 決定5)
 
@@ -30,10 +33,16 @@ from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import PROV, RDF, RDFS
 
 from ontology_core.graphs import NamespaceNameError
-from ontology_core.models import AuditEvent, OntologyVersion, OntologyVersionStatus
+from ontology_core.models import (
+    ActorType,
+    AuditEvent,
+    OntologyVersion,
+    OntologyVersionStatus,
+)
 from ontology_core.prov import (
     ACTIVITY_TYPES,
     AGENT_BASE,
+    AGENT_CLASSES,
     BUNDLE_BASE,
     ONT,
     REVISION_BASE,
@@ -55,7 +64,15 @@ def _event(
     subject: str = f"{_NS}@2.0.0",
     reason: str = "",
     diff: str | None = None,
+    actor_type: ActorType | None = None,
 ) -> AuditEvent:
+    """監査イベントを 1 件作る。
+
+    **`actor_type` の既定は `None`** — この機能より前に書かれた行、つまり
+    「問うていない」状態である(ADR-0035 決定3)。既定をこれにしてあるので、
+    種別を渡していないテストは**種別に関する主張を一切しない**出力を検査して
+    いることになる。
+    """
     return AuditEvent(
         id=id,
         namespace=_NS,
@@ -65,6 +82,7 @@ def _event(
         subject=subject,
         reason=reason,
         diff=diff,
+        actor_type=actor_type,
     )
 
 
@@ -125,13 +143,13 @@ def test_系譜が記録されていなければ派生を表す述語を出さ�
 
 
 @pytest.mark.parametrize("subclass", [PROV.Person, PROV.SoftwareAgent, PROV.Organization])
-def test_主体を人間と機械に分けない(subclass: URIRef) -> None:
-    """**区別できないものを区別して出さない**(ADR-0026 決定3)。
+def test_種別を問うていない主体に下位クラスを出さない(subclass: URIRef) -> None:
+    """**記録していないものを区別して出さない**(ADR-0026 決定3 / ADR-0035 決定4)。
 
-    `audit_events.actor` は Entra のオブジェクト ID だけで、人間か
-    サービスプリンシパルかを持っていない。`prov:SoftwareAgent` と書けば
-    外部ツールは「自動生成」と読む — 四眼原則を記録する監査証跡で
-    人間の承認を自動化された行為として見せるのは最悪の誤りである。
+    `actor_type` が `None` の行は、この機能より前に書かれた行である。
+    `prov:SoftwareAgent` と書けば外部ツールは「自動生成」と読む —
+    四眼原則を記録する監査証跡で人間の承認を自動化された行為として
+    見せるのは最悪の誤りである。
     """
     graph = _render(_event())
     assert not list(graph.triples((None, RDF.type, subclass)))
@@ -144,6 +162,145 @@ def test_主体は_prov_Agent_として出る() -> None:
     # IRI から文字列を切り出さずに主体 ID を引けるようにする。
     assert (agent, ONT.principalId, Literal("alice-oid")) in graph
     assert (_activity(1), PROV.wasAssociatedWith, agent) in graph
+
+
+# ------------------------------------------------- 主体の種別(ADR-0035)
+
+
+def _agent(actor: str = "actor-oid") -> URIRef:
+    return URIRef(f"{AGENT_BASE}{actor}")
+
+
+def test_種別を問うていない行為は_actorType_を出さない() -> None:
+    """**`None` と `unknown` を混ぜない**(ADR-0035 決定5)。
+
+    `"unknown"` を出すと「問うて、分からなかった」と読めるが、実際には
+    **問うていない**(この機能より前に書かれた行である)。ADR-0027 決定5 の
+    `ont:editedFromRecorded` と同じ規則である。
+    """
+    graph = _render(_event(actor_type=None))
+    assert not list(graph.triples((None, ONT.actorType, None)))
+
+
+def test_分からなかったことは_unknown_として出る() -> None:
+    """**無言の欠落にしない。** `idtyp` の設定漏れが読み取れることが要点である。"""
+    graph = _render(_event(actor_type=ActorType.UNKNOWN))
+    assert (_activity(1), ONT.actorType, Literal("unknown")) in graph
+    # 分からないのだから下位クラスは名乗らない。
+    assert not list(graph.triples((_agent(), RDF.type, PROV.Person)))
+    assert not list(graph.triples((_agent(), RDF.type, PROV.SoftwareAgent)))
+
+
+@pytest.mark.parametrize(
+    ("actor_type", "expected"),
+    [
+        (ActorType.USER, PROV.Person),
+        (ActorType.SERVICE_PRINCIPAL, PROV.SoftwareAgent),
+    ],
+)
+def test_記録されている種別は_PROV_の下位クラスで出る(
+    actor_type: ActorType, expected: URIRef
+) -> None:
+    """**ADR-0006 決定3 が名前を挙げた語彙をここで出す。**
+
+    `prov:Agent` も併せて出す(ADR-0026 決定4 と同じ形) — 下位クラスの
+    推論をしない相手にも主体として読める。
+    """
+    graph = _render(_event(actor_type=actor_type))
+    assert (_agent(), RDF.type, expected) in graph
+    assert (_agent(), RDF.type, PROV.Agent) in graph
+    assert (_activity(1), ONT.actorType, Literal(actor_type.value)) in graph
+
+
+def test_種別は主体ではなく行為に付く() -> None:
+    """**主体の IRI は主体ごとである**(ADR-0035 決定4)。
+
+    種別を主体に付けると、`idtyp` を設定する前と後の行為が同じ書き出しに
+    混ざったときに 1 つの IRI へ複数の値がぶら下がり、**「この主体は user
+    でも unknown でもある」**と読める。
+    """
+    graph = _render(_event(actor_type=ActorType.USER))
+    assert not list(graph.triples((_agent(), ONT.actorType, None))), (
+        "種別を主体に付けると値が矛盾しうる。行為に付けること"
+    )
+
+
+def test_種別が食い違う主体には下位クラスを出さない() -> None:
+    """**主張には一致が要る**(ADR-0035 決定4)。
+
+    `idtyp` を任意クレームとして設定する前と後の行為が同じ書き出しに混ざると
+    実際に起きる。どちらかに丸めると「測っていないことを標準語彙で主張する」
+    形になる。**行為ごとの記録は両方そのまま出る。**
+    """
+    graph = _render(
+        _event(id=1, actor="alice", actor_type=ActorType.UNKNOWN),
+        _event(id=2, actor="alice", actor_type=ActorType.USER),
+    )
+    assert not list(graph.triples((_agent("alice"), RDF.type, PROV.Person)))
+    assert (_agent("alice"), RDF.type, PROV.Agent) in graph
+    assert (_activity(1), ONT.actorType, Literal("unknown")) in graph
+    assert (_activity(2), ONT.actorType, Literal("user")) in graph
+
+
+def test_種別が正面から食い違う主体には下位クラスを出さない() -> None:
+    """**どちらかを選ばない**(ADR-0035 決定4)。
+
+    `unknown` との食い違い(上のテスト)と違い、ここは `user` と
+    `service-principal` の**正面からの食い違い**である。同じオブジェクト ID が
+    両方で記録されることは通常起きないが、起きたときに**片方を選ぶと
+    並び順に依存する主張になる** — RDF は順序を持たないので「最後」も
+    「最初」も書き出しの実装の都合であって事実ではない。
+
+    **変異テストで見つけた穴である**(`unknown` を含む食い違いだけを
+    検査していたため、「集合から 1 つ選ぶ」変異が生き残った)。
+    """
+    graph = _render(
+        _event(id=1, actor="alice", actor_type=ActorType.USER),
+        _event(id=2, actor="alice", actor_type=ActorType.SERVICE_PRINCIPAL),
+    )
+    assert not list(graph.triples((_agent("alice"), RDF.type, PROV.Person)))
+    assert not list(graph.triples((_agent("alice"), RDF.type, PROV.SoftwareAgent)))
+    assert (_agent("alice"), RDF.type, PROV.Agent) in graph
+    # 行為ごとの記録は両方そのまま残る。
+    assert (_activity(1), ONT.actorType, Literal("user")) in graph
+    assert (_activity(2), ONT.actorType, Literal("service-principal")) in graph
+
+
+def test_問うていない行為が混ざれば下位クラスを出さない() -> None:
+    """`None` は「一致」に数えない(ADR-0035 決定4)。
+
+    この機能より前の行が 1 件でも混ざれば、その主体について「すべての行為が
+    人間だった」とは言えない。
+    """
+    graph = _render(
+        _event(id=1, actor="alice", actor_type=None),
+        _event(id=2, actor="alice", actor_type=ActorType.USER),
+    )
+    assert not list(graph.triples((_agent("alice"), RDF.type, PROV.Person)))
+
+
+def test_主体ごとに独立して判定する() -> None:
+    """**1 人の食い違いが他の主体のクラスを消さない。**"""
+    graph = _render(
+        _event(id=1, actor="alice", actor_type=ActorType.USER),
+        _event(id=2, actor="bob", actor_type=ActorType.UNKNOWN),
+        _event(id=3, actor="bob", actor_type=ActorType.USER),
+        _event(id=4, actor="agent-sp", actor_type=ActorType.SERVICE_PRINCIPAL),
+    )
+    assert (_agent("alice"), RDF.type, PROV.Person) in graph
+    assert (_agent("agent-sp"), RDF.type, PROV.SoftwareAgent) in graph
+    assert not list(graph.triples((_agent("bob"), RDF.type, PROV.Person)))
+    assert not list(graph.triples((_agent("bob"), RDF.type, PROV.SoftwareAgent)))
+
+
+def test_下位クラスの対応表に_unknown_を入れない() -> None:
+    """**構造で固定する**(ADR-0035 決定4)。
+
+    `AGENT_CLASSES` に `UNKNOWN` を足すと、分からない主体が下位クラスを
+    名乗り始める。表の側でそれを起こせないようにしておく。
+    """
+    assert ActorType.UNKNOWN not in AGENT_CLASSES
+    assert set(AGENT_CLASSES) == {ActorType.USER, ActorType.SERVICE_PRINCIPAL}
 
 
 # --------------------------------------------------------------- 版との関係

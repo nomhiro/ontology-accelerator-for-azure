@@ -9,7 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_core.db import AuditEventRow, OntologyVersionRow
-from ontology_core.models import AuditEvent, AuditPage, OntologyVersion, OntologyVersionStatus
+from ontology_core.models import (
+    ActorType,
+    AuditEvent,
+    AuditPage,
+    OntologyVersion,
+    OntologyVersionStatus,
+)
 
 __all__ = ["AuditRepository", "VersionRepository"]
 
@@ -218,6 +224,11 @@ class VersionRepository:
         return set((await self._session.execute(stmt)).scalars())
 
 
+#: 列の文字列から `ActorType` への対応。**知らない値は入っていない**
+#: (`None` に落ちる。ADR-0035 決定3)。
+_ACTOR_TYPES = {t.value: t for t in ActorType}
+
+
 def _to_audit(row: AuditEventRow) -> AuditEvent:
     return AuditEvent(
         id=row.id,
@@ -228,6 +239,11 @@ def _to_audit(row: AuditEventRow) -> AuditEvent:
         subject=row.subject,
         reason=row.reason,
         diff=row.diff,
+        # **知らない値は `None` に落とす**(ADR-0035 決定3)。列は
+        # `String(32)` なので、将来の版が書いた値や手で入れた値が来うる。
+        # 知らない値を `UNKNOWN` に丸めると「問うて、分からなかった」に
+        # 化けるので、「問うていない」側に寄せる。
+        actor_type=_ACTOR_TYPES.get(row.actor_type or ""),
     )
 
 
@@ -251,6 +267,7 @@ class AuditRepository:
         namespace: str,
         action: str,
         actor: str,
+        actor_type: ActorType,
         subject: str,
         reason: str = "",
         diff: str | None = None,
@@ -260,12 +277,22 @@ class AuditRepository:
         `diff` は意味的差分の**要約**の JSON(`P2B-09`、ADR-0016 決定7)。
         全トリプルは載せない — 版は Blob に不変で残るので厳密な差分は
         いつでも再計算できるし、載せると監査行が非有界に育つ。
+
+        **`actor_type` に既定値を置かない**(ADR-0035 決定6)。呼び出し側の
+        層(ルータ・サービス)には `ActorType.UNKNOWN` の既定値があるが、
+        **正本の表に書くこの関数だけは必ず決めさせる**。「署名の狭さが
+        強制である」(`P2B-20` の教訓)を 1 箇所に効かせている。
+
+        `ActorType.UNKNOWN` を渡すと `'unknown'` が入る。これは
+        **`NULL`(問うていない)とは違う** — 書き出しは `NULL` に
+        `ont:actorType` を出さない(決定5)。
         """
         self._session.add(
             AuditEventRow(
                 namespace=namespace,
                 action=action,
                 actor=actor,
+                actor_type=actor_type.value,
                 subject=subject,
                 reason=reason,
                 diff=diff,

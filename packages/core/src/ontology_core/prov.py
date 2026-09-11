@@ -27,10 +27,28 @@
 「改訂である」と主張する。記録しているのは「この版を編集するとき基準にした版」
 であって、両者が改訂の関係にあるとまでは言えない。
 
-同じ理由で**主体を `prov:Person` / `prov:SoftwareAgent` に分けない**(決定3)。
-`audit_events.actor` は Entra のオブジェクト ID だけで、人間かサービス
-プリンシパルかを区別していない。`prov:SoftwareAgent` と書けば外部ツールは
-「自動生成」と読む — 四眼原則を記録する監査証跡でそれは最悪の誤りである。
+## 主体のクラスは矛盾しないときだけ出す
+
+ADR-0026 決定3 は主体を `prov:Agent` のままにしていた(種別を記録して
+いなかったため)。[ADR-0035](../../../../docs/adr/0035-actor-type.md) が
+`audit_events.actor_type` を足したので、**条件付きで
+`prov:Person` / `prov:SoftwareAgent` を出す**。
+
+**種別は行為ごとに `ont:actorType` として出す**(決定4)。主体の IRI は
+行為ごとではなく主体ごとなので、種別を主体に付けると 1 つの IRI に複数の
+値がぶら下がり**「この主体は user でも unknown でもある」**と読める
+(`idtyp` を設定する前と後の行為が混ざると実際に起きる)。
+
+**主体のクラスは、その書き出しに含まれるその主体の行為がすべて一致して
+いるときだけ出す。** 行為ごとの記録は測った事実だが、主体のクラスは
+**主体についての主張**であり、主張には一致が要る。食い違いをどちらかに
+丸めると「測っていないことを標準語彙で主張する」形になる(決定2 と同じ
+論点)。`prov:SoftwareAgent` と書けば外部ツールは「自動生成」と読む —
+四眼原則を記録する監査証跡でそれは最悪の誤りである。
+
+**`actor_type` が `None` の行は `ont:actorType` を出さない**(ADR-0035
+決定5)。`"unknown"` を出すと「問うて、分からなかった」と読めるが、実際には
+**問うていない**(この機能より前に書かれた行である)。
 
 ## 行為の種類は落とさない
 
@@ -66,11 +84,12 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import PROV, RDF, RDFS, XSD
 
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
-from ontology_core.models import AuditEvent, OntologyVersion
+from ontology_core.models import ActorType, AuditEvent, OntologyVersion
 
 __all__ = [
     "ACTIVITY_TYPES",
     "AGENT_BASE",
+    "AGENT_CLASSES",
     "BUNDLE_BASE",
     "GENERATING_ACTIONS",
     "ONT",
@@ -120,6 +139,16 @@ ACTIVITY_TYPES: Mapping[str, str] = {
 VERSION_ACTIONS = frozenset(
     {"approved", "published", "rejected", "submitted", "superseded"},
 )
+
+#: 主体の種別から PROV-O のクラスへの対応(ADR-0035 決定4)。
+#:
+#: **`UNKNOWN` は入っていない。** 分からない主体に下位クラスを名乗らせない。
+#: `prov:Agent` は別に必ず出すので、ここに無い種別は「主体である」までしか
+#: 主張しない。
+AGENT_CLASSES: Mapping[ActorType, URIRef] = {
+    ActorType.USER: PROV.Person,
+    ActorType.SERVICE_PRINCIPAL: PROV.SoftwareAgent,
+}
 
 #: 版を**生む**行為。`prov:generated` になる。
 #:
@@ -223,6 +252,38 @@ def _add_lineage(
     graph.add((revision, PROV.wasDerivedFrom, parent))
 
 
+def _agent_classes(events: Sequence[AuditEvent]) -> dict[str, URIRef]:
+    """主体ごとに出せる PROV-O の下位クラスを決める(ADR-0035 決定4)。
+
+    **一致しているときだけ返す。** 主体の IRI は行為ごとではなく主体ごと
+    なので、種別を主体に付けると 1 つの IRI に複数の値がぶら下がる。
+    `idtyp` を任意クレームとして設定する前と後の行為が同じ書き出しに混ざると
+    実際に起きる。
+
+    | その主体の行為の記録 | 返す値 |
+    |---|---|
+    | すべて `user` | `prov:Person` |
+    | すべて `service-principal` | `prov:SoftwareAgent` |
+    | `unknown` を含む / 食い違う / `None` を含む | **含めない**(`prov:Agent` のみ) |
+
+    行為ごとの記録は**測った事実**だが、主体のクラスは**主体についての主張**
+    である。主張には一致が要る。
+    """
+    seen: dict[str, set[ActorType | None]] = {}
+    for event in events:
+        seen.setdefault(event.actor, set()).add(event.actor_type)
+    classes: dict[str, URIRef] = {}
+    for actor, types in seen.items():
+        if len(types) != 1:
+            continue
+        only = next(iter(types))
+        if only is None:
+            continue
+        if (cls := AGENT_CLASSES.get(only)) is not None:
+            classes[actor] = cls
+    return classes
+
+
 def render_provenance(
     events: Sequence[AuditEvent],
     *,
@@ -235,7 +296,10 @@ def render_provenance(
 
     Args:
         events: 書き出す監査イベント。並び順は結果に影響しない(RDF は順序を
-            持たない)。
+            持たない)。**主体のクラスはこの集合の全体で決まる**(ADR-0035
+            決定4)ので、期間で切った書き出しと全件の書き出しで
+            `prov:Person` が付くかどうかは変わりうる。行為ごとの
+            `ont:actorType` は変わらない。
         namespace: 書き出し対象の名前空間。`subject` を版として読むときの
             前置きにも使う。
         truncated: 上限で切り詰めたか。**偽でも `ont:truncated false` として
@@ -256,6 +320,9 @@ def render_provenance(
     validate_namespace_name(namespace)
 
     lineage = {row.version: row for row in versions if row.namespace == namespace}
+    # **書き出し全体を先に見る**(ADR-0035 決定4)。主体のクラスは、その主体の
+    # すべての行為が一致しているときだけ出す。
+    agent_classes = _agent_classes(events)
 
     graph = Graph()
     graph.bind("prov", PROV)
@@ -282,11 +349,18 @@ def render_provenance(
         graph.add((activity, PROV.endedAtTime, Literal(event.occurred_at, datatype=XSD.dateTime)))
 
         agent = URIRef(f"{AGENT_BASE}{_safe_segment(event.actor)}")
-        # **`prov:Agent` のままにする**(ADR-0026 決定3)。人間か機械か
-        # 記録していないので、下位クラスを名乗らない。
+        # **`prov:Agent` は種別に関わらず必ず出す**(ADR-0026 決定4 と同じ形)。
+        # 下位クラスの推論をしない相手にも主体として読める。
         graph.add((agent, RDF.type, PROV.Agent))
         graph.add((agent, ONT.principalId, Literal(event.actor)))
         graph.add((activity, PROV.wasAssociatedWith, agent))
+        if (agent_class := agent_classes.get(event.actor)) is not None:
+            graph.add((agent, RDF.type, agent_class))
+        # **種別は行為に付ける**(ADR-0035 決定4)。主体に付けると同じ IRI に
+        # 複数の値がぶら下がる。**`None` のときは出さない**(決定5)——
+        # それは「問うて、分からなかった」ではなく「問うていない」である。
+        if event.actor_type is not None:
+            graph.add((activity, ONT.actorType, Literal(event.actor_type.value)))
 
         if event.reason:
             graph.add((activity, RDFS.comment, Literal(event.reason)))

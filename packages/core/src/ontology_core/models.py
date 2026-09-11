@@ -54,6 +54,24 @@ class PlatformRole(StrEnum):
     PLATFORM_VIEWER = "platform-viewer"
 
 
+class ActorType(StrEnum):
+    """行為をした主体の種別(ADR-0035、`P2A-16`)。
+
+    **3 値である。** `idtyp` は Entra の**任意クレーム**で、リソース側の
+    アプリ登録に設定しないと発行されない。設定していないテナントでは
+    サービスプリンシパルのトークンにも付かないので、**クレームが無いことは
+    「人間である」を意味しない**(決定1)。
+
+    `device` など知らない値も `UNKNOWN` に畳む(決定2)。監査証跡が答えたい
+    問いは「**この行為に人間が説明責任を負うか**」であって「トークンの種別は
+    何か」ではない。
+    """
+
+    USER = "user"
+    SERVICE_PRINCIPAL = "service-principal"
+    UNKNOWN = "unknown"
+
+
 class OntologyVersionStatus(StrEnum):
     """オントロジーのバージョンの状態。"""
 
@@ -292,6 +310,12 @@ class AuditEvent(BaseModel):
     subject: str = Field(description="対象。オントロジーのバージョンやマッピングの識別子")
     reason: str = ""
     diff: str | None = Field(default=None, description="前バージョンとの差分")
+    actor_type: ActorType | None = Field(
+        default=None,
+        description="主体の種別(ADR-0035)。**`None` は「問うていない」** — "
+        "この機能より前に書かれた行である。`ActorType.UNKNOWN` は"
+        "「問うて、分からなかった」で、意味が違う(決定3・5)",
+    )
 
 
 class AuditPage(BaseModel):

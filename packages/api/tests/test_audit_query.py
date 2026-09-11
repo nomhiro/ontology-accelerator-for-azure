@@ -21,7 +21,7 @@ from ontology_api.repositories.roles import RoleRepository
 from ontology_api.repositories.versions import AuditRepository
 from ontology_api.routers.audit import query_audit
 from ontology_core.auth.entra import Principal
-from ontology_core.models import NamespaceRole, PlatformRole
+from ontology_core.models import ActorType, NamespaceRole, PlatformRole
 
 _NS = "audit-ns"
 _OTHER_NS = "audit-other"
@@ -70,7 +70,12 @@ async def _record(
     まとめて commit すると全件が同じ時刻になり、時刻での絞り込みを検証できない。
     """
     await AuditRepository(session).record(
-        namespace=namespace, action=action, actor=actor, subject=subject, reason=reason
+        namespace=namespace,
+        action=action,
+        actor=actor,
+        actor_type=ActorType.UNKNOWN,
+        subject=subject,
+        reason=reason,
     )
     await session.commit()
 
@@ -124,7 +129,13 @@ async def test_同一トランザクションのイベントもページング�
     await _setup(session)
     repo = AuditRepository(session)
     for i in range(5):
-        await repo.record(namespace=_NS, action=f"same{i}", actor=_ALICE, subject="s")
+        await repo.record(
+            namespace=_NS,
+            action=f"same{i}",
+            actor=_ALICE,
+            actor_type=ActorType.UNKNOWN,
+            subject="s",
+        )
     await session.commit()
 
     # 全件が同じ occurred_at であることを確かめてから、ページングを検証する。
