@@ -1,0 +1,223 @@
+"""監査証跡を W3C PROV-O の Turtle として書き出す(ADR-0026、`P2A-07`)。
+
+[ADR-0006](../../../../docs/adr/0006-ontology-versioning-and-audit.md) 決定3 は
+「監査証跡を PostgreSQL に記録し、**PROV-O で表現する**」と決めていたが、
+表現の側が未実装だった。記録は独自スキーマのままで、**W3C 標準忠実を掲げる
+プロジェクトが自身のメタデータだけ独自スキーマで出している**状態だった。
+
+## 記録していない派生関係は主張しない
+
+**`prov:wasDerivedFrom` と `prov:wasRevisionOf` を出さない**(ADR-0026 決定2)。
+ADR-0006 が名前を挙げていた語彙だが、意図的に出さない。
+
+このシステムが記録しているのは**承認の順序**だけである。`publish` は
+`base_version` を受け取るが lost update の検出にだけ使って保存していないので、
+**「著者が実際に何から編集したか」を知らない。** 承認の順序から派生を出せば、
+それは測っていないことを標準語彙で主張することになる。しかも
+**相互運用性があるぶん害が大きい** — 外部の PROV ツールは `wasDerivedFrom` を
+著作の系譜として表示し、誰も疑わない。
+
+同じ理由で**主体を `prov:Person` / `prov:SoftwareAgent` に分けない**(決定3)。
+`audit_events.actor` は Entra のオブジェクト ID だけで、人間かサービス
+プリンシパルかを区別していない。`prov:SoftwareAgent` と書けば外部ツールは
+「自動生成」と読む — 四眼原則を記録する監査証跡でそれは最悪の誤りである。
+
+## 行為の種類は落とさない
+
+PROV-O は「誰が・いつ・何に」を標準化するが、**行為の種類はドメインの語彙**
+である。`prov:Activity` だけにすると「何をしたか」が消えるので、
+`ont:Publish` のような下位クラス(`rdfs:subClassOf prov:Activity`)を併記する
+(決定4)。純粋な PROV-O だけを解する相手にも `prov:Activity` として読める。
+
+**`ont:action` に生の文字列も必ず書く。** 対応表(`ACTIVITY_TYPES`)が新しい
+`action` に追いつかなくても、記録された値そのものは失われない。
+
+## 切り詰めは RDF の中に書く
+
+**RDF は「無い」と「返していない」を区別できない。** 書き出しは
+`prov:Bundle` のノードを 1 つ持ち、`ont:truncated` を**真偽どちらでも明示的に**
+書く(決定5)。省略すると「この名前空間ではこれだけしか起きていない」と
+読まれる。`ont:includes` で各行為を束ねるのは、複数の書き出しを混ぜた後でも
+**どの行為が切り詰められた書き出しから来たか**を辿れるようにするため
+(それが無いと旗が使えない)。
+
+なお、この束自身の記述を同じ文書に含めている。厳密な PROV の束の意味論では
+束の記述は別の束に属するが、**自己記述にしないと切り詰めが伝わらない**ので
+こちらを採る。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from datetime import datetime
+from urllib.parse import quote
+
+from rdflib import Graph, Literal, Namespace, URIRef
+from rdflib.namespace import PROV, RDF, RDFS, XSD
+
+from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
+from ontology_core.models import AuditEvent
+
+__all__ = [
+    "ACTIVITY_TYPES",
+    "AGENT_BASE",
+    "BUNDLE_BASE",
+    "GENERATING_ACTIONS",
+    "ONT",
+    "REVISION_BASE",
+    "VERSION_ACTIONS",
+    "render_provenance",
+]
+
+#: 独自語彙の名前空間(ADR-0026 決定7)。
+ONT = Namespace("urn:ontology:prov#")
+
+#: 版(`prov:Entity`)の IRI の基底。
+#:
+#: **版のグラフ IRI(`urn:ontology:graph/...`)を流用しない**(決定7)。
+#: あれは「その版のトリプルが載るグラフ」の識別子で、**版そのものではない**。
+#: 同じ IRI にすると「グラフに対する操作」と「版に対する操作」が混ざる。
+REVISION_BASE = "urn:ontology:revision/"
+
+#: 行為(`prov:Activity`)の IRI の基底。監査イベントの `id` を付ける。
+ACTIVITY_BASE = "urn:ontology:activity/"
+
+#: 主体(`prov:Agent`)の IRI の基底。
+AGENT_BASE = "urn:ontology:agent/"
+
+#: 書き出し(`prov:Bundle`)の IRI の基底。
+BUNDLE_BASE = "urn:ontology:provenance/"
+
+#: 監査の `action` から独自の下位クラス名への対応(ADR-0026 決定4)。
+#:
+#: **ここに無い `action` は `prov:Activity` のままにする。** 知らない行為を
+#: 既知のどれかに丸めるより、種類を名乗らないほうが正しい。生の文字列は
+#: `ont:action` に必ず出る。
+ACTIVITY_TYPES: Mapping[str, str] = {
+    "access-log-purged": "PurgeAccessLog",
+    "approved": "Approve",
+    "mapping-declared": "DeclareMapping",
+    "mapping-revoked": "RevokeMapping",
+    "published": "Publish",
+    "questions-revised": "ReviseQuestions",
+    "rejected": "Reject",
+    "submitted": "Submit",
+    "superseded": "Supersede",
+}
+
+#: 対象が版である行為。`subject` を `prov:Entity` に写す(ADR-0026 決定4)。
+VERSION_ACTIONS = frozenset(
+    {"approved", "published", "rejected", "submitted", "superseded"},
+)
+
+#: 版を**生む**行為。`prov:generated` になる。
+#:
+#: **公開だけである。** ここを広げると「1 つの実体が 5 回生成された」という
+#: 読めない記録になる(承認や却下は既にある版に対する行為である)。
+GENERATING_ACTIONS = frozenset({"published"})
+
+
+def _safe_segment(value: str) -> str:
+    """IRI の 1 セグメントとして安全な文字列に直す。
+
+    **`actor` は外部由来である。** `AUTH_MODE=disabled` では任意の文字列が
+    入りうるし、空白や `>` が混ざると**生成した Turtle が壊れる**
+    (`<urn:ontology:agent/a> .>` のような形になる)。
+    百分率符号化しておけば GUID はそのまま読め、危険な文字だけが逃げる。
+    """
+    return quote(value, safe="")
+
+
+def _revision_iri(namespace: str, subject: str) -> URIRef | None:
+    """`<名前空間>@<バージョン>` 形の対象を版の IRI に直す。
+
+    形が違えば `None` を返す。**推測しない** — 版でないものを版として
+    出すほうが、版の情報が出ないより悪い。呼び出し側は `None` でも
+    `ont:subject` に生の文字列を残す。
+    """
+    prefix = f"{namespace}@"
+    if not subject.startswith(prefix):
+        return None
+    version = subject[len(prefix) :]
+    try:
+        validate_version(version)
+    except NamespaceNameError:
+        return None
+    return URIRef(f"{REVISION_BASE}{_safe_segment(namespace)}/{_safe_segment(version)}")
+
+
+def render_provenance(
+    events: Sequence[AuditEvent],
+    *,
+    namespace: str,
+    truncated: bool,
+    exported_at: datetime,
+) -> str:
+    """監査イベントを PROV-O の Turtle にする。
+
+    Args:
+        events: 書き出す監査イベント。並び順は結果に影響しない(RDF は順序を
+            持たない)。
+        namespace: 書き出し対象の名前空間。`subject` を版として読むときの
+            前置きにも使う。
+        truncated: 上限で切り詰めたか。**偽でも `ont:truncated false` として
+            明示的に出る**(ADR-0026 決定5)。
+        exported_at: 書き出した時刻。タイムゾーン付きで渡すこと。
+
+    Returns:
+        Turtle。
+
+    Raises:
+        NamespaceNameError: `namespace` が名前空間名として使えないとき。
+    """
+    validate_namespace_name(namespace)
+
+    graph = Graph()
+    graph.bind("prov", PROV)
+    graph.bind("ont", ONT)
+    graph.bind("rdfs", RDFS)
+
+    bundle = URIRef(f"{BUNDLE_BASE}{_safe_segment(namespace)}")
+    graph.add((bundle, RDF.type, PROV.Bundle))
+    graph.add((bundle, ONT.namespace, Literal(namespace)))
+    graph.add((bundle, ONT.eventCount, Literal(len(events))))
+    # **真偽どちらでも書く。** 省略すると「切り詰めていない」と読まれる。
+    graph.add((bundle, ONT.truncated, Literal(truncated)))
+    graph.add((bundle, ONT.exportedAt, Literal(exported_at, datatype=XSD.dateTime)))
+
+    for event in events:
+        activity = URIRef(f"{ACTIVITY_BASE}{event.id}")
+        graph.add((bundle, ONT.includes, activity))
+        graph.add((activity, RDF.type, PROV.Activity))
+        if (local := ACTIVITY_TYPES.get(event.action)) is not None:
+            graph.add((activity, RDF.type, ONT[local]))
+        # 生の値も必ず残す(対応表が追いつかなくても失わない)。
+        graph.add((activity, ONT.action, Literal(event.action)))
+        graph.add((activity, ONT.subject, Literal(event.subject)))
+        graph.add((activity, PROV.endedAtTime, Literal(event.occurred_at, datatype=XSD.dateTime)))
+
+        agent = URIRef(f"{AGENT_BASE}{_safe_segment(event.actor)}")
+        # **`prov:Agent` のままにする**(ADR-0026 決定3)。人間か機械か
+        # 記録していないので、下位クラスを名乗らない。
+        graph.add((agent, RDF.type, PROV.Agent))
+        graph.add((agent, ONT.principalId, Literal(event.actor)))
+        graph.add((activity, PROV.wasAssociatedWith, agent))
+
+        if event.reason:
+            graph.add((activity, RDFS.comment, Literal(event.reason)))
+        if event.diff is not None:
+            # 意味的差分の**要約**の JSON(ADR-0016 決定7)。RDF に展開しない
+            # — 全トリプルを載せると書き出しが非有界に育つ。
+            graph.add((activity, ONT.diffSummary, Literal(event.diff)))
+
+        if event.action in VERSION_ACTIONS:
+            revision = _revision_iri(namespace, event.subject)
+            if revision is not None:
+                graph.add((revision, RDF.type, PROV.Entity))
+                graph.add((revision, ONT.namespace, Literal(namespace)))
+                graph.add((revision, ONT.version, Literal(event.subject[len(namespace) + 1 :])))
+                predicate = PROV.generated if event.action in GENERATING_ACTIONS else PROV.used
+                graph.add((activity, predicate, revision))
+
+    serialized = graph.serialize(format="turtle")
+    return serialized if isinstance(serialized, str) else serialized.decode("utf-8")

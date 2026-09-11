@@ -70,7 +70,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 655 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 709 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -168,11 +168,11 @@ flowchart TB
 - **ストアを持ち込める** — SPARQL 1.1 Protocol をハード境界としているため、`SPARQL_QUERY_ENDPOINT` / `SPARQL_UPDATE_ENDPOINT` / `SPARQL_GSP_ENDPOINT` を差し替えるだけで既存の GraphDB / Stardog / Amazon Neptune などを利用できます。アプリコードはストア実装に依存しません
 - **MCP でエージェントに提供** — Model Context Protocol(Streamable HTTP)サーバーを同梱し、Foundry Agent Service などからツールとして接続できます。提供は読み取り専用です
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
-- **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
+- **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を記録し、`GET /namespaces/{namespace}/provenance` が W3C PROV-O の Turtle として書き出します
 
-現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、保持ポリシー、そして健全性指標です。
-**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)です。
-監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、保持ポリシー、健全性指標、そして監査証跡の PROV-O 書き出しです。
+**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、LLM によるオントロジー生成(Phase 2)です。
+PROV-O の書き出しには **`prov:wasDerivedFrom` を含めていません** — `publish` が受け取る `base_version` を保存しておらず、このシステムは「承認の順序」だけを知っているためです(`P2A-15`。[ADR-0026](docs/adr/0026-provenance-export.md) 決定2)。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
 
@@ -708,7 +708,7 @@ curl -G "$API/namespaces/retail-core/audit" \
 ```
 
 ```json
-{ "events": [ { "action": "approved", "actor": "...", "occurred_at": "...",
+{ "events": [ { "id": 1234, "action": "approved", "actor": "...", "occurred_at": "...",
                 "subject": "retail-core@2.0.0", "reason": "...", "diff": null } ],
   "next_cursor": 1234 }
 ```
@@ -720,6 +720,40 @@ curl -G "$API/namespaces/retail-core/audit" \
 **日時にはタイムゾーンを付けてください**（付いていなければ 422）。素朴に UTC と解釈しないのは、監査の照会で 9 時間ずれた結果を返すのが「何も返らない」よりたちが悪いからです。
 
 **`limit` の上限は 500 です。** `audit_events` は追記専用で無限に伸びるため（[ADR-0011](docs/adr/0011-database-privilege-separation.md) 決定2 で `DELETE` を剥奪しています）、上限が無いと 1 リクエストで全件を読み出せてしまいます。
+
+#### 監査証跡を W3C PROV-O で書き出す
+
+**`GET /namespaces/{ns}/provenance` が同じ監査証跡を PROV-O の Turtle で返します**（`data-analyst` が必要。[ADR-0026](docs/adr/0026-provenance-export.md)）。PROV-O を理解する外部ツールにそのまま渡せます。絞り込みは `/audit` と同じです（`cursor` を除く）。
+
+```bash
+curl -G "$API/namespaces/retail-core/provenance" \
+  --data-urlencode "since=2026-09-01T00:00:00Z" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```turtle
+@prefix ont:  <urn:ontology:prov#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+
+<urn:ontology:provenance/retail-core> a prov:Bundle ;
+    ont:eventCount 2 ;
+    ont:truncated false ;
+    ont:includes <urn:ontology:activity/41>, <urn:ontology:activity/42> .
+
+<urn:ontology:activity/41> a prov:Activity, ont:Publish ;
+    prov:endedAtTime "2026-09-01T03:00:00+00:00"^^xsd:dateTime ;
+    prov:generated <urn:ontology:revision/retail-core/2.0.0> ;
+    prov:wasAssociatedWith <urn:ontology:agent/...> ;
+    ont:action "published" .
+```
+
+**`prov:wasDerivedFrom` と `prov:wasRevisionOf` は出力しません**（[ADR-0026](docs/adr/0026-provenance-export.md) 決定2）。このシステムが記録しているのは**承認の順序**だけで、「著者がどの版から編集したか」は保存していません（`publish` の `base_version` は lost update の検出にだけ使っています）。承認の順序から派生を出せば、**測っていないことを標準語彙で主張する**ことになります。相互運用性のある形式で嘘を書くと、外部の PROV ツールがそれを著作の系譜として表示し、誰も疑いません。派生を出せるようにするには `base_version` の保存が必要です（`P2A-15`）。
+
+**主体は `prov:Agent` のままで、`prov:Person` / `prov:SoftwareAgent` に分けません**（決定3）。`actor` は Entra のオブジェクト ID だけで、人間かサービスプリンシパルかを記録していません。**四眼原則を記録する監査証跡で、人間の承認を自動化された行為として見せるのは最悪の誤りです**（`P2A-16`）。
+
+**`cursor` は受けません**（決定1）。RDF は順序を持たないため、カーソルで切り出した断片を RDF として渡す意味が薄いからです。代わりに**切り詰めたことを Turtle の中に書きます**（`ont:truncated`）。件数が多い名前空間は `since` / `until` で期間を区切ってください。
+
+**この書き出しはトリプルストアには射影されません**（決定6）。出自の記録はどの版にも属さないため版の名前付きグラフに混ぜられず、既定グラフを単一の承認済み版に保つ決定（[ADR-0010](docs/adr/0010-approval-and-projection.md) 決定6）とも衝突します。
 
 #### 「この用語は誰に聞けばよいか」を記録して解決する
 

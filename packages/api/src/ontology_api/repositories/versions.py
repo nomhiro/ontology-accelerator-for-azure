@@ -168,6 +168,7 @@ class VersionRepository:
 
 def _to_audit(row: AuditEventRow) -> AuditEvent:
     return AuditEvent(
+        id=row.id,
         namespace=row.namespace,
         action=row.action,
         actor=row.actor,

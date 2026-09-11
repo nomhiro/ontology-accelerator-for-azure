@@ -229,10 +229,17 @@ class AuditEvent(BaseModel):
 
     「誰が・いつ・何を・なぜ」を記録する。表現には W3C PROV-O を用いて
     W3C 標準忠実の方針と揃える(`docs/adr/0006-ontology-versioning-and-audit.md`)。
+    PROV-O への写しは `ontology_core.prov`(ADR-0026)。
     """
 
     model_config = ConfigDict(frozen=True)
 
+    id: int = Field(
+        description="追記専用テーブルの単調増加する主キー。"
+        "並び順とページングの鍵であり(`occurred_at` は `now()` = "
+        "トランザクション開始時刻なので同時刻が並ぶ)、PROV-O の "
+        "`prov:Activity` の IRI にもこの値を使う"
+    )
     namespace: str
     action: str = Field(description="proposed / approved / rejected / published など")
     actor: str = Field(description="Entra ID のオブジェクト ID もしくはサービスプリンシパル")

@@ -251,7 +251,7 @@ AWS 版 [Context Ontology Accelerator](https://github.com/aws/context-ontology-a
 AWS 版の訴求は「説明可能・監査可能な意思決定」であり、本プロジェクトでもここを中核機能として設計します(実装は Phase 2。[ADR-0006](adr/0006-ontology-versioning-and-audit.md))。
 
 - オントロジーは**不変リビジョン**(コンテンツハッシュ + semver)として Blob に保存します。バージョンごとに別の名前付きグラフへ射影し、エージェントは**バージョンを固定して参照**できます
-- **監査証跡**: 誰が提案・誰が承認・いつ・差分(diff)・理由 を PostgreSQL に記録します。表現には W3C **PROV-O** を用いて、W3C 忠実路線と整合させます
+- **監査証跡**: 誰が提案・誰が承認・いつ・差分(diff)・理由 を PostgreSQL に記録し、`GET /namespaces/{ns}/provenance` が W3C **PROV-O** の Turtle として書き出します([ADR-0026](adr/0026-provenance-export.md))。**ただし `prov:wasDerivedFrom` は出しません** — 記録しているのは承認の順序だけで、「どの版から編集したか」を保存していないためです(`P2A-15`)
 - エージェントへ提供したコンテキストのアクセスログ(どのバージョンの何を返したか)を記録します
 
 ---

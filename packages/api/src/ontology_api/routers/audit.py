@@ -1,4 +1,4 @@
-"""監査証跡の照会(`P2B-11`、ADR-0006 §3 / ADR-0009 決定7)。
+"""監査証跡の照会(`P2B-11`)と PROV-O での書き出し(`P2A-07`、ADR-0026)。
 
 ## 版単位の `decisions` との違い
 
@@ -17,14 +17,25 @@
 られる。**足し合わせれば見えるものを、集約したときだけ隠すのは見せかけの
 制限である。** 見せかけの制限は「守られている」という誤解を作るぶん、
 制限が無いより悪い。
+
+## 2 つの表現を同じモジュールに置く
+
+`/audit`(JSON)と `/provenance`(PROV-O の Turtle)は**同じ絞り込みを取る**
+(ADR-0026 決定1)。別のモジュールに分けると、絞り込みを足したときに片方だけ
+更新されて表現によって見える範囲が変わる。回帰テストで署名の一致も固定して
+ある(`test_provenance_api.py`)。
+
+**内容交渉(`Accept: text/turtle`)にはしなかった**(ADR-0026 の代替案)。
+JSON には `cursor` が要るが RDF では意味が薄く、**同じ URL が表現によって
+違うパラメータを取る**形になる。
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from ontology_api.dependencies import CurrentPrincipal, SessionDep
 from ontology_api.repositories.namespaces import NamespaceRepository
@@ -32,8 +43,40 @@ from ontology_api.repositories.versions import AuditRepository
 from ontology_api.services.authorization import PermissionDeniedError, require_namespace_role
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.models import AuditPage, NamespaceRole
+from ontology_core.prov import render_provenance
 
 router = APIRouter(prefix="/namespaces", tags=["audit"])
+
+#: Turtle の MIME 型。`charset` を明示する(既定は US-ASCII 扱いになりうる一方、
+#: 理由や表示名に日本語が入るため)。
+TURTLE_MEDIA_TYPE = "text/turtle; charset=utf-8"
+
+
+async def _authorize(
+    session: SessionDep,
+    *,
+    namespace: str,
+    principal: CurrentPrincipal,
+) -> None:
+    """名前空間名を検証し、存在と `data-analyst` 権限を確かめる。"""
+    try:
+        validate_namespace_name(namespace)
+    except NamespaceNameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if await NamespaceRepository(session).get(namespace) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"名前空間 '{namespace}' が見つかりません",
+        )
+    try:
+        await require_namespace_role(
+            session,
+            namespace=namespace,
+            principal=principal,
+            required=NamespaceRole.DATA_ANALYST,
+        )
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
 @router.get("/{namespace}/audit", summary="監査証跡を照会する")
@@ -85,24 +128,7 @@ async def query_audit(
     期間は半開区間 `[since, until)` である。境界を両側とも含めると、期間を
     並べて集計したときに二重に数える。
     """
-    try:
-        validate_namespace_name(namespace)
-    except NamespaceNameError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    if await NamespaceRepository(session).get(namespace) is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"名前空間 '{namespace}' が見つかりません",
-        )
-    try:
-        await require_namespace_role(
-            session,
-            namespace=namespace,
-            principal=principal,
-            required=NamespaceRole.DATA_ANALYST,
-        )
-    except PermissionDeniedError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    await _authorize(session, namespace=namespace, principal=principal)
 
     try:
         return await AuditRepository(session).query(
@@ -121,3 +147,85 @@ async def query_audit(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
+
+
+@router.get(
+    "/{namespace}/provenance",
+    summary="監査証跡を PROV-O で書き出す",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"text/turtle": {}},
+            "description": "W3C PROV-O の Turtle",
+        }
+    },
+)
+async def export_provenance(
+    namespace: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    action: Annotated[
+        str | None,
+        Query(
+            description="この操作だけに絞る(完全一致)。`published` / `submitted` / "
+            "`approved` / `rejected` / `superseded` など"
+        ),
+    ] = None,
+    actor: Annotated[
+        str | None,
+        Query(description="この主体だけに絞る(Entra のオブジェクト ID。完全一致)"),
+    ] = None,
+    subject: Annotated[
+        str | None,
+        Query(description="この対象だけに絞る(`<名前空間>@<バージョン>`。完全一致)"),
+    ] = None,
+    since: Annotated[
+        datetime | None, Query(description="この時刻以降(**含む**)。タイムゾーン必須")
+    ] = None,
+    until: Annotated[
+        datetime | None, Query(description="この時刻より前(**含まない**)。タイムゾーン必須")
+    ] = None,
+    limit: Annotated[int, Query(description="書き出す件数の上限")] = AuditRepository.DEFAULT_LIMIT,
+) -> Response:
+    """監査証跡を W3C PROV-O の Turtle として返す。`data-analyst` が必要。
+
+    ADR-0006 決定3 が約束していた「PROV-O で表現する」の実装である
+    (ADR-0026)。権限は `/audit` と同じ — **同じ情報を別の語彙で出すだけ**
+    なので、ここだけ厳しくすると見せかけの制限になる。
+
+    **`cursor` は受けない**(ADR-0026 決定1)。RDF は順序を持たないので、
+    カーソルで切り出した断片を RDF として渡す意味が薄い。代わりに
+    **切り詰めたことを Turtle の中に書く**(`ont:truncated`)。件数が多い
+    名前空間は `since` / `until` で期間を区切って取る。
+
+    **`prov:wasDerivedFrom` は出ない**(決定2)。このシステムは承認の順序しか
+    記録しておらず、「どの版から編集したか」を知らない。承認の順序から派生を
+    出すのは、測っていないことを標準語彙で主張することになる。
+    """
+    await _authorize(session, namespace=namespace, principal=principal)
+
+    try:
+        page = await AuditRepository(session).query(
+            namespace=namespace,
+            action=action,
+            actor=actor,
+            subject=subject,
+            since=since,
+            until=until,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+
+    # **`next_cursor` の有無が「続きがあるか」である。** 件数が `limit`
+    # ちょうどでも続きがあるとは限らないので、`len(events) == limit` で
+    # 判定しない(リポジトリが `limit + 1` 件取って確かめている)。
+    turtle = render_provenance(
+        page.events,
+        namespace=namespace,
+        truncated=page.next_cursor is not None,
+        exported_at=datetime.now(UTC),
+    )
+    return Response(content=turtle, media_type=TURTLE_MEDIA_TYPE)
