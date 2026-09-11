@@ -60,6 +60,8 @@ import sys
 
 import asyncpg
 
+from ontology_core.console import say, warn
+
 _OWNER_ROLE = "ontology_owner"
 # pgaadauth_create_principal が存在する Azure のメンテナンス用データベース。
 _MAINTENANCE_DATABASE = "postgres"
@@ -138,10 +140,9 @@ async def _connect(database: str) -> asyncpg.Connection:
         except (OSError, asyncpg.PostgresError) as exc:
             last_error = exc
             if attempt < _CONNECT_ATTEMPTS:
-                print(
+                warn(
                     f"bootstrap-db: {database} への接続に失敗しました "
-                    f"({attempt}/{_CONNECT_ATTEMPTS})、再試行します: {exc}",
-                    file=sys.stderr,
+                    f"({attempt}/{_CONNECT_ATTEMPTS})、再試行します: {exc}"
                 )
                 await asyncio.sleep(_CONNECT_RETRY_SECONDS)
     assert last_error is not None
@@ -157,10 +158,10 @@ async def _ensure_owner_role(conn: asyncpg.Connection) -> None:
     """
     exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", _OWNER_ROLE)
     if exists:
-        print(f"bootstrap-db: ロール {_OWNER_ROLE} は既にあります")
+        say(f"bootstrap-db: ロール {_OWNER_ROLE} は既にあります")
     else:
         await conn.execute(f"CREATE ROLE {_quote_ident(_OWNER_ROLE)} NOLOGIN")
-        print(f"bootstrap-db: ロール {_OWNER_ROLE} を作成しました")
+        say(f"bootstrap-db: ロール {_OWNER_ROLE} を作成しました")
     await conn.execute(f"GRANT {_quote_ident(_OWNER_ROLE)} TO CURRENT_USER")
 
 
@@ -176,7 +177,7 @@ async def _ensure_app_principal(conn: asyncpg.Connection, app_role: str) -> None
         using_password_auth = bool(os.environ.get("POSTGRES_ADMIN_PASSWORD", ""))
         if using_password_auth:
             # ローカル開発(vanilla PostgreSQL)には pgaadauth 拡張が無い。
-            print(
+            say(
                 "bootstrap-db: pgaadauth_create_principal が見つかりません"
                 "(パスワード認証接続のためローカル開発と判断してスキップします)"
             )
@@ -189,10 +190,10 @@ async def _ensure_app_principal(conn: asyncpg.Connection, app_role: str) -> None
 
     already = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", app_role)
     if already:
-        print(f"bootstrap-db: ロール {app_role} は既にあります(pgaadauth 登録済み)")
+        say(f"bootstrap-db: ロール {app_role} は既にあります(pgaadauth 登録済み)")
         return
     await conn.fetch("SELECT * FROM pgaadauth_create_principal($1, false, false)", app_role)
-    print(f"bootstrap-db: ロール {app_role} を pgaadauth で作成しました")
+    say(f"bootstrap-db: ロール {app_role} を pgaadauth で作成しました")
 
 
 async def _pre(app_role: str, database: str) -> None:
@@ -224,7 +225,7 @@ async def _pre(app_role: str, database: str) -> None:
         )
     finally:
         await conn.close()
-    print("bootstrap-db: pre フェーズが完了しました")
+    say("bootstrap-db: pre フェーズが完了しました")
 
 
 async def _post(app_role: str, database: str) -> None:
@@ -251,7 +252,7 @@ async def _post(app_role: str, database: str) -> None:
         await conn.execute(f"REVOKE DELETE ON audit_events FROM {quoted_role}")
     finally:
         await conn.close()
-    print("bootstrap-db: post フェーズが完了しました")
+    say("bootstrap-db: post フェーズが完了しました")
 
 
 async def _run(phase: str) -> None:
@@ -270,7 +271,7 @@ def main() -> int:
     try:
         asyncio.run(_run(args.phase))
     except Exception as exc:  # ここで捕まえて分かりやすいメッセージにする
-        print(f"bootstrap-db: 失敗しました: {exc}", file=sys.stderr)
+        warn(f"bootstrap-db: 失敗しました: {exc}")
         return 1
     return 0
 

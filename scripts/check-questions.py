@@ -28,6 +28,7 @@ import sys
 
 from ontology_core.competency import QuestionFileError, load_questions, run_questions
 from ontology_core.config import get_settings
+from ontology_core.console import say, warn
 from ontology_core.sparql.client import FusekiStore
 
 
@@ -35,7 +36,7 @@ async def _run(questions_path: str, dataset: str) -> int:
     try:
         questions = load_questions(questions_path)
     except QuestionFileError as exc:
-        print(f"想定質問ファイルを読めません: {exc}", file=sys.stderr)
+        warn(f"想定質問ファイルを読めません: {exc}")
         return 2
 
     settings = get_settings()
@@ -55,20 +56,20 @@ async def _run(questions_path: str, dataset: str) -> int:
     finally:
         await store.aclose()
 
-    print(f"想定質問: {questions_path}  対象: {dataset}")
-    print()
+    say(f"想定質問: {questions_path}  対象: {dataset}")
+    say("")
     for r in results:
         mark = "ok  " if r.passed else "NG  "
-        print(f"{mark}{r.question.id}: {r.question.question}")
-        print(f"      expect={r.question.expect.value}  {r.detail}")
+        say(f"{mark}{r.question.id}: {r.question.question}")
+        say(f"      expect={r.question.expect.value}  {r.detail}")
     failed = [r for r in results if not r.passed]
-    print()
-    print(f"{len(results) - len(failed)}/{len(results)} 件が満たされています")
+    say("")
+    say(f"{len(results) - len(failed)}/{len(results)} 件が満たされています")
     if failed:
-        print()
-        print("満たされていない要求:", file=sys.stderr)
+        warn("")
+        warn("満たされていない要求:")
         for r in failed:
-            print(f"  {r.question.id}: {r.question.question}", file=sys.stderr)
+            warn(f"  {r.question.id}: {r.question.question}")
         return 1
     return 0
 

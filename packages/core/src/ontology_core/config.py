@@ -8,9 +8,14 @@ from __future__ import annotations
 
 from enum import StrEnum
 from functools import lru_cache
+from typing import Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 既定のエンドポイントに埋め込んでいる Fuseki のポート(`P2A-13`)。
+# **下の 4 つの既定値と一致していなければならない。** テストが固定している。
+_DEFAULT_FUSEKI_PORT = 3030
 
 
 class AuthMode(StrEnum):
@@ -61,6 +66,18 @@ class Settings(BaseSettings):
     )
     fuseki_admin_user: str = Field(default="admin", alias="FUSEKI_ADMIN_USER")
     fuseki_admin_password: str = Field(default="", alias="FUSEKI_ADMIN_PASSWORD")
+
+    # ローカルで Fuseki を別のポートに動かすときの逃げ道(`P2A-13`)。
+    #
+    # **`docker-compose.yml` と `pytest` が既に同じ変数を読む。** ここで読まないと
+    # 「ポート 3030 が別プロジェクトと衝突したら `FUSEKI_PORT` を指定する」という
+    # 案内が `scripts/check-questions.py` に届かず、**別プロセスの Fuseki に
+    # クエリが飛んで HTTP 405 になる**(実測。質問が落ちたように見えるので
+    # 症状が分かりにくい)。
+    #
+    # **デプロイ環境では効かない。** Bicep が 4 つのエンドポイントを明示的に
+    # 注入するので、下の検証で書き換えの対象外になる。
+    fuseki_port: int = Field(default=_DEFAULT_FUSEKI_PORT, alias="FUSEKI_PORT")
 
     # ---- SPARQL のガードレール ----
     # SERVICE 句は任意の URL へ HTTP リクエストを飛ばせるため、既定で禁止する
@@ -161,6 +178,36 @@ class Settings(BaseSettings):
             f"postgresql+asyncpg://{self.postgres_user}@"
             f"{self.postgres_host}:{self.postgres_port}/{self.postgres_database}"
         )
+
+    @model_validator(mode="after")
+    def _apply_fuseki_port(self) -> Self:
+        """`FUSEKI_PORT` を 4 つのエンドポイントの既定に反映する(`P2A-13`)。
+
+        **明示的に渡されたエンドポイントは書き換えない。** デプロイ環境では
+        Bicep が内部 ingress の FQDN を注入するので、そちらが常に勝つ。
+        `model_fields_set` は「実際に与えられたフィールド」だけを持つので、
+        既定値のままかどうかをここで判定できる。
+
+        既定値の文字列から `:3030/` を差し替える形にしているのは、**URL の形を
+        2 か所に書かないため**である(形が増えると片方だけ直す事故が起きる)。
+        """
+        if self.fuseki_port == _DEFAULT_FUSEKI_PORT:
+            return self
+        for field in (
+            "sparql_query_endpoint",
+            "sparql_update_endpoint",
+            "sparql_gsp_endpoint",
+            "fuseki_admin_endpoint",
+        ):
+            if field in self.model_fields_set:
+                continue
+            current: str = getattr(self, field)
+            setattr(
+                self,
+                field,
+                current.replace(f":{_DEFAULT_FUSEKI_PORT}/", f":{self.fuseki_port}/", 1),
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

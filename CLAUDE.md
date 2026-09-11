@@ -53,8 +53,8 @@ just dev-api             # Core API 起動
 
 ### 既知の罠
 
-- **ポート 3030 が別プロジェクトと衝突する場合がある。** `FUSEKI_PORT=3131` を環境変数で指定する。テストも同じ変数を読む（`POSTGRES_PORT` / `AZURITE_PORT` も同様）。
-  **ただし `scripts/check-questions.py` には効かない**（`SPARQL_QUERY_ENDPOINT` という完全な URL を読むため。`P2A-13`）。3030 を別プロジェクトが握っていると**そちらへクエリが飛んで HTTP 405 になり、質問が落ちたように見える**（実測）。`SPARQL_QUERY_ENDPOINT='http://localhost:3131/{dataset}/sparql'` を明示する
+- **ポート 3030 が別プロジェクトと衝突する場合がある。** `FUSEKI_PORT=3131` を環境変数で指定する。`docker compose` / `pytest` / `Settings`（つまり `scripts/check-questions.py` も）がすべて同じ変数を読む（`POSTGRES_PORT` / `AZURITE_PORT` も同様）。
+  **`SPARQL_QUERY_ENDPOINT` 等を明示した場合はそちらが勝つ**（デプロイ環境では Bicep が内部 ingress の FQDN を注入するため。`P2A-13`）
 - **`just up` は Azurite に Blob コンテナを作る。** これを飛ばすと publish と削除が `ContainerNotFound` で失敗する。名前空間の作成と SPARQL 参照は Blob を触らないため動いてしまい、原因が分かりにくい
 - **`just clean` は PostgreSQL のボリュームごと消す。** 消した後は `just migrate` をやり直す必要がある。さらに `alembic` を素で叩くときは `.env` を読まないので、`POSTGRES_*` を環境変数で明示する（`just migrate` は `--env-file` を使っている）。読み込まれないと既定値で接続を試み、`InvalidPasswordError` になる
 - **integration テストがトランザクションを開いたまま失敗すると、スイート全体が固まる。**
@@ -88,7 +88,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 625 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 633 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -156,6 +156,8 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **テストファイルの基底名は 3 つのテストディレクトリ全体で一意にする。** `packages/*/tests/` に `__init__.py` が無いため、同じ基底名（`test_health.py` を core と api の両方に置く等）は pytest の収集時に `import file mismatch` で**全体が止まる**（1 ファイルの衝突で全テストが走らなくなる）。用途を名前に含める（`test_health_metrics.py` / `test_health_api.py`）。
 
 **PostgreSQL の `now()` はトランザクション開始時刻を返す。** `server_default=now()` の列は、同一トランザクション内で挿入した複数行が**同じ値になる**。時系列で並べたいときは主キーを第二キーに加える（`audit_events` の決定記録の並び順で実際に必要になった）。
+
+**`scripts/*.py` で `print` を使ってはいけない**(`scripts/lint-shell.sh` が機械的に検査する)。理由は次のとおり。
 
 **Python の標準出力は Windows では cp932 になる。** `print` に日本語を渡すと cp932 のバイト列が出る一方、周りのシェルスクリプトの `echo` はソースの UTF-8 をそのまま出すため、**同じログに 2 つのエンコーディングが混ざる**。azd のフックのログが読めなくなり、ログを機械的に検査するテストも通らない（実際に踏んだ）。cp932 に無い文字（絵文字・ダッシュ）があると `UnicodeEncodeError` で**スクリプトごと落ちる**。運用者に見せる出力は `ontology_core.console` の `say` / `warn` を使う。
 

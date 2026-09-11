@@ -20,6 +20,8 @@ import time
 from azure.core.exceptions import ResourceExistsError
 from azure.storage.blob import BlobServiceClient
 
+from ontology_core.console import say, warn
+
 # docker-compose.yml の azurite サービスと合わせる。別プロジェクトとポートが
 # 衝突する場合は AZURITE_PORT で変更できる(compose 側も同じ変数を見る)。
 _PORT = os.environ.get("AZURITE_PORT", "10000")
@@ -46,7 +48,7 @@ def main() -> int:
             with BlobServiceClient.from_connection_string(_CONNECTION_STRING) as service:
                 service.create_container(_CONTAINER)
         except ResourceExistsError:
-            print(f"init-local-storage: コンテナ '{_CONTAINER}' は既にあります")
+            say(f"init-local-storage: コンテナ '{_CONTAINER}' は既にあります")
             return 0
         except Exception as exc:  # 起動待ちのため例外の種類を問わず再試行する
             last_error = exc
@@ -54,19 +56,17 @@ def main() -> int:
                 time.sleep(_INTERVAL_SECONDS)
                 continue
         else:
-            print(f"init-local-storage: コンテナ '{_CONTAINER}' を作成しました")
+            say(f"init-local-storage: コンテナ '{_CONTAINER}' を作成しました")
             return 0
 
-    print(
+    warn(
         f"init-local-storage: コンテナ '{_CONTAINER}' を作成できませんでした "
-        f"({_ATTEMPTS} 回試行): {last_error}",
-        file=sys.stderr,
+        f"({_ATTEMPTS} 回試行): {last_error}"
     )
-    print(
+    warn(
         "  Azurite が起動しているか確認してください "
         "(`docker compose ps azurite`)。ポートを変えている場合は "
-        "AZURITE_PORT を合わせてください。",
-        file=sys.stderr,
+        "AZURITE_PORT を合わせてください。"
     )
     return 1
 

@@ -68,6 +68,25 @@ for f in ${targets}; do
     fi
 done
 
+# ---- 3. `scripts/*.py` が運用者向けの出力に print を使っていないこと ----
+#
+# **なぜ必要か**: Windows の Python の標準出力は cp932 である。`print` に日本語を
+# 渡すと cp932 のバイト列が出る一方、周りのシェルスクリプトの `echo` はソースの
+# UTF-8 をそのまま出すため、**azd のフックのログに 2 つのエンコーディングが
+# 混ざって読めなくなる**（実測）。cp932 に無い文字（絵文字・ダッシュ）があると
+# `UnicodeEncodeError` で**スクリプトごと落ちる**。
+#
+# `ontology_core.console` の `say` / `warn` は UTF-8 を明示して書き出す。
+# 一度直しても戻ってくるので機械的に検査する（`P2A-10`）。
+for f in scripts/*.py; do
+    [ -f "${f}" ] || continue
+    hits="$(grep -n '^[[:space:]]*print(' "${f}" 2>/dev/null || true)"
+    if [ -n "${hits}" ]; then
+        report "${f}: print を使っています。ontology_core.console の say / warn を使ってください"
+        echo "${hits}" | sed 's/^/       /' >&2
+    fi
+done
+
 if [ "${failures}" -gt 0 ]; then
     echo "失敗: ${failures} 件" >&2
     exit 1
