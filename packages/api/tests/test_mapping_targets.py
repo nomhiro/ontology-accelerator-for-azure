@@ -559,3 +559,114 @@ async def test_生きている用語への依存は報告しない(
     problems = await svc.check_deprecation_lifecycle(namespace=_FINANCE, version="2.0.0", base=base)
     mapped = [p for p in problems if p.kind is ProblemKind.MAPPED_BY_OTHERS]
     assert mapped == [], "廃止していない用語への依存を報告している"
+
+
+# --------------------------------------------- Turtle での書き出し(P2B-17)
+
+
+@pytest.mark.integration
+async def test_Turtle_で書き出せる(session: AsyncSession, blob_store: OntologyBlobStore) -> None:
+    """**射影しないが、標準の RDF としては取り出せる**(ADR-0031 決定2)。
+
+    素の SKOS トリプルと、終点の生死を載せた記述ノードの両方が出る。
+    """
+    from rdflib import Graph, Literal, URIRef
+    from rdflib.namespace import SKOS
+
+    from ontology_api.routers.mappings import export_mappings
+    from ontology_core.mapping import MAPPING_ONT_NAMESPACE, mapping_node_iri
+
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V1, version="1.0.0")
+    await _declare(session, target=_GONE)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="2.0.0")
+
+    response = await export_mappings(
+        namespace=_SALES, principal=_BOTH, session=session, blob=blob_store
+    )
+    assert response.media_type is not None
+    assert response.media_type.startswith("text/turtle")
+    graph = Graph()
+    graph.parse(data=bytes(response.body).decode("utf-8"), format="turtle")
+
+    # 素の SKOS トリプル。
+    assert (URIRef(_SALES_TERM), SKOS.closeMatch, URIRef(_GONE)) in graph
+    # 終点の生死は記述ノードに載る。
+    node = URIRef(mapping_node_iri(_SALES, _SALES_TERM, _GONE))
+    assert (node, URIRef(MAPPING_ONT_NAMESPACE + "targetStatus"), Literal("deprecated")) in graph
+    assert (
+        node,
+        URIRef(MAPPING_ONT_NAMESPACE + "targetSuccessor"),
+        URIRef(_SUCCESSOR),
+    ) in graph
+
+
+@pytest.mark.integration
+async def test_書き出しでも権限の無い相手は_unknown(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**JSON と Turtle で見える情報を変えない**(ADR-0031 決定2 の共有経路)。
+
+    片方だけ生死が付く状態を作ると、表現によって見える範囲が変わる
+    (ADR-0026 決定1 が避けた形である)。
+    """
+    from rdflib import Graph, Literal, URIRef
+    from rdflib.namespace import RDF
+
+    from ontology_api.routers.mappings import export_mappings
+    from ontology_core.mapping import MAPPING_ONT_NAMESPACE
+
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="1.0.0")
+    await _declare(session, target=_LIVE)
+
+    response = await export_mappings(
+        namespace=_SALES, principal=_SALES_ANALYST, session=session, blob=blob_store
+    )
+    graph = Graph()
+    graph.parse(data=bytes(response.body).decode("utf-8"), format="turtle")
+    nodes = list(graph.subjects(RDF.type, URIRef(MAPPING_ONT_NAMESPACE + "Mapping")))
+    assert len(nodes) == 1
+    assert (
+        nodes[0],
+        URIRef(MAPPING_ONT_NAMESPACE + "targetStatus"),
+        Literal("unknown"),
+    ) in graph
+
+
+@pytest.mark.integration
+async def test_書き出しにも権限が必要(session: AsyncSession, blob_store: OntologyBlobStore) -> None:
+    from fastapi import HTTPException
+
+    from ontology_api.routers.mappings import export_mappings
+
+    await _setup(session)
+    stranger = Principal(subject="x", object_id="x-oid")
+    with pytest.raises(HTTPException) as exc:
+        await export_mappings(
+            namespace=_SALES, principal=stranger, session=session, blob=blob_store
+        )
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.integration
+async def test_incoming_も書き出せる(session: AsyncSession, blob_store: OntologyBlobStore) -> None:
+    from rdflib import Graph, URIRef
+    from rdflib.namespace import SKOS
+
+    from ontology_api.routers.mappings import export_mappings
+
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="1.0.0")
+    await _declare(session, target=_LIVE)
+
+    response = await export_mappings(
+        namespace=_FINANCE,
+        principal=_FINANCE_OWNER,
+        session=session,
+        blob=blob_store,
+        direction=MappingDirection.INCOMING,
+    )
+    graph = Graph()
+    graph.parse(data=bytes(response.body).decode("utf-8"), format="turtle")
+    assert (URIRef(_SALES_TERM), SKOS.closeMatch, URIRef(_LIVE)) in graph

@@ -70,7 +70,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 769 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 792 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -946,7 +946,37 @@ curl -G "$API/namespaces/finance/mappings" --data-urlencode "direction=incoming"
 
 **エージェントは MCP の `term_mappings` ツールで引けます。** `disputed` が真のときは「両者の見解が一致していない」ことを回答に添えるよう、ツールの説明に書いてあります。**`target_status` についても同じで**、`deprecated` なら後継を使うか廃止されている旨を添え、`absent` を根拠にせず、**`unknown` を「生きている」と扱わない**よう書いてあります。
 
-**トリプルストアには射影していません**(ADR-0023 決定7)。マッピングは**どの版にも属さない**ので版の名前付きグラフに混ぜられず、既定グラフを単一の承認済み版に保つ決定とも衝突します。そのため **SPARQL だけを使うクライアントからは見えません**(`P2B-17`)。
+**トリプルストアには射影していません**([ADR-0023](docs/adr/0023-cross-domain-mappings.md) 決定7、[ADR-0031](docs/adr/0031-mapping-export.md) 決定1)。**代わりに Turtle で書き出せます。**
+
+```bash
+curl -G "$API/namespaces/retail-core/mappings/export" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```turtle
+# 素の SKOS のトリプル。そのまま引けます。
+<https://e.example/sales#Gold> skos:closeMatch <https://e.example/finance#Retired> .
+
+# 記述ノード。reason と終点の生死はここに載ります。
+<urn:ontology:mapping/sales-ns/…> a ont:Mapping ;
+    rdfs:comment "同じ顧客区分を指している" ;
+    ont:declaredIn "sales-ns" ;
+    ont:targetStatus "deprecated" ;
+    ont:targetSuccessor <https://e.example/finance#KeyAccount> .
+```
+
+**素の SKOS トリプルだけを読むと、`reason` と終点の生死は分かりません。** 記述ノード(`ont:Mapping`)に載っています(ADR-0031 決定5)。
+
+**射影しない理由は 4 つあります。**
+
+| # | 理由 |
+|---|---|
+| a | **ローダは Blob の `.ttl` だけを読み、PostgreSQL を参照しません。** 射影したマッピングはレプリカ再作成で消えます。`reconcile` を拡張する道はありますが、**ローダに DB 依存を入れる**のは「ストアは Blob だけから作り直せる」という前提を変えます |
+| b | **マッピングはどの版にも属さない**ので版の名前付きグラフに混ぜられず、既定グラフを単一の承認済み版に保つ決定とも衝突します。専用グラフは**エージェントに `GRAPH` 句の知識を要求します** |
+| c | **終点の生死(`target_status`)が伝わりません。** 射影したグラフを引いた側は、その先が廃止されていることも、権限が無くて調べていないことも区別できません — `P2B-18` で 4 状態に分けた労力がこの経路では無駄になります |
+| d | **権限の粒度が合いません。** ADR-0030 決定1 は「相手を読めなければ生死を返さない」と決めましたが、射影したグラフは**名前空間のデータセット単位でしか権限を持てません** |
+
+**書き出しは運用者が明示的に取得する行為**で、射影は**エージェントが知らないまま引く静かな事実**です。同じ情報の欠落でも、**誰がそれを引き受けるかが違います**(決定5)。
 
 #### `POST /admin/reconcile` の報告の読み方
 

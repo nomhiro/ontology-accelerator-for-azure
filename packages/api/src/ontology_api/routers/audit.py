@@ -45,12 +45,9 @@ from ontology_api.services.authorization import PermissionDeniedError, require_n
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.models import AuditPage, NamespaceRole
 from ontology_core.prov import referenced_versions, render_provenance
+from ontology_core.turtle import TURTLE_MEDIA_TYPE
 
 router = APIRouter(prefix="/namespaces", tags=["audit"])
-
-#: Turtle の MIME 型。`charset` を明示する(既定は US-ASCII 扱いになりうる一方、
-#: 理由や表示名に日本語が入るため)。
-TURTLE_MEDIA_TYPE = "text/turtle; charset=utf-8"
 
 
 async def _authorize(

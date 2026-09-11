@@ -29,10 +29,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep
@@ -48,9 +49,11 @@ from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.mapping import (
     MappingPredicate,
     MappingValidationError,
+    render_mappings,
     validate_mapping,
 )
 from ontology_core.models import Namespace, NamespaceRole, TermMapping
+from ontology_core.turtle import TURTLE_MEDIA_TYPE
 
 router = APIRouter(prefix="/namespaces", tags=["mappings"])
 
@@ -150,6 +153,29 @@ async def list_mappings(
     権限が無い場合もここに来る**(決定1)。権限の無い相手の用語の状態を
     推測しない。
     """
+    return await _with_target_status(
+        session,
+        blob=blob,
+        principal=principal,
+        namespace=namespace,
+        direction=direction,
+    )
+
+
+async def _with_target_status(
+    session: SessionDep,
+    *,
+    blob: BlobDep,
+    principal: CurrentPrincipal,
+    namespace: str,
+    direction: MappingDirection,
+) -> list[TermMapping]:
+    """権限を確かめ、マッピングを引いて終点の生死を付ける。
+
+    **JSON の一覧と Turtle の書き出しで共有する**(ADR-0031 決定2)。
+    片方だけ生死を付ける状態を作らないため — 表現によって見える情報が
+    変わるのは、ADR-0026 決定1 が避けた形である。
+    """
     found = await _prepare(
         session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
     )
@@ -173,6 +199,49 @@ async def list_mappings(
         )
         for mapping in mappings
     ]
+
+
+@router.get(
+    "/{namespace}/mappings/export",
+    summary="領域間マッピングを Turtle で書き出す",
+    response_class=Response,
+    responses={200: {"content": {"text/turtle": {}}, "description": "SKOS + 独自語彙の Turtle"}},
+)
+async def export_mappings(
+    namespace: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    blob: BlobDep,
+    direction: Annotated[
+        MappingDirection,
+        Query(description="JSON の一覧と同じ。`outgoing` / `incoming`"),
+    ] = MappingDirection.OUTGOING,
+) -> Response:
+    """マッピングを `text/turtle` で返す。`data-analyst` で読める。
+
+    **トリプルストアには射影していない**(ADR-0023 決定7、
+    [ADR-0031](../../../../../docs/adr/0031-mapping-export.md) 決定1)。
+    この口は「SPARQL だけを使うクライアントから見えない」を
+    **「自分のストアへ読み込める」**に変えるためのものである。
+    ADR-0026 の PROV-O 書き出しと同じ形である。
+
+    **素の SKOS のトリプルと、記述ノードの両方が出る**(決定3)。
+    素のトリプル(`<source> skos:closeMatch <target>`)はそのまま引けるが、
+    **それだけを読むと `reason` と終点の生死は分からない** —
+    記述ノード(`ont:Mapping`)に載っている(決定5)。
+
+    **`ont:targetStatus` は `unknown` でも出る**(決定4)。省略すると
+    「問題なし」と読まれる。
+    """
+    mappings = await _with_target_status(
+        session,
+        blob=blob,
+        principal=principal,
+        namespace=namespace,
+        direction=direction,
+    )
+    turtle = render_mappings(mappings, exported_at=datetime.now(UTC))
+    return Response(content=turtle, media_type=TURTLE_MEDIA_TYPE)
 
 
 @router.put(

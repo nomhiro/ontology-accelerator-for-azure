@@ -42,19 +42,30 @@ ADR-0009 決定8 は SKOS の `*Match` と並べて `owl:equivalentClass` も候
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
+from urllib.parse import quote
+
+from rdflib import Graph, Literal, Namespace, URIRef
+from rdflib.namespace import RDF, RDFS, SKOS, XSD
 
 from ontology_core.iri import TermIriError, validate_term_iri
+from ontology_core.models import TermMapping
 
 __all__ = [
+    "MAPPING_NODE_BASE",
+    "MAPPING_ONT_NAMESPACE",
     "SKOS_NAMESPACE",
     "MappingPredicate",
     "MappingSideBySide",
     "MappingValidationError",
     "compare_with_counterpart",
     "inverse_of",
+    "mapping_node_iri",
     "predicate_iri",
+    "render_mappings",
     "validate_mapping",
 ]
 
@@ -205,3 +216,112 @@ def validate_mapping(
         raise MappingValidationError("始点と終点が同じ用語です")
 
     return source, target, resolved
+
+
+#: 書き出しで使う独自語彙の名前空間(ADR-0031 決定3)。
+#: `ontology_core.prov.ONT` と**同じ名前空間を使う** — 出自の書き出しと
+#: マッピングの書き出しで接頭辞が 2 つに割れると、両方を読み込んだ側が
+#: 「どちらの `ont:` か」を気にすることになる。
+MAPPING_ONT_NAMESPACE = "urn:ontology:prov#"
+
+#: 記述ノードの IRI の基底(ADR-0031 決定3)。
+#:
+#: **空白ノードにしない。** 再取得したときに同じノードだと分からず、
+#: 2 回の書き出しを差分比較できない(空白ノードの扱いはこのリポジトリで
+#: 既に痛い目を見ている。ADR-0016 決定5)。
+MAPPING_NODE_BASE = "urn:ontology:mapping/"
+
+
+def mapping_node_iri(namespace: str, source_term: str, target_term: str) -> str:
+    """マッピングの記述ノードの IRI を返す。
+
+    **一意制約と同じ 3 つ組で決める**(`namespace` / `source_term` /
+    `target_term`)。述語は含めない — 付け替え(`declare` のやり直し)で
+    ノードの同一性が変わってはいけない。
+
+    **用語 IRI は百分率符号化して埋める。** このプロジェクトの用語 IRI は
+    ほぼ必ず `#` を含む(`base_iri` が `…/sales#` の形)ので、そのまま連結すると
+    **1 つの IRI に `#` が 3 つ並ぶ** — RFC 3986 では素片は 1 つだけなので
+    **これは妥当な IRI ではない**。厳格な IRI 実装は文書ごと拒否する。
+    `/` も同じ理由で符号化する(区切りとして使っているので、用語に含まれると
+    段の数が変わって分解できなくなる)。
+
+    符号化しておけば**基底の後はちょうど 3 段**になり、素片を持たない。
+    そのことは `test_mapping_export.py` が機械的に検査している。
+
+    なお用語 IRI 自体の妥当性は `validate_term_iri` が宣言時に検証している。
+    rdflib は不正な IRI の直列化を例外で拒否するので、壊れた Turtle が
+    出回ることはない。
+    """
+    return (
+        f"{MAPPING_NODE_BASE}{quote(namespace, safe='')}"
+        f"/{quote(source_term, safe='')}/{quote(target_term, safe='')}"
+    )
+
+
+def render_mappings(mappings: Sequence[TermMapping], *, exported_at: datetime) -> str:
+    """マッピングを Turtle にする(ADR-0031 決定3)。
+
+    **素の SKOS のトリプルと、記述ノードの両方を出す。**
+
+    - 素のトリプル(`<source> skos:closeMatch <target>`)は**そのまま引ける**。
+      ADR-0023 決定1 が述語を SKOS の 5 つに限ったのは論理的帰結を持たない
+      からなので、載せても推論器が制約を流し込まない
+    - 記述ノードは `reason` / `declared_by` / **終点の生死**を持つ。
+      これが無いと「標準に写すために情報を落とす」ことになる
+      (ADR-0026 決定4 と同じ判断)
+
+    **`ont:targetStatus` は `unknown` でも必ず出す**(決定4)。省略すると
+    「問題なし」と読まれる。
+
+    Args:
+        mappings: 書き出すマッピング。**終点の生死が埋まっているものを渡す** —
+            既定の `unknown` のまま渡すと「調べていない」として出る。
+        exported_at: 書き出した時刻。タイムゾーン付きで渡すこと。
+
+    Returns:
+        Turtle。
+    """
+    graph = Graph()
+    graph.bind("skos", SKOS)
+    graph.bind("ont", Namespace(MAPPING_ONT_NAMESPACE))
+    graph.bind("rdfs", RDFS)
+    ont = Namespace(MAPPING_ONT_NAMESPACE)
+
+    bundle = URIRef(f"{MAPPING_NODE_BASE}export")
+    graph.add((bundle, RDF.type, ont.MappingExport))
+    graph.add((bundle, ont.mappingCount, Literal(len(mappings))))
+    graph.add((bundle, ont.exportedAt, Literal(exported_at, datatype=XSD.dateTime)))
+
+    for mapping in mappings:
+        source = URIRef(mapping.source_term)
+        target = URIRef(mapping.target_term)
+        predicate = MappingPredicate(mapping.predicate)
+        # **素の SKOS のトリプル。** これがこの書き出しの主目的である。
+        graph.add((source, URIRef(predicate_iri(predicate)), target))
+
+        node = URIRef(mapping_node_iri(mapping.namespace, mapping.source_term, mapping.target_term))
+        graph.add((bundle, ont.includes, node))
+        graph.add((node, RDF.type, ont.Mapping))
+        graph.add((node, ont.source, source))
+        graph.add((node, ont.target, target))
+        graph.add((node, ont.predicate, URIRef(predicate_iri(predicate))))
+        graph.add((node, ont.declaredIn, Literal(mapping.namespace)))
+        graph.add((node, ont.declaredBy, Literal(mapping.declared_by)))
+        graph.add((node, ont.declaredAt, Literal(mapping.declared_at, datatype=XSD.dateTime)))
+        if mapping.reason:
+            graph.add((node, RDFS.comment, Literal(mapping.reason)))
+        graph.add((node, ont.reciprocal, Literal(mapping.reciprocal)))
+        graph.add((node, ont.disputed, Literal(mapping.disputed)))
+        if mapping.counterpart_predicate is not None:
+            graph.add((node, ont.counterpartPredicate, Literal(mapping.counterpart_predicate)))
+
+        # **終点の生死。`unknown` でも出す**(決定4)。
+        graph.add((node, ont.targetStatus, Literal(mapping.target_status)))
+        if mapping.target_successor is not None:
+            graph.add((node, ont.targetSuccessor, URIRef(mapping.target_successor)))
+        if mapping.target_status_note:
+            graph.add((node, ont.targetStatusNote, Literal(mapping.target_status_note)))
+
+    serialized = graph.serialize(format="turtle")
+    return serialized if isinstance(serialized, str) else serialized.decode("utf-8")

@@ -19,7 +19,21 @@ from __future__ import annotations
 
 from rdflib import Graph, URIRef
 
-__all__ = ["TurtleSyntaxError", "iri_subjects", "term_iris_with_prefix", "validate_turtle"]
+__all__ = [
+    "TURTLE_MEDIA_TYPE",
+    "TurtleSyntaxError",
+    "iri_subjects",
+    "term_iris_with_prefix",
+    "validate_turtle",
+]
+
+#: Turtle を返すときの `Content-Type`。
+#:
+#: **`charset` を明示する。** 理由や表示名に日本語が入るのに、
+#: `text/*` の既定の文字集合の扱いは実装によって揺れる。
+#: PROV-O の書き出し(ADR-0026)とマッピングの書き出し(ADR-0031)で
+#: 値が割れないよう 1 か所に置く。
+TURTLE_MEDIA_TYPE = "text/turtle; charset=utf-8"
 
 
 class TurtleSyntaxError(ValueError):
