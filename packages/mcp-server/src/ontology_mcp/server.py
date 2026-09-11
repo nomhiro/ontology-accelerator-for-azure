@@ -290,6 +290,44 @@ async def term_owner(namespace: str, term_iri: str, ctx: Context[Any, Any]) -> d
         return result
 
 
+@mcp.tool()
+async def term_mappings(namespace: str, ctx: Context[Any, Any]) -> list[dict[str, Any]]:
+    """他の領域の用語との対応(領域間マッピング)を返す(ADR-0023、`P2B-10`)。
+
+    **同じ言葉が領域によって違う意味を持つときに使う。** 営業の「優良顧客」と
+    経理の「優良顧客」は別の定義でありうる。このシステムは**それを一つに
+    統合しない** — 名前空間を分けたまま、対応関係を明示的な成果物として
+    記録する(ADR-0009 決定8)。
+
+    **`predicate` を必ず見ること。** `exactMatch` と `closeMatch` は意味が
+    違い、後者は**交換可能とは限らない**。
+
+    Args:
+        namespace: 対象の名前空間の名前。`list_namespaces` で取得できる。
+
+    Returns:
+        マッピングの一覧。各件は次を持つ。
+
+        - `source_term` / `target_term` / `predicate`: 対応関係そのもの
+        - `reason`: **なぜ同じ(近い)と言えるのか。** 回答に使うときはこれを
+          読むこと。理由が用途を限定していることがある
+        - `reciprocal`: 相手側も同じ対応を宣言しているか。**偽は異常ではない**
+          (相手がまだ宣言していないだけ)。ただし**片側の主張**であることは
+          回答に添えるのが正確である
+        - `disputed`: **相互に宣言されていて述語が食い違っている。** 真なら
+          「両者の見解が一致していない」ことを必ず回答に添えること。
+          `counterpart_predicate` に相手側の主張が入る
+
+    Raises:
+        ToolError: 呼び出し元のトークンが無い、または検証を通らないとき。
+    """
+    async with _api_client(_forward_headers(ctx)) as client:
+        response = await client.get(f"/namespaces/{namespace}/mappings")
+        response.raise_for_status()
+        result: list[dict[str, Any]] = response.json()
+        return result
+
+
 async def _healthz(request: Request) -> JSONResponse:
     """プロセスの生存確認。
 

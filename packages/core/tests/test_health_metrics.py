@@ -33,6 +33,7 @@ def _inputs(
     shacl_violations: int | None = 0,
     unprojected: int = 0,
     competency_questions: int | None = 0,
+    disputed_mappings: int | None = 0,
     unavailable: tuple[str, ...] = (),
 ) -> HealthInputs:
     return HealthInputs(
@@ -44,6 +45,7 @@ def _inputs(
         shacl_violation_count=shacl_violations,
         unprojected_version_count=unprojected,
         competency_question_count=competency_questions,
+        disputed_mapping_count=disputed_mappings,
         unavailable=unavailable,
         now=_NOW,
     )

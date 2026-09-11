@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.access import AccessRepository
+from ontology_api.repositories.mappings import MappingRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.questions import QuestionSetRepository
 from ontology_api.repositories.term_owners import TermOwnerRepository
@@ -55,7 +56,8 @@ class HealthService:
         self._blob = blob
 
     async def measure(self, namespace: str) -> HealthReport:
-        """ADR-0009 決定5 の 6 項目と、受け入れ基準の件数(ADR-0022)を集計する。
+        """ADR-0009 決定5 の 6 項目に、受け入れ基準の件数(ADR-0022)と
+        争われているマッピングの数(ADR-0023)を加えて集計する。
 
         Raises:
             UnknownNamespaceError: 名前空間が無いとき。
@@ -87,6 +89,9 @@ class HealthService:
         # 定めていない名前空間の承認はブロックしないので、**ここに出ることが
         # 唯一それが見える経路である。**
         question_count = await QuestionSetRepository(self._session).count_questions(namespace)
+        # **相手側と食い違っているマッピングの数**(ADR-0023 決定4)。自動で
+        # 片方に寄せない代わりに、ここで可視化する。
+        disputed = await MappingRepository(self._session).disputed_count(namespace)
 
         return compute_health(
             HealthInputs(
@@ -98,6 +103,7 @@ class HealthService:
                 shacl_violation_count=shacl_violations,
                 unprojected_version_count=unprojected,
                 competency_question_count=question_count,
+                disputed_mapping_count=disputed,
                 unavailable=tuple(unavailable),
                 now=datetime.now(UTC),
             ),

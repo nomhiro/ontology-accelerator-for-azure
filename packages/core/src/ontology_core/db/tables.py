@@ -271,3 +271,52 @@ class CompetencyQuestionSetRow(Base):
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TermMappingRow(Base):
+    """領域間マッピング(ADR-0023、`P2B-10`)。
+
+    **マッピングは「張った側」の名前空間に属する**(決定3)。`namespace` は
+    始点の名前空間である。**逆向きは自動で作らない** — 「A が B に
+    exactMatch と言っている」と「B が A に exactMatch と言っている」は別の
+    事実であり、自動生成は相手が宣言していない主張を相手の名前空間に作る。
+
+    **TTL には書かない**(決定2)。マッピングは 2 つの名前空間の関係であって
+    オントロジーの内容ではなく、片方の版が上がるたびに書き直すものでもない。
+    加えて TTL に入れないことで**推論器の視界から外れる**ので、論理的帰結を
+    持つマッピング(`owl:equivalentClass`)が物理的に作れない。
+
+    `(namespace, source_term, target_term)` を一意にする。同じ用語ペアに
+    複数の述語を同時に主張することはできない(付け替えになる)。
+
+    **ターゲット用語の実在は検査しない**(決定6、ADR-0015 決定4 と同じ理由)。
+    外部語彙(SKOS、schema.org)へのマッピングが正当な主用途である。
+    """
+
+    __tablename__ = "term_mappings"
+    __table_args__ = (
+        UniqueConstraint(
+            "namespace", "source_term", "target_term", name="uq_term_mappings_ns_source_target"
+        ),
+        Index("ix_term_mappings_namespace", "namespace"),
+        # **逆引きに使う。** 「自分の用語に対して他の名前空間から張られている
+        # マッピング」(incoming)を引くため(決定3)。張った側からしか見えない
+        # 設計にすると、相手の主張に気づけない。
+        Index("ix_term_mappings_target", "target_term"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(
+        ForeignKey("namespaces.name", ondelete="CASCADE"), nullable=False
+    )
+    source_term: Mapped[str] = mapped_column(String(1024), nullable=False)
+    target_term: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # `ontology_core.mapping.MappingPredicate` の値(SKOS の 5 つ)。
+    predicate: Mapped[str] = mapped_column(String(32), nullable=False)
+    # **必須である。** 「なぜこれが同じ(近い)と言えるのか」が無いマッピングは
+    # レビュー対象になりえない(決定5)。
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    declared_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    declared_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

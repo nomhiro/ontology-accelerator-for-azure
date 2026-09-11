@@ -63,6 +63,8 @@ class HealthInputs:
         competency_question_count: 有効な質問集合の質問の件数
             (ADR-0022 決定7)。**`0` は「基準を定めていない」**であって
             「基準を満たしていない」ではない。`None` は測れなかったとき。
+        disputed_mapping_count: 相手側と述語が食い違っている領域間マッピングの
+            数(ADR-0023 決定4)。**自動で片方に寄せないので、ここに出る**。
         unavailable: 測れなかった項目の理由。
         now: 「今」。テストのために外から渡す。
     """
@@ -75,13 +77,14 @@ class HealthInputs:
     shacl_violation_count: int | None
     unprojected_version_count: int
     competency_question_count: int | None
+    disputed_mapping_count: int | None
     unavailable: tuple[str, ...]
     now: datetime
 
 
 @dataclass(frozen=True)
 class HealthReport:
-    """健全性指標の報告(ADR-0009 決定5 の 6 項目 + ADR-0022 の 1 項目)。
+    """健全性指標の報告(ADR-0009 決定5 の 6 項目 + ADR-0022 / ADR-0023 の 2 項目)。
 
     **`None` は「測れなかった」であり `0` ではない。**
 
@@ -100,6 +103,7 @@ class HealthReport:
     shacl_violation_count: int | None
     unprojected_version_count: int
     competency_question_count: int | None
+    disputed_mapping_count: int | None
     unavailable: tuple[str, ...]
     unreferenced_window_days: int = UNREFERENCED_WINDOW_DAYS
 
@@ -148,6 +152,7 @@ class HealthReport:
             "shacl_violation_count": self.shacl_violation_count,
             "unprojected_version_count": self.unprojected_version_count,
             "competency_question_count": self.competency_question_count,
+            "disputed_mapping_count": self.disputed_mapping_count,
             "unavailable": list(self.unavailable),
         }
         lists = (self.unreferenced_terms, self.without_owner_terms)
@@ -204,5 +209,6 @@ def compute_health(inputs: HealthInputs, *, namespace: str = "") -> HealthReport
         shacl_violation_count=inputs.shacl_violation_count,
         unprojected_version_count=inputs.unprojected_version_count,
         competency_question_count=inputs.competency_question_count,
+        disputed_mapping_count=inputs.disputed_mapping_count,
         unavailable=inputs.unavailable,
     )

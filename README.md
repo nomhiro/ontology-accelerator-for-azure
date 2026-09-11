@@ -49,11 +49,11 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
   | 操作 | 必要なロール |
   |---|---|
-  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 廃止の検査 / 用語の責任者の参照 / 用語ごとの参照の集約 / 健全性指標 / 想定質問の参照と試行 | `data-analyst` |
+  | SPARQL 読み取り / 版の一覧 / 決定記録 / 監査照会 / 意味的差分 / SHACL 検証 / 廃止の検査 / 用語の責任者の参照 / 用語ごとの参照の集約 / 健全性指標 / 想定質問の参照と試行 / 領域間マッピングの参照 | `data-analyst` |
   | `publish` / `submit` | `data-steward` |
   | `approve` / `reject` | `maintainer` |
   | 用語の責任者の付与・取り消し | `maintainer` |
-  | アクセスログの照会・削除 | `owner` |
+  | アクセスログの照会・削除 / 領域間マッピングの宣言・取り消し | `owner` |
   | 名前空間の削除 / ロールの付与・取り消し | `owner` |
   | 名前空間の作成 / `POST /admin/reconcile` | `platform-admin`(Entra アプリロール) |
 
@@ -68,7 +68,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 575 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 618 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -81,7 +81,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - Fuseki 側で `SERVICE` 句が HTTP 422 でブロックされる(SSRF 対策)
 - Fuseki は internal ingress のため外部から到達できない
 - API `/healthz` が応答し、トークン無しの `GET /namespaces` は **401**(`AUTH_MODE=entra` が機能)
-- MCP `/mcp` が `tools/list` を返す(`list_namespaces` / `sparql_query` / `version_decisions` / `term_owner`)
+- MCP `/mcp` が `tools/list` を返す(`list_namespaces` / `sparql_query` / `version_decisions` / `term_owner` / `term_mappings`)
 - **MCP のツール呼び出しが実際の Entra トークンで Core API まで通る(ADR-0012)。** トークン無し・不正なトークンは MCP 側の検証で拒否され、理由がエージェントに返る。検証手順は `scripts/verify-mcp-auth.sh`
 - API / MCP の scale-to-zero が機能する(初回アクセスはコールドスタート)
 
@@ -169,7 +169,7 @@ flowchart TB
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を W3C PROV-O で記録します
 
 現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、保持ポリシー、そして健全性指標です。
-**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)、領域間マッピング(`P2B-10`)です。
+**未実装のもの**は、R2RML による連邦クエリ(Phase 3)、PROV-O による監査証跡の標準語彙での表現(`P2A-07`)、LLM によるオントロジー生成(Phase 2)です。
 監査イベントの記録自体は Phase 1 で PostgreSQL に永続化されています。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
@@ -558,6 +558,7 @@ curl -G "$API/namespaces/retail-core/health" \
   "shacl_violation_count": 0,
   "unprojected_version_count": 0,
   "competency_question_count": 11,
+  "disputed_mapping_count": 0,
   "unavailable": [], "truncated": false }
 ```
 
@@ -570,6 +571,7 @@ curl -G "$API/namespaces/retail-core/health" \
 | `shacl_violation_count` | SHACL 違反の件数 | SHACL 検証 |
 | `unprojected_version_count` | 射影が済んでいない版 | `projected_at` |
 | `competency_question_count` | 受け入れ基準の質問の件数 | 想定質問の集合（上記） |
+| `disputed_mapping_count` | 相手側と述語が食い違っているマッピングの数 | 領域間マッピング（上記） |
 
 **`null` は「測れなかった」で、`0` ではありません。** どの項目がなぜ測れなかったかは `unavailable` に並びます。**健全性指標が障害時に「健全」と言うのは、目的に正面から反します。**
 
@@ -722,6 +724,63 @@ curl -X DELETE -G "$API/namespaces/retail-core/term-owners" \
 **エージェントは MCP の `term_owner` ツールで同じ解決を引けます。** `version_decisions` が「誰が承認したか」（過去の行為者）を返すのに対し、こちらは**現在の責任者**を返します。承認した人が今も担当しているとは限りません。
 
 なお**名前空間全体の監査照会は MCP に出していません。** エージェントが必要とするのは「この定義の根拠」であって「名前空間の全履歴」ではないためです。
+
+#### 領域をまたぐ用語は統合せず、対応関係として記録する
+
+**営業の「優良顧客」と経理の「優良顧客」が違うとき、一つに統合しません**([ADR-0009](docs/adr/0009-ontology-operations.md) 決定8、[ADR-0023](docs/adr/0023-cross-domain-mappings.md))。名前空間を分けたまま、対応関係を明示的な成果物として記録します。**マッピング自体がレビュー対象になるので、意見の相違が消されずに残ります。**
+
+```bash
+# 宣言する(owner が必要。理由は必須)
+curl -X PUT "$API/namespaces/sales/mappings" -H "Authorization: Bearer $TOKEN"   -H 'Content-Type: application/json' -d '{
+    "source_term": "https://example.com/ontology/sales#GoodCustomer",
+    "target_term": "https://example.com/ontology/finance#GoodCustomer",
+    "predicate": "closeMatch",
+    "reason": "顧客区分の粒度が近いが、経理の定義は与信を含む" }'
+
+# 自分が張ったもの / 他の領域から張られたもの
+curl "$API/namespaces/sales/mappings" -H "Authorization: Bearer $TOKEN"
+curl -G "$API/namespaces/finance/mappings" --data-urlencode "direction=incoming"   -H "Authorization: Bearer $TOKEN"
+```
+
+**`owl:equivalentClass` は使えません。** ADR-0009 決定8 は候補に挙げていましたが、**実測して却下しました**。営業と経理の「優良顧客」を、互いに素なクラスの下に置いたまま結んで OWL 推論器(ELK)にかけた結果です。
+
+| 結んだ述語 | ELK の結論 |
+|---|---|
+| `owl:equivalentClass` | **充足不能クラス 2 件**(**両方**のクラスがインスタンスを持てなくなった) |
+| `skos:exactMatch` | 充足不能クラスなし |
+
+**`equivalentClass` はクラスの外延の同一性を主張するので、推論器が一方の制約を他方へ流し込みます。** それは決定8 が避けようとした「統合」そのものです。しかも**この壊れ方は承認では止まりません**(推論器は CI にしかいません)。**マッピングは領域が違うから張るもので、領域が違えば制約が食い違うのが普通**なので、論理的帰結を持つ述語は構造的に危険です。
+
+使えるのは SKOS のマッピング述語 5 つです。
+
+| 述語 | 意味 | 性質 |
+|---|---|---|
+| `exactMatch` | 高い信頼度で交換可能 | 対称・**推移的** |
+| `closeMatch` | 近いが交換可能とは限らない | 対称・**推移的でない** |
+| `broadMatch` / `narrowMatch` | 相手の方が広い / 狭い | 互いに逆 |
+| `relatedMatch` | 関連がある | 対称 |
+
+**逆向きのマッピングは自動で作りません。** 「営業が経理に `exactMatch` と言っている」と「経理が営業に `exactMatch` と言っている」は**別の事実**です。自動生成すると、**経理が宣言していない主張が経理の名前空間に現れます** — 決定8 の「意見の相違が消されずに記録される」に正面から反します。代わりに `direction=incoming` で両方向から見えます。
+
+**片側だけの主張は異常ではありません**(`reciprocal: false`)。相手がまだ宣言していないだけです。
+
+**両側の述語が食い違ったら、どちらも消さずに両方残します**(`disputed: true`)。
+
+```json
+{ "source_term": "...sales#GoodCustomer", "target_term": "...finance#GoodCustomer",
+  "predicate": "exactMatch", "reason": "営業から見れば同一である",
+  "reciprocal": true, "disputed": true, "counterpart_predicate": "closeMatch" }
+```
+
+**自動で片方に寄せる実装は、相違を消す実装です。** 争われている件数は健全性指標の `disputed_mapping_count` に出ます。
+
+**取り消せるのは自分が張ったものだけです。** 相手の主張を消せてしまうと「相違が消されずに記録される」が成立しません。
+
+**用語の実在は検査しません。** 外部語彙(SKOS、schema.org)へのマッピングが正当な主用途で、実在を要求するといちばん使いたい形が使えなくなります。
+
+**エージェントは MCP の `term_mappings` ツールで引けます。** `disputed` が真のときは「両者の見解が一致していない」ことを回答に添えるよう、ツールの説明に書いてあります。
+
+**トリプルストアには射影していません**(ADR-0023 決定7)。マッピングは**どの版にも属さない**ので版の名前付きグラフに混ぜられず、既定グラフを単一の承認済み版に保つ決定とも衝突します。そのため **SPARQL だけを使うクライアントからは見えません**(`P2B-17`)。
 
 #### `POST /admin/reconcile` の報告の読み方
 
@@ -905,7 +964,7 @@ AWS 版は Apache-2.0 で公開されており、フォークすることも法�
 - [`docs/architecture.md`](docs/architecture.md) — アーキテクチャ、グラフ永続化設計、Azure サービスマッピング、認証・認可・セキュリティ
 - [`docs/cost-estimate.md`](docs/cost-estimate.md) — 月額費用試算と単価の出典・計算式
 - [`docs/third-party-licenses.md`](docs/third-party-licenses.md) — 第三者コンポーネントのライセンス
-- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0022)。**却下した代替案とその理由**を残しています
+- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0023)。**却下した代替案とその理由**を残しています
 
 ## コントリビューション
 

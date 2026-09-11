@@ -338,3 +338,37 @@ class CompetencyRunReport(BaseModel):
         description="予算を超えて評価しなかった質問の id。**空でなければ「確かめられなかった」**",
     )
     elapsed_seconds: float = 0.0
+
+
+class TermMapping(BaseModel):
+    """領域間マッピングの 1 件(ADR-0023)。
+
+    **`reciprocal` と `disputed` を必ず見ること。**
+
+    - `reciprocal=False` は**異常ではない**。相手がまだ宣言していないだけで、
+      初期状態では片側だけが正常である(ADR-0023 決定3)
+    - `disputed=True` は相互に宣言されていて**述語が食い違っている**。
+      どちらも消さない(決定4) — 領域をまたぐ相違を消さないのが
+      この機能の目的である
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str = Field(description="マッピングを**張った側**の名前空間")
+    source_term: str = Field(description="始点の用語の絶対 IRI")
+    target_term: str = Field(description="終点の用語の絶対 IRI。外部語彙でもよい")
+    predicate: str = Field(description="SKOS のマッピング述語(`exactMatch` 等)")
+    predicate_iri: str = Field(description="述語の絶対 IRI")
+    reason: str = Field(description="なぜ同じ(近い)と言えるのか。**必須**")
+    declared_by: str
+    declared_at: datetime
+    reciprocal: bool = Field(
+        default=False, description="相手側も同じ用語ペアを宣言しているか。**偽は異常ではない**"
+    )
+    disputed: bool = Field(
+        default=False,
+        description="相互に宣言されていて述語が食い違っているか。**どちらも消さない**",
+    )
+    counterpart_predicate: str | None = Field(
+        default=None, description="相手側が宣言している述語。無ければ `None`"
+    )

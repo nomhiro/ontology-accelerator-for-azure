@@ -18,6 +18,7 @@ from ontology_api.routers import (
     access,
     audit,
     health,
+    mappings,
     namespaces,
     questions,
     sparql,
@@ -51,6 +52,7 @@ app.add_middleware(
 app.include_router(access.router)
 app.include_router(audit.router)
 app.include_router(health.router)
+app.include_router(mappings.router)
 app.include_router(namespaces.router)
 app.include_router(questions.router)
 app.include_router(sparql.router)
