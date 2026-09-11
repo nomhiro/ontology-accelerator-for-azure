@@ -88,7 +88,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 751 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 769 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -197,6 +197,13 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **`az postgres flexible-server firewall-rule` の引数は紛らわしい。** サーバは `--server-name` / `-s`、**規則名は `--name` / `-n`**。`--rule-name` は存在しない（`--name` にサーバ名を渡すと「`--server-name` が必要」と言われ、`--rule-name` を渡すと「認識されない引数」になる）。
 
 **新しい azd 環境を作ると `AZURE_SUBSCRIPTION_ID` は引き継がれない。** 環境ごとに独立しているため、`azd env new` の後に `azd env set AZURE_SUBSCRIPTION_ID <id>` が必要（`azd up` が `prompt required` で止まる）。
+
+**変異テストの復元表を「ファイルの基底名」で作ってはいけない。** `routers/mappings.py` と
+`repositories/mappings.py` のように基底名が同じファイルを 1 つの辞書に入れると
+**キーが衝突して片方が復元されない**(実際に踏んだ。変異した実装が commit 直前まで
+残っていた)。**復元の対象は絶対パスで持ち、変異を当てたファイルと復元するファイルが
+一致していることを `diff` で確認する**。テストファイルの基底名を 3 ディレクトリで
+一意にしている理由と同じ形の罠である。
 
 **`uv run pytest` を 2 つ同時に走らせてはいけない。** `packages/api/tests/conftest.py` の
 `session` フィクスチャは**テストごとにスキーマを作り直す**(`drop_all` / `create_all`)ため、

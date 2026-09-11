@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -180,4 +182,30 @@ class MappingRepository:
         found: dict[tuple[str, str], MappingPredicate] = {}
         for source, target, predicate in (await self._session.execute(stmt)).all():
             found[(source, target)] = MappingPredicate(predicate)
+        return found
+
+    async def incoming_targets(self, targets: Collection[str]) -> dict[str, list[tuple[str, str]]]:
+        """指定した用語へ張られているマッピングを、用語ごとにまとめて返す。
+
+        ADR-0030 決定5 の「廃止する側に見せる」ための読み出し。
+        戻り値は `target_term` から `(張った名前空間, source_term)` の
+        一覧への辞書である。
+
+        **`_decorate` を通さない。** ここで欲しいのは「誰が張っているか」
+        だけで、`reciprocal` / `disputed` の突き合わせは要らない
+        (廃止検査のたびに相手側の宣言を引くのは無駄である)。
+
+        **1 クエリで引く。** 用語ごとに引くと、廃止した用語の数だけ
+        クエリが飛ぶ。
+        """
+        if not targets:
+            return {}
+        stmt = (
+            select(TermMappingRow.target_term, TermMappingRow.namespace, TermMappingRow.source_term)
+            .where(TermMappingRow.target_term.in_(list(targets)))
+            .order_by(TermMappingRow.namespace, TermMappingRow.source_term)
+        )
+        found: dict[str, list[tuple[str, str]]] = {}
+        for target, namespace, source in (await self._session.execute(stmt)).all():
+            found.setdefault(target, []).append((namespace, source))
         return found

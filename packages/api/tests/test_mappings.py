@@ -187,7 +187,7 @@ async def test_maintainer_は宣言できない(session: AsyncSession) -> None:
 
 
 @pytest.mark.integration
-async def test_analyst_は読める(session: AsyncSession) -> None:
+async def test_analyst_は読める(session: AsyncSession, blob_store: OntologyBlobStore) -> None:
     await _setup(session)
     await _declare(
         session,
@@ -197,15 +197,17 @@ async def test_analyst_は読める(session: AsyncSession) -> None:
         predicate="closeMatch",
         principal=_SALES_OWNER,
     )
-    found = await list_mappings(namespace=_SALES, principal=_SALES_ANALYST, session=session)
+    found = await list_mappings(
+        namespace=_SALES, principal=_SALES_ANALYST, session=session, blob=blob_store
+    )
     assert [m.source_term for m in found] == [_SALES_TERM]
 
 
 @pytest.mark.integration
-async def test_無関係な主体は読めない(session: AsyncSession) -> None:
+async def test_無関係な主体は読めない(session: AsyncSession, blob_store: OntologyBlobStore) -> None:
     await _setup(session)
     with pytest.raises(HTTPException) as exc:
-        await list_mappings(namespace=_SALES, principal=_STRANGER, session=session)
+        await list_mappings(namespace=_SALES, principal=_STRANGER, session=session, blob=blob_store)
     assert exc.value.status_code == 403
 
 
@@ -249,7 +251,9 @@ async def test_逆向きは自動で作らない(session: AsyncSession) -> None:
 
 
 @pytest.mark.integration
-async def test_相手からは_incoming_として見える(session: AsyncSession) -> None:
+async def test_相手からは_incoming_として見える(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
     """**逆向きを作らない代わりに、両方向から見えるようにする**(決定3)。
 
     これが無いと相手の主張に気づけない。
@@ -267,18 +271,23 @@ async def test_相手からは_incoming_として見える(session: AsyncSession
         namespace=_FINANCE,
         principal=_FINANCE_OWNER,
         session=session,
+        blob=blob_store,
         direction=MappingDirection.INCOMING,
     )
     assert [m.namespace for m in incoming] == [_SALES]
     assert incoming[0].target_term == _FINANCE_TERM
     # outgoing には出ない(経理は何も宣言していない)。
     assert (
-        await list_mappings(namespace=_FINANCE, principal=_FINANCE_OWNER, session=session)
+        await list_mappings(
+            namespace=_FINANCE, principal=_FINANCE_OWNER, session=session, blob=blob_store
+        )
     ) == []
 
 
 @pytest.mark.integration
-async def test_自分が張ったものは_incoming_に出ない(session: AsyncSession) -> None:
+async def test_自分が張ったものは_incoming_に出ない(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
     """自分の名前空間の中で用語同士を結んだ場合に、両方に出てはいけない。"""
     await _setup(session)
     await _declare(
@@ -293,6 +302,7 @@ async def test_自分が張ったものは_incoming_に出ない(session: AsyncS
         namespace=_SALES,
         principal=_SALES_ANALYST,
         session=session,
+        blob=blob_store,
         direction=MappingDirection.INCOMING,
     )
     assert incoming == []
@@ -302,7 +312,9 @@ async def test_自分が張ったものは_incoming_に出ない(session: AsyncS
 
 
 @pytest.mark.integration
-async def test_相互に宣言すれば_reciprocal(session: AsyncSession) -> None:
+async def test_相互に宣言すれば_reciprocal(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
     await _setup(session)
     await _declare(
         session,
@@ -320,14 +332,18 @@ async def test_相互に宣言すれば_reciprocal(session: AsyncSession) -> Non
         predicate="exactMatch",
         principal=_FINANCE_OWNER,
     )
-    sales = await list_mappings(namespace=_SALES, principal=_SALES_ANALYST, session=session)
+    sales = await list_mappings(
+        namespace=_SALES, principal=_SALES_ANALYST, session=session, blob=blob_store
+    )
     assert sales[0].reciprocal
     assert not sales[0].disputed
     assert sales[0].counterpart_predicate == "exactMatch"
 
 
 @pytest.mark.integration
-async def test_述語が食い違えば_disputed_で両方残る(session: AsyncSession) -> None:
+async def test_述語が食い違えば_disputed_で両方残る(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
     """**決定4 の中心。** 自動で片方に寄せるのは相違を消す実装である。"""
     await _setup(session)
     await _declare(
@@ -349,8 +365,12 @@ async def test_述語が食い違えば_disputed_で両方残る(session: AsyncS
         reason="経理の定義は与信を含むので同一とは言えない",
     )
 
-    sales = await list_mappings(namespace=_SALES, principal=_SALES_ANALYST, session=session)
-    finance = await list_mappings(namespace=_FINANCE, principal=_FINANCE_OWNER, session=session)
+    sales = await list_mappings(
+        namespace=_SALES, principal=_SALES_ANALYST, session=session, blob=blob_store
+    )
+    finance = await list_mappings(
+        namespace=_FINANCE, principal=_FINANCE_OWNER, session=session, blob=blob_store
+    )
     # **両方が残っていて、両方が争いとして見える。**
     assert sales[0].predicate == "exactMatch"
     assert sales[0].disputed
@@ -363,7 +383,9 @@ async def test_述語が食い違えば_disputed_で両方残る(session: AsyncS
 
 
 @pytest.mark.integration
-async def test_broad_と_narrow_の対応は争いではない(session: AsyncSession) -> None:
+async def test_broad_と_narrow_の対応は争いではない(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
     """非対称な述語を正しく宣言した状態を争いにしてはいけない。"""
     await _setup(session)
     await _declare(
@@ -382,7 +404,9 @@ async def test_broad_と_narrow_の対応は争いではない(session: AsyncSes
         predicate="narrowMatch",
         principal=_FINANCE_OWNER,
     )
-    sales = await list_mappings(namespace=_SALES, principal=_SALES_ANALYST, session=session)
+    sales = await list_mappings(
+        namespace=_SALES, principal=_SALES_ANALYST, session=session, blob=blob_store
+    )
     assert sales[0].reciprocal
     assert not sales[0].disputed
 

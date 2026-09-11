@@ -49,6 +49,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ontology_api.repositories.mappings import MappingRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.questions import QuestionSetRepository
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
@@ -62,7 +63,9 @@ from ontology_core.competency import (
 )
 from ontology_core.deprecation import (
     DeprecationProblem,
+    ProblemKind,
     check_deprecation,
+    deprecated_terms,
     has_blocking,
 )
 from ontology_core.diff import DiffError, OntologyDiff, diff_ontologies
@@ -871,7 +874,51 @@ class ProjectionService:
             raise UnknownVersionError(f"'{namespace}@{version}' が見つかりません")
         turtle = await self._blob.get_version(current.blob_path)
         base_turtle = None if base is None else await self._blob.get_version(base.blob_path)
-        return await asyncio.to_thread(check_deprecation, turtle, base_turtle=base_turtle)
+        problems = await asyncio.to_thread(check_deprecation, turtle, base_turtle=base_turtle)
+        problems.extend(await self._mapped_by_others(namespace=namespace, turtle=turtle))
+        return problems
+
+    async def _mapped_by_others(self, *, namespace: str, turtle: str) -> list[DeprecationProblem]:
+        """廃止する用語へ他の名前空間がマッピングを張っていることを報告する。
+
+        ADR-0030 決定5。**廃止する側にも見せる。**
+
+        **権限の論点が生じない。** `term_mappings` は PostgreSQL にあり、
+        これは**この名前空間の用語に対する `incoming`**(=この名前空間自身の
+        依存の情報)である。`GET .../mappings?direction=incoming` が既に同じ
+        ものを同じ権限で見せている。
+
+        **ブロックしない**(決定6)。ブロックすると、マッピングを張るだけで
+        相手の廃止を止められる — **張られた側には従う手段が無い**
+        (逆向きの書き込み口が無いので相手の行を消せない)。ADR-0017 決定2 の
+        「ブロックが妥当なのは従う正当な手段が常にあるときだけ」に反する。
+        """
+        deprecated = await asyncio.to_thread(deprecated_terms, turtle)
+        if not deprecated:
+            return []
+        found: list[DeprecationProblem] = []
+        incoming = await MappingRepository(self._session).incoming_targets(deprecated)
+        for term in sorted(deprecated):
+            sources = incoming.get(term, [])
+            if not sources:
+                continue
+            found.append(
+                DeprecationProblem(
+                    kind=ProblemKind.MAPPED_BY_OTHERS,
+                    term=term,
+                    blocking=False,
+                    message=(
+                        f"'{term}' を廃止しますが、他の名前空間から"
+                        f"{len(sources)} 件のマッピングが張られています"
+                        f"({', '.join(sorted({ns for ns, _ in sources}))})。"
+                        "**承認は止めません** — 相手のマッピングを理由に廃止を"
+                        "止めると、マッピングを張るだけで廃止を封じられます。"
+                        "後継(`dcterms:isReplacedBy`)を書いてあれば、"
+                        "相手はそれを見て張り替えられます"
+                    ),
+                )
+            )
+        return found
 
     async def current_approved(self, *, namespace: str, excluding: str) -> OntologyVersion | None:
         """現在の `approved` 版を返す(自分自身は除く)。

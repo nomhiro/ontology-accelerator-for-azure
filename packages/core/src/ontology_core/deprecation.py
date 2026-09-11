@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -40,10 +41,13 @@ __all__ = [
     "DeprecationCheckError",
     "DeprecationProblem",
     "ProblemKind",
+    "TargetStatus",
+    "TermLifecycle",
     "check_deprecation",
     "deprecated_iris_in_results",
     "deprecated_terms",
     "has_blocking",
+    "term_lifecycle",
 ]
 
 _DEPRECATED_TRUE = Literal(True)
@@ -75,6 +79,10 @@ class ProblemKind(StrEnum):
     REMOVED = "removed"
     NO_SUCCESSOR_OR_REASON = "no-successor-or-reason"
     REFERENCES_DEPRECATED = "references-deprecated"
+    #: 廃止する用語へ**他の名前空間がマッピングを張っている**
+    #: (ADR-0030 決定5)。**ブロックしない**(決定6)— ブロックすると、
+    #: マッピングを張るだけで相手の廃止を止められる(人質になる)。
+    MAPPED_BY_OTHERS = "mapped-by-others"
 
 
 @dataclass(frozen=True)
@@ -123,6 +131,83 @@ def deprecated_terms(turtle: str) -> frozenset[str]:
         DeprecationCheckError: Turtle として解析できないとき。
     """
     return _deprecated(_parse(turtle, label="オントロジー"))
+
+
+class TargetStatus(StrEnum):
+    """マッピングの先の用語の生死(ADR-0030 決定2)。
+
+    **4 つを混ぜない。** 特に `unknown` は「調べていない / 調べられなかった」
+    であって「問題なし」ではない(ADR-0021 決定1 / ADR-0025 決定3 /
+    ADR-0026 決定5 / ADR-0027 決定5 と同じ原則)。
+    """
+
+    DEPRECATED = "deprecated"
+    ACTIVE = "active"
+    #: 相手の現行版に**その IRI が無かった**。マッピングが何も指していない。
+    #: **`active` に丸めない** — 直すべきものである。
+    ABSENT = "absent"
+    #: 調べていない / 調べられなかった。`note` に理由が入る。
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class TermLifecycle:
+    """ある IRI の生死(ADR-0030 決定2)。
+
+    Attributes:
+        status: 4 状態。
+        successor: `dcterms:isReplacedBy` の値(`deprecated` のときだけ)。
+            **後継を返さないと警告が使えない** — 呼び出し側はマッピングを
+            張り替える先を知る必要がある。
+        note: `unknown` の理由。**空にしない** — 理由が無い `unknown` は
+            「問題なし」と読まれる。
+    """
+
+    status: TargetStatus
+    successor: str | None = None
+    note: str = ""
+
+
+def term_lifecycle(turtle: str, iris: Collection[str]) -> dict[str, TermLifecycle]:
+    """TTL の中での各 IRI の生死を返す(ADR-0030 決定2)。
+
+    **`turtle` を 1 回だけ解析する。** IRI ごとに解析すると、対象が増えたときに
+    使えなくなる。
+
+    Args:
+        turtle: 相手の名前空間の**現行の承認済み版**の TTL。
+        iris: 調べる IRI。
+
+    Returns:
+        IRI から `TermLifecycle` への辞書。**`iris` の全件が入る。**
+
+    Raises:
+        DeprecationCheckError: Turtle として解析できないとき。**「生きている」と
+            返さない** — 解析できなかったことを呼び出し側が `unknown` として
+            扱えるようにする。
+    """
+    graph = _parse(turtle, label="マッピング先のオントロジー")
+    deprecated = _deprecated(graph)
+    present = {str(s) for s in graph.subjects() if isinstance(s, URIRef)}
+    result: dict[str, TermLifecycle] = {}
+    for iri in iris:
+        if iri in deprecated:
+            successors = [
+                str(o)
+                for o in graph.objects(URIRef(iri), DCTERMS.isReplacedBy)
+                if isinstance(o, URIRef)
+            ]
+            result[iri] = TermLifecycle(
+                status=TargetStatus.DEPRECATED,
+                successor=sorted(successors)[0] if successors else None,
+            )
+        elif iri in present:
+            result[iri] = TermLifecycle(status=TargetStatus.ACTIVE)
+        else:
+            # **`unknown` にしない。** 相手の現行版を読んだ結果として
+            # 「無い」と分かったことと、調べていないことは違う。
+            result[iri] = TermLifecycle(status=TargetStatus.ABSENT)
+    return result
 
 
 def _has_any(graph: Graph, subject: URIRef, predicates: tuple[URIRef, ...]) -> bool:

@@ -35,7 +35,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from ontology_api.dependencies import CurrentPrincipal, SessionDep
+from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep
 from ontology_api.repositories.mappings import MappingRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import AuditRepository
@@ -43,6 +43,7 @@ from ontology_api.services.authorization import (
     PermissionDeniedError,
     require_namespace_role,
 )
+from ontology_api.services.mapping_targets import resolve_target_lifecycles
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.mapping import (
     MappingPredicate,
@@ -121,6 +122,7 @@ async def list_mappings(
     namespace: str,
     principal: CurrentPrincipal,
     session: SessionDep,
+    blob: BlobDep,
     direction: Annotated[
         MappingDirection,
         Query(
@@ -139,14 +141,38 @@ async def list_mappings(
     **`incoming` は他の名前空間が張った主張である。** 自分の名前空間の用語に
     対して誰がどう主張しているかを知る経路で、これが無いと相手の主張に
     気づけない。
+
+    **各件に終点の生死(`target_status`)が付く**(ADR-0030、`P2B-18`)。
+    `deprecated` なら `target_successor` に張り替え先が入る。
+
+    **`unknown` は「調べていない・調べられなかった」であって「問題なし」では
+    ない。** 理由は `target_status_note` に入る — 特に**相手の名前空間を読む
+    権限が無い場合もここに来る**(決定1)。権限の無い相手の用語の状態を
+    推測しない。
     """
     found = await _prepare(
         session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
     )
     repository = MappingRepository(session)
     if direction is MappingDirection.INCOMING:
-        return await repository.incoming(namespace, base_iri=found.base_iri)
-    return await repository.outgoing(namespace)
+        mappings = await repository.incoming(namespace, base_iri=found.base_iri)
+    else:
+        mappings = await repository.outgoing(namespace)
+
+    # **終点の生死を付ける**(ADR-0030)。名前空間ごとに 1 回だけ TTL を読む。
+    lifecycles = await resolve_target_lifecycles(
+        session, blob=blob, principal=principal, mappings=mappings
+    )
+    return [
+        mapping.model_copy(
+            update={
+                "target_status": lifecycles[mapping.target_term].status.value,
+                "target_successor": lifecycles[mapping.target_term].successor,
+                "target_status_note": lifecycles[mapping.target_term].note,
+            }
+        )
+        for mapping in mappings
+    ]
 
 
 @router.put(

@@ -352,6 +352,12 @@ async def term_mappings(namespace: str, ctx: Context[Any, Any]) -> list[dict[str
     **`predicate` を必ず見ること。** `exactMatch` と `closeMatch` は意味が
     違い、後者は**交換可能とは限らない**。
 
+    **`target_status` も必ず見ること**(ADR-0030、`P2B-18`)。対応先が
+    廃止されている(`deprecated`)ことも、存在しない(`absent`)ことも、
+    調べられなかった(`unknown`)こともある。**廃止された用語を根拠に
+    回答を作ってはいけない** — 後継(`target_successor`)を使うか、
+    廃止されている旨を添えること。
+
     Args:
         namespace: 対象の名前空間の名前。`list_namespaces` で取得できる。
 
@@ -367,6 +373,16 @@ async def term_mappings(namespace: str, ctx: Context[Any, Any]) -> list[dict[str
         - `disputed`: **相互に宣言されていて述語が食い違っている。** 真なら
           「両者の見解が一致していない」ことを必ず回答に添えること。
           `counterpart_predicate` に相手側の主張が入る
+        - `target_status`: **対応先の用語の生死**(ADR-0030)。
+          `deprecated` なら**その用語はもう使うなという意味である** —
+          回答に使うなら廃止されていることを添え、`target_successor`
+          (後継)があればそれを示すこと。`absent` は**対応先が相手の現行版に
+          存在しない**(何も指していないマッピング)なので、根拠として
+          使ってはいけない。
+          **`unknown` は「問題なし」ではない** — 調べていない・調べられ
+          なかったという意味で、理由は `target_status_note` に入る
+          (外部語彙 / 権限が無い / 承認済みの版が無い / 読めなかった / 上限)。
+          `unknown` のマッピングを「生きている」と扱ってはいけない
 
     Raises:
         ToolError: 呼び出し元のトークンが無い、または検証を通らないとき。

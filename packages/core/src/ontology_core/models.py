@@ -382,6 +382,10 @@ class TermMapping(BaseModel):
     - `disputed=True` は相互に宣言されていて**述語が食い違っている**。
       どちらも消さない(決定4) — 領域をまたぐ相違を消さないのが
       この機能の目的である
+    - `target_status` は**終点の生死**である(ADR-0030)。`deprecated` なら
+      `target_successor` に張り替え先が入る。**`unknown` は「調べていない・
+      調べられなかった」であって「問題なし」ではない** — 理由は
+      `target_status_note` に入る
     """
 
     model_config = ConfigDict(frozen=True)
@@ -403,4 +407,24 @@ class TermMapping(BaseModel):
     )
     counterpart_predicate: str | None = Field(
         default=None, description="相手側が宣言している述語。無ければ `None`"
+    )
+    # マッピングの先の生死(ADR-0030、`P2B-18`)。既定は `unknown` である —
+    # **「調べていない」が既定であり、「生きている」ではない。**
+    target_status: str = Field(
+        default="unknown",
+        description="終点の用語の生死。`deprecated` / `active` / `absent` / `unknown`。"
+        "**`unknown` は「調べていない・調べられなかった」であって"
+        "「問題なし」ではない**(ADR-0030 決定2)。`absent` は"
+        "「相手の現行版にその IRI が無い」= 何も指していないマッピングである",
+    )
+    target_successor: str | None = Field(
+        default=None,
+        description="終点が廃止済みのとき、その後継(`dcterms:isReplacedBy`)。"
+        "**マッピングを張り替える先である**",
+    )
+    target_status_note: str = Field(
+        default="",
+        description="`target_status` が `unknown` のときの理由。"
+        "外部語彙 / 権限が無い / 承認済みの版が無い / 正本を読めなかった / 上限。"
+        "**理由の無い `unknown` は「問題なし」と読まれるので必ず入る**",
     )
