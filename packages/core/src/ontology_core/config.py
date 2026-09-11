@@ -86,12 +86,21 @@ class Settings(BaseSettings):
     # 時間の上限。Fuseki 側の arq:queryTimeout(config.ttl 等)と揃えて多層防御にする。
     # こちらは**実際に効いている**(guards.py がクエリ実行前にチェックする)。
     sparql_query_timeout_seconds: int = Field(default=30, alias="SPARQL_QUERY_TIMEOUT_SECONDS")
-    # 件数の上限。**Phase 1 では未強制。** ここで値を保持し Bicep が注入しているため
-    # 「効いている」と誤誘導しやすいが、`guards.py` を含めどこにも LIMIT を注入する
-    # 実装が無い(ブランチ全体レビュー M-2)。任意の SPARQL に LIMIT を後付けするのは
-    # 副問い合わせや CONSTRUCT で壊れるため安価な強制手段が無く、Phase 2 で対応する。
-    # README.md の「動作を確認済み(ローカル)」節にも同じ注記がある。
-    sparql_max_results: int = Field(default=10_000, alias="SPARQL_MAX_RESULTS")
+    # 件数の上限。**強制している**(`P2A-08`、ADR-0025)。
+    #
+    # クエリに `LIMIT` を後付けするのではなく、**API の境界で応答の行数を切り、
+    # 切り詰めたことを必ず見せる**(ヘッダ、MCP では本文)。`LIMIT` の注入は
+    # 副問い合わせや集約で意味が変わり、`CONSTRUCT` では解の数とトリプル数が
+    # 違うため採らない(ADR-0025 決定1)。
+    #
+    # **ストア側では止められない。** Fuseki 6.2.0 / Jena ARQ 6.2.0 に行数の
+    # 上限は無い(`fuseki:queryLimit` は語彙にあるが実装に読み手がおらず、
+    # 実測でも効かなかった)。`arq:queryTimeout` は効くので**時間は止められるが
+    # 行数は止められない**。
+    #
+    # **0 以下は設定の誤りとして起動時に落とす**(決定7)。「0 なら無制限」と
+    # いう解釈を作らない — この設定の目的は上限をかけることである。
+    sparql_max_results: int = Field(default=10_000, ge=1, alias="SPARQL_MAX_RESULTS")
 
     # ---- 正本(PostgreSQL) ----
     postgres_host: str = Field(default="localhost", alias="POSTGRES_HOST")

@@ -143,6 +143,15 @@ def _forward_headers(ctx: Context[Any, Any]) -> dict[str, str]:
 #: (HTTP 境界を越えて型を共有しない。ADR-0012 の分離を保つ)。
 _DEPRECATED_TERMS_HEADER = "X-Ontology-Deprecated-Terms"
 
+# 結果を切り詰めたことを伝えるヘッダ(`P2A-08`、ADR-0025 決定4)。
+#
+# **Core API と同じ文字列を、あえてここに書き写している。** `_DEPRECATED_TERMS_HEADER`
+# と同じ理由である — MCP が Core API を HTTP で呼ぶ境界を保つため、
+# `ontology_api` を import しない。
+_RESULT_TRUNCATED_HEADER = "X-Ontology-Result-Truncated"
+_RESULT_LIMIT_HEADER = "X-Ontology-Result-Limit"
+_RESULT_TOTAL_ROWS_HEADER = "X-Ontology-Result-Total-Rows"
+
 
 def _api_client(headers: dict[str, str] | None = None) -> httpx.AsyncClient:
     return httpx.AsyncClient(
@@ -179,6 +188,13 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
 
     Returns:
         SPARQL Results JSON 形式の結果。
+
+        **`result_truncated` が真なら、結果は全部ではない。** 上限
+        (`result_limit`)で切られている。`result_total_rows` に「本当は何行
+        あったか」が入る。**この場合「該当は N 件だった」と答えてはいけない** —
+        「少なくとも N 件あり、上限で切られている」が正確である。絞り込みの
+        条件を足して問い直すか、そのことを回答に添えること。
+        切り詰めが無い場合これらのキーは付かない。
 
         **`deprecation_warnings` が付いていたら必ず読むこと。** 結果に現れた
         用語のうち、**廃止済み(`owl:deprecated`)のもの**の IRI が入る。
@@ -224,6 +240,21 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
     deprecated = [part.strip() for part in header.split(",") if part.strip()]
     if deprecated:
         result["deprecation_warnings"] = deprecated
+
+    # ---- 結果を切り詰めたことの通知(P2A-08、ADR-0025 決定4) ----
+    #
+    # **廃止の警告と同じ理由でヘッダから本文へ載せ替える。** エージェントは
+    # ヘッダを見ないので、見えなければ**切り詰められた結果を「全部」として
+    # 回答に使ってしまう**。「AI に正しいコンテキストを渡す」ことがこの製品の
+    # 目的なので、ここで届かないなら上限を強制する意味が半分失われる。
+    if response.headers.get(_RESULT_TRUNCATED_HEADER) == "true":
+        result["result_truncated"] = True
+        limit = response.headers.get(_RESULT_LIMIT_HEADER)
+        if limit is not None:
+            result["result_limit"] = int(limit)
+        total = response.headers.get(_RESULT_TOTAL_ROWS_HEADER)
+        if total is not None:
+            result["result_total_rows"] = int(total)
     return result
 
 

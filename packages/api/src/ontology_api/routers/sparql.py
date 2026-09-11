@@ -39,12 +39,23 @@ from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.models import NamespaceRole, OntologyVersionStatus
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
 from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query
+from ontology_core.sparql.limits import cap_bindings
 
 router = APIRouter(prefix="/namespaces/{namespace}/sparql", tags=["sparql"])
 logger = logging.getLogger(__name__)
 
 #: 結果に現れた廃止済み用語を載せるヘッダ(ADR-0017 決定3)。
 DEPRECATED_TERMS_HEADER = "X-Ontology-Deprecated-Terms"
+
+# 結果を切り詰めたことを伝えるヘッダ(`P2A-08`、ADR-0025 決定4)。
+#
+# **本文は標準の SPARQL Results JSON のままにする**(ADR-0001 の
+# 「SPARQL 1.1 Protocol をハード境界にする」)。エージェント向けには MCP が
+# 本文に載せ替える — **エージェントはヘッダを見ない**(ADR-0017 決定3 と
+# 同じ理由・同じ形)。
+RESULT_TRUNCATED_HEADER = "X-Ontology-Result-Truncated"
+RESULT_LIMIT_HEADER = "X-Ontology-Result-Limit"
+RESULT_TOTAL_ROWS_HEADER = "X-Ontology-Result-Total-Rows"
 
 #: 廃止された用語を引くクエリ。**`GRAPH` 句を書かない**ので、既定グラフ
 #: (= 承認済みの現行版。ADR-0010 決定5)だけを見る。エージェントが見るのと
@@ -197,14 +208,38 @@ async def run_query(
     except SparqlStoreError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
+    # ---- 結果件数の上限(P2A-08、ADR-0025) ----
+    #
+    # **ストア側では止められないので、ここが唯一の強制点である。**
+    # `SPARQL_MAX_RESULTS` は長らく「保持しているだけ」で効いていなかった。
+    #
+    # **切り詰めたことを必ず見せる**(決定3)。切り詰めた結果を「全部です」と
+    # して返すと、エージェントは「該当は N 件で全部見た」と信じて回答を作る。
+    #
+    # **エラーにはしない**(決定5)。エージェントは「全部は取れなかった」ことを
+    # 知ったうえで続けられるべきである。
+    capped = cap_bindings(results, settings.sparql_max_results)
+    if capped.truncated:
+        response.headers[RESULT_TRUNCATED_HEADER] = "true"
+        response.headers[RESULT_LIMIT_HEADER] = str(settings.sparql_max_results)
+        if capped.total_rows is not None:
+            response.headers[RESULT_TOTAL_ROWS_HEADER] = str(capped.total_rows)
+
     deprecated = await deprecated_terms_in_dataset(store, namespace=namespace)
-    found = deprecated_iris_in_results(results, deprecated)
+    # **廃止の検査は切り詰めた後の結果に対して行う。** 返していない行の用語を
+    # 警告しても、受け取った側には対応する行が無い。
+    found = deprecated_iris_in_results(capped.payload, deprecated)
     if found:
         # ヘッダの値は ASCII に限られる。IRI は ASCII なのでそのまま並べる。
         response.headers[DEPRECATED_TERMS_HEADER] = ", ".join(found)
 
     # **コンテキストを渡した記録を残す**(P2B-05、ADR-0018 決定4)。
     # ADR-0006 決定4 が言う「コンテキスト」はこの経路である。
+    #
+    # **切り詰める前の行数を記録する**(ADR-0025 決定6)。「エージェントに何行
+    # 渡したか」ではなく「**何行返ろうとしたか**」でなければ、上限に張り付いて
+    # いるクエリを見つけられない。そのため `capped.payload` ではなく `results`
+    # を渡す。
     await _record_access(
         session,
         namespace=namespace,
@@ -212,4 +247,4 @@ async def run_query(
         query=payload.query,
         results=results,
     )
-    return results
+    return capped.payload

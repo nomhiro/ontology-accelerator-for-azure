@@ -264,11 +264,23 @@ async def test_期間で絞り込める(session: AsyncSession) -> None:
     """`since` は含み、`until` は含まない(半開区間)。
 
     **境界を両側とも含めると、期間を並べて集計したときに二重に数える。**
+
+    **境界は DB から読み戻した時刻で作る。** `occurred_at` は PostgreSQL の
+    `now()`(サーバ側の時計)なので、**`datetime.now(UTC)`(アプリ側の時計)を
+    境界に使うとずれて間欠的に落ちる**(実際に 3 回に 1 回落ちていた。
+    docker の中と外で時計が一致しない)。2 件の間の中点を使う。
     """
     await _setup(session)
     await _record(session, action="old", actor=_ALICE, subject="s")
-    boundary = datetime.now(UTC)
     await _record(session, action="new", actor=_ALICE, subject="s")
+
+    recorded = await query_audit(namespace=_NS, principal=_ANALYST, session=session)
+    times = {e.action: e.occurred_at for e in recorded.events}
+    assert times["old"] < times["new"], (
+        "2 件が同じ時刻に記録された。1 件ずつ commit しているので通常は起きない"
+        "(起きたらこのテストの前提が壊れている)"
+    )
+    boundary = times["old"] + (times["new"] - times["old"]) / 2
 
     after = await query_audit(namespace=_NS, principal=_ANALYST, session=session, since=boundary)
     assert [e.action for e in after.events] == ["new"]

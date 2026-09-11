@@ -88,7 +88,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 633 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 655 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -154,6 +154,11 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **`server_default` は挿入時にしか効かない。** `INSERT ... ON CONFLICT DO UPDATE` の更新側で列に触らないと、「最後に更新した時刻」が**最初の挿入時刻のまま止まる**。UPSERT で時刻を持つ列は `set_` に必ず含める（`term_access.last_accessed_at`）。**テストで `>=` を使うとこの不具合を見逃す** — 等号を許すと更新していない実装でも通る（変異テストで実際に見逃した）。
 
 **テストファイルの基底名は 3 つのテストディレクトリ全体で一意にする。** `packages/*/tests/` に `__init__.py` が無いため、同じ基底名（`test_health.py` を core と api の両方に置く等）は pytest の収集時に `import file mismatch` で**全体が止まる**（1 ファイルの衝突で全テストが走らなくなる）。用途を名前に含める（`test_health_metrics.py` / `test_health_api.py`）。
+
+**アプリの時計と PostgreSQL の時計は別物である。** `occurred_at` などの
+`server_default=now()` の列はサーバ側の時計で入るので、`datetime.now(UTC)`(アプリ側)を
+境界にして比較すると**間欠的に落ちる**(実測: 監査の期間絞り込みのテストが 3 回に 1 回
+落ちた。docker の中と外で時計が一致しない)。**境界は DB から読み戻した時刻で作る。**
 
 **PostgreSQL の `now()` はトランザクション開始時刻を返す。** `server_default=now()` の列は、同一トランザクション内で挿入した複数行が**同じ値になる**。時系列で並べたいときは主キーを第二キーに加える（`audit_events` の決定記録の並び順で実際に必要になった）。
 

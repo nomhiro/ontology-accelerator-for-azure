@@ -115,6 +115,7 @@ reconcile                      -> 孤児ゼロ
 - Web でのレビュー・承認フロー（グラフ可視化を含む）
 - pyshacl による SHACL 検証 — **完了**（2026-09-09。`P2A-05`）
 - 名前空間 RBAC の強制 — **完了**（2026-09-09。`P2A-06`、[ADR-0014](adr/0014-namespace-rbac.md)。四眼原則を含む）
+- 結果件数の上限（`SPARQL_MAX_RESULTS`）の強制 — **完了**（2026-09-11。`P2A-08`、[ADR-0025](adr/0025-result-limit-enforcement.md)。**ストア側に行数の上限が無いことを実測した**ので、API の境界が唯一の強制点である）
 - 監査証跡の PROV-O 表現（[ADR-0006](adr/0006-ontology-versioning-and-audit.md)）
 
 ### 柱 B: 運用し続けられる

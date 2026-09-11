@@ -22,10 +22,11 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - Fuseki は名前空間ごとに分離したデータセット(例: `retail-core`)の `/retail-core/sparql` が SPARQL 1.1 で応答する。データセット単位の物理分離が名前空間の隔離境界であり(`packages/api/tests/test_isolation.py` で検証)、固定の `ds` は予約された空のデータセットで実データは入らない
 - Core API 経由の読み取りクエリが通り、更新クエリと `SERVICE` 句はガードで HTTP 400 になる
 - Fuseki 側でも `SERVICE` の実行が無効化されている(HTTP 422 / SSRF 対策)。管理 API は無認証で 401
-- クエリの**時間**の上限(`SPARQL_QUERY_TIMEOUT_SECONDS`、既定 30 秒)は効く。一方
-  **結果件数の上限(`SPARQL_MAX_RESULTS`)は Phase 1 では未強制**で、値は保持され
-  Bicep が注入しているが LIMIT を後付けする実装が無い(任意の SPARQL に対する
-  安価で正しい強制手段が無いため)。強制は Phase 2 で対応する
+- クエリの**時間**の上限(`SPARQL_QUERY_TIMEOUT_SECONDS`、既定 30 秒)も
+  **結果件数の上限(`SPARQL_MAX_RESULTS`、既定 10,000)も効きます**
+  ([ADR-0025](docs/adr/0025-result-limit-enforcement.md)、`P2A-08`)。
+  件数の上限は**クエリに `LIMIT` を後付けするのではなく、API の境界で応答の行数を
+  切り、切り詰めたことを必ず知らせます**(下記「結果件数の上限は切り詰めて知らせます」)
 - 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)。削除(`DELETE /namespaces/{namespace}`)は、公開済みバージョンが Blob に1件でも残っていれば 409 Conflict で拒否する(オントロジーは不変リビジョンであり、レプリカ再作成後に削除済みのはずのデータが Blob から復活することを防ぐため)。
   **この判定と行の削除の間に同時 publish が割り込む競合は閉じました**([ADR-0024](docs/adr/0024-namespace-delete-locking.md)、`P2B-12`)。削除と publish が**同じ行ロック**(`SELECT ... FOR UPDATE`)を取ります。削除は **Blob の検査より前**に、publish は **Blob への書き込みより前**に取るので、どちらが先でも「Blob に TTL があって PostgreSQL には何も無い」状態(= レプリカ再作成で名前空間が復活する状態)になりません。**`DELETE` 文が暗黙に取る行ロックでは遅すぎます** — その時点では既に Blob に TTL が書かれています。「後から Blob を再検査する」でも窓は閉じません(publish が Blob を書く前に削除が commit してしまう順序が残ります)。
   なお**公開済みオントロジーを含む名前空間の退役**(409 を返している側)は未決のままです(`P2B-19`)。不変条件「公開済みの版は削除しない」との関係を決める必要があります
@@ -69,7 +70,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 633 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 655 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -307,6 +308,48 @@ MCP は受け取ったトークンを**自分で検証してから** Core API �
 この設計により、**監査イベントの `actor` が実際のエージェントを指します。** MCP のマネージド ID で Core API を呼ぶ実装にすると、Core API から見た呼び出し元が常に MCP になり、「誰の問い合わせに対してどのバージョンを返したか」が記録できなくなります(ADR-0006 の帰属が壊れます)。
 
 `AUTH_MODE=disabled`(ローカル開発専用)では検証も転送も行いません。
+
+#### 結果件数の上限は切り詰めて知らせます
+
+**`SPARQL_MAX_RESULTS`(既定 10,000)を超える結果は切り詰めます。エラーにはしません。**
+エージェントは「全部は取れなかった」ことを知ったうえで続けられるべきです
+([ADR-0025](docs/adr/0025-result-limit-enforcement.md))。
+
+| 層 | 切り詰めたことの伝え方 |
+|---|---|
+| Core API | ヘッダ `X-Ontology-Result-Truncated: true` / `X-Ontology-Result-Limit` / `X-Ontology-Result-Total-Rows` |
+| MCP | **本文**の `result_truncated` / `result_limit` / `result_total_rows` |
+
+**本文をヘッダと分けるのは、エージェントがヘッダを見ないからです**(廃止済み用語の
+警告と同じ理由・同じ形。[ADR-0017](docs/adr/0017-deprecation-lifecycle.md) 決定3)。
+**切り詰めた結果を「全部です」として返すのがいちばん避けたい形です** — エージェントは
+「該当は 10,000 件で全部見た」と信じて回答を作ります。
+
+**クエリに `LIMIT` を後付けはしません。** 既存の `LIMIT` / `OFFSET`、副問い合わせ、
+集約との相互作用で**意味が変わる**ためです(`CONSTRUCT` の `LIMIT` は解の数であって
+トリプル数ではありません)。任意の SPARQL を書き換える実装は、
+[ADR-0001](docs/adr/0001-rdf-store-selection.md) が名前空間の隔離で避けた形と同じです。
+
+**ストア側では止められません。** Fuseki 6.2.0 / Jena ARQ 6.2.0 に行数の上限は
+ありません。実測した結果です。
+
+| 調べたもの | 結果 |
+|---|---|
+| ARQ のコンテキスト記号 | `queryTimeout` / `updateTimeout` / `httpQueryTimeout` のみ |
+| `fuseki:queryLimit`(語彙に**存在する**) | **効かない**(12 行のデータに `queryLimit 5` を設定しても 12 行返った) |
+| その読み手 | `fuseki-server.jar` 内で参照するのは語彙の定義クラスだけ。**実装に読み手がいない** |
+
+そのため **API の境界が唯一の強制点**です。**ストアの応答全体は一度メモリに載ります** —
+上限は「エージェントに渡す量」を抑えるもので、API のメモリは守りません。そこは
+時間の上限(30 秒)が事実上の防波堤です。
+
+**アクセスログには切り詰める前の行数を記録します。** 「エージェントに何行渡したか」
+ではなく「**何行返ろうとしたか**」でなければ、上限に張り付いているクエリを
+見つけられません。
+
+**`CONSTRUCT` と `DESCRIBE` はこの経路では使えません(400)。** 以前はガードが通し、
+RDF を JSON として解析しようとして 502 になっていました — **エージェントから見ると
+クエリの誤りとサーバの障害が区別できません**。対応は `P2A-14` です。
 
 #### SHACL 検証は承認を止めます
 
@@ -965,7 +1008,7 @@ AWS 版は Apache-2.0 で公開されており、フォークすることも法�
 - [`docs/architecture.md`](docs/architecture.md) — アーキテクチャ、グラフ永続化設計、Azure サービスマッピング、認証・認可・セキュリティ
 - [`docs/cost-estimate.md`](docs/cost-estimate.md) — 月額費用試算と単価の出典・計算式
 - [`docs/third-party-licenses.md`](docs/third-party-licenses.md) — 第三者コンポーネントのライセンス
-- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0024)。**却下した代替案とその理由**を残しています
+- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0025)。**却下した代替案とその理由**を残しています
 
 ## コントリビューション
 

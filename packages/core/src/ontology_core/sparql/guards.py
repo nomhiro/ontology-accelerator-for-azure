@@ -29,6 +29,17 @@ _UPDATE_KEYWORDS = re.compile(
 # 連邦クエリ。任意の URL へリクエストを飛ばせるため SSRF の踏み台になる。
 _SERVICE_KEYWORD = re.compile(r"\bSERVICE\b", re.IGNORECASE)
 
+# RDF を返すクエリの形。**この経路では扱えない**(ADR-0025 決定8)。
+#
+# `FusekiStore.query` は `Accept: application/sparql-results+json` を送るが、
+# Fuseki はクエリの形に従って Turtle を返すため JSON の解析に失敗し、
+# **`SparqlStoreError`(502)になる**(実測)。ガードが通したクエリが 502 で
+# 落ちる状態は、エージェントに「サーバが壊れている」と誤解させる。
+#
+# 対応するには内容交渉と戻り値の型、そしてトリプル数の上限という別の設計が
+# 要るので `P2A-14` に分離した。それまでは**理由を添えて 400 で断る**。
+_RDF_RESULT_FORMS = re.compile(r"\b(CONSTRUCT|DESCRIBE)\b", re.IGNORECASE)
+
 # 文字列リテラルとコメントを取り除いてからキーワードを探すための正規表現。
 # リテラル内の "DELETE" のような語で誤検知しないようにする。
 _LITERALS_AND_COMMENTS = re.compile(
@@ -56,7 +67,8 @@ def ensure_agent_safe_query(query: str, *, allow_service: bool = False) -> None:
             allowlist 化できている場合にのみ有効にする。
 
     Raises:
-        QueryRejectedError: 更新操作、または許可されていない `SERVICE` 句を含むとき。
+        QueryRejectedError: 更新操作、許可されていない `SERVICE` 句、または
+            この経路が扱えないクエリの形(`CONSTRUCT` / `DESCRIBE`)を含むとき。
     """
     if not query.strip():
         raise QueryRejectedError("クエリが空です")
@@ -71,4 +83,13 @@ def ensure_agent_safe_query(query: str, *, allow_service: bool = False) -> None:
     if not allow_service and _SERVICE_KEYWORD.search(body):
         raise QueryRejectedError(
             "SERVICE 句は許可されていません。任意の URL への到達を防ぐため既定で禁止しています"
+        )
+
+    # **RDF を返す形は 502 になる前にここで断る**(ADR-0025 決定8)。
+    # 「使えるように見えて 502」は、エージェントにクエリの誤りとサーバの障害を
+    # 区別させない。
+    if match := _RDF_RESULT_FORMS.search(body):
+        raise QueryRejectedError(
+            f"{match.group(0).upper()} はこの経路では扱えません。"
+            "SELECT と ASK だけを受け付けます(RDF を返す形への対応は P2A-14)"
         )
