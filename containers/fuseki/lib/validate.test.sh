@@ -173,6 +173,23 @@ else
     check "versions が配列でないと拒否" \
         validate_manifest_json '{"schema":1,"namespace":"x","versions":"oops"}' reject
 
+    # ---- 書き手が出す schema を受理する (P2B-C1) ----
+    #
+    # **ここが 1 だけを受理していたため、ローダが全名前空間をスキップしていた。**
+    # ADR-0019(`P2B-02`)が `_build_manifest` の schema を 2 に上げたのに、
+    # この検証を 1 のままにしていた(実測で確認)。射影は再構築可能である
+    # という不変条件1 の前提が、その間だけ成り立っていなかった。
+    #
+    # **schema 1 だけを食わせるテストでは検出できなかった。** 書き手が出す値を
+    # 検査していなかったのが本当の穴で、Python 側の
+    # `test_manifest_contract.py` がその契約を機械的に固定している。
+    check "schema 2(現在の書き手が出す形)を受理" \
+        validate_manifest_json '{"schema":2,"namespace":"x","current":null,"retain_superseded":0,"versions":[],"generated_at":"t"}' ok
+    check "未知の(新しい)schema は拒否" \
+        validate_manifest_json '{"schema":3,"namespace":"x","versions":[]}' reject
+    check "schema が文字列でも拒否" \
+        validate_manifest_json '{"schema":"2","namespace":"x","versions":[]}' reject
+
     # ---- manifest_current ----
     check_eq "current(承認済み現行版)を取り出す" manifest_current "${manifest_ok}" "2.0.0"
     check_eq "current が無い(null)場合は空文字" \

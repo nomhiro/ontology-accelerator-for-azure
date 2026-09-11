@@ -120,7 +120,11 @@ XML
         exit 0
         ;;
     *"/versions/good-ns/_state.json")
-        printf '%s' '{"schema":1,"namespace":"good-ns","current":"2.0.0","versions":[{"version":"2.0.0","status":"approved"},{"version":"1.0.0","status":"in-review"}],"generated_at":"t"}'
+        # **書き手(`_build_manifest`)が実際に出す schema 2 の形にする**
+        # (`P2B-C1`)。schema 1 だけを食わせていたため、schema を 2 に
+        # 上げたときにローダが全名前空間をスキップする不具合を検出できて
+        # いなかった(実測)。**この経路が本番と同じ形を通ることが本質である。**
+        printf '%s' '{"schema":2,"namespace":"good-ns","current":"2.0.0","retain_superseded":0,"versions":[{"version":"2.0.0","status":"approved","projection":"named default"},{"version":"1.0.0","status":"in-review","projection":"named"}],"generated_at":"t"}'
         exit 0
         ;;
     *"/versions/no-manifest-ns/_state.json")
@@ -132,7 +136,7 @@ XML
         exit 0
         ;;
     *"/versions/draft-only-ns/_state.json")
-        printf '%s' '{"schema":1,"namespace":"draft-only-ns","current":null,"versions":[],"generated_at":"t"}'
+        printf '%s' '{"schema":2,"namespace":"draft-only-ns","current":null,"retain_superseded":0,"versions":[],"generated_at":"t"}'
         exit 0
         ;;
     *.ttl)

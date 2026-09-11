@@ -136,12 +136,44 @@ normalize_blob_prefix() {
 # 読み込みを丸ごとスキップする(修正5)。
 # ---------------------------------------------------------------------------
 
+# このローダが解釈できるマニフェストの schema(`P2B-C1`)。
+#
+# **書き手(Python の `_build_manifest`)が出す値を必ず含めること。** ここに
+# 無い schema は「不正な形式」として名前空間ごとスキップされる。ADR-0019
+# (`P2B-02`)が schema を 2 に上げたとき**ここを 1 のままにしていたため、
+# ローダが全名前空間をスキップしていた**(実測)。射影は再構築可能である
+# という不変条件1 の前提が、その間だけ成り立っていなかった。
+#
+# **契約の一致は `packages/api/tests/test_manifest_contract.py` が機械的に
+# 検査する。** 片側だけ直して食い違う事故を二度と起こさないため。
+MANIFEST_SCHEMAS="1 2"
+
 # マニフェストの JSON として最低限の形をしているか検証する。
-# `schema` が 1 であること、`namespace` が文字列であること、`versions` が
+# `schema` が既知であること、`namespace` が文字列であること、`versions` が
 # 配列であることまでを見る(内容の正しさは呼び出し元の各関数が個別に見る)。
+#
+# **未知の(新しい)schema は受け付けない。** そのマニフェストが運んでいる
+# 指示をこのローダが知らないので、知っている規則だけで射影すると
+# 「新しい指示を黙って無視した射影」になる。**知らないものを推測しない**
+# のがこのローダの一貫した方針である(`skip:unknown-status-*` と同じ)。
+#
+# **その代わり、安全に関わる指示を新しい schema にだけ載せてはいけない。**
+# 古いローダが無視すると事故になるものは、既存の欄(`projection` など)で
+# 表現すること — 退役(`P2B-19`)が `projection` の `skip:` を使うのは
+# この理由である。
+#
+# **`schema` は数値でなければならない。** `"2"`(文字列)を受け入れると、
+# `jq -r` が数値と文字列を同じ出力にするため型の壊れたマニフェストが通る。
+# 書き手は必ず数値を出すので、文字列が来ているのは書き手が壊れている合図
+# であり、推測して読み込む理由が無い。
 validate_manifest_json() {
-    printf '%s' "$1" | jq -e \
-        'type == "object" and (.schema == 1) and (.namespace | type == "string") and (.versions | type == "array")' \
+    # `.schema` を `$s` に束縛してから照合する。**`index()` の引数の中では
+    # `.` が配列に差し替わっている**ので、そこに `.schema` と書くと常に
+    # `null` になる(実測で全件 reject になった)。
+    printf '%s' "$1" | jq -e --arg allowed "${MANIFEST_SCHEMAS}" \
+        'type == "object" and ((.schema | type) == "number")
+         and (.schema as $s | ($allowed | split(" ") | index($s | tostring)) != null)
+         and (.namespace | type == "string") and (.versions | type == "array")' \
         >/dev/null 2>&1
 }
 

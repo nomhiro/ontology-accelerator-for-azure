@@ -35,6 +35,38 @@ Phase 2 で完了したもの: `P2A-05`（SHACL 検証）/ `P2A-06`（名前空�
 
 ## 完了した Critical（判断の履歴として残す）
 
+### `P2B-C1` マニフェストの schema が食い違い、ローダが全名前空間をスキップしていた
+
+**状態: 完了（2026-09-12）。出典: `P2B-19` の設計のためにローダを読んでいて気づき、実測で確認した。**
+
+`containers/fuseki/lib/validate.sh` の `validate_manifest_json` が `.schema == 1` を要求していたのに、`_build_manifest`（Python）は **ADR-0019（`P2B-02`）以降 `"schema": 2` を書いていた**。
+
+```
+$ . containers/fuseki/lib/validate.sh
+$ validate_manifest_json '{"schema":2,"namespace":"x","versions":[]}' ; echo $?
+1        # ← 拒否される
+```
+
+**帰結**: ローダは `_state.json` が「不正な形式」だと判断し、`build_tdb` が `continue` で**その名前空間を丸ごとスキップする**。マニフェストは全名前空間に書かれているので、**レプリカを作り直すとストアが空になる**。`POST /admin/reconcile` は手動なので、回すまでクエリは静かに 0 行を返し続ける。
+
+**不変条件1（トリプルストアは再構築可能な射影である）の前提が成り立っていなかった。** ADR-0002 が設計の中心に置いた「いつでも作り直せる」が、この間だけ嘘だった。
+
+**なぜ誰も気づかなかったか**: シェル側のテストが **`schema 1` のマニフェストしか食わせていなかった**。`validate.test.sh` は schema 2 で `manifest_projection_for_version` と `projection_targets` を検査していたが、**`validate_manifest_json` には schema 2 を渡していなかった**。`load-snapshot.test.sh` のスタブも schema 1 だった。**書き手が実際に出す形を読み手に食わせるテストが 1 本も無かった。**
+
+**直したこと**:
+
+- `MANIFEST_SCHEMAS="1 2"` を宣言し、`validate_manifest_json` はこの集合と照合する。**`schema` が数値であることも要求する**（`jq -r` は `"2"` と `2` を同じ出力にするので、型を見ないと壊れたマニフェストが通る）
+- **未知の（新しい）schema は拒否する。** そのマニフェストが運んでいる指示を知らないまま射影すると「新しい指示を黙って無視した射影」になる。`skip:unknown-status-*` と同じ方針である
+- **その代わり、安全に関わる指示を新しい schema にだけ載せない。** 古いローダが無視すると事故になるものは既存の欄で表現する（`P2B-19` の退役が `projection` の `skip:` を使うのはこの理由）
+- `validate.test.sh` に **schema 2 を受理する / 未知の schema を拒否する / 文字列の schema を拒否する**の 3 件を足した
+- `load-snapshot.test.sh` のスタブを **schema 2（書き手が実際に出す形）**に変えた
+- **`packages/api/tests/test_manifest_contract.py` を足した。** `_build_manifest` の `schema` が `validate.sh` の許可リストに入っていることを、**シェルのソースを読んで**検査する。値をテストに書き写さないのが要点で、書き写すとシェル側を直し忘れても通ってしまう（今回とまったく同じ形になる）
+
+**教訓**: **言語の境界をまたぐ契約は、両側にテストを書くだけでは守られない。** 型検査も lint も境界を越えないので、「**両者が同じ値を見ていること**」を直接検査する必要がある。
+
+**副産物**: Python の `pathlib.write_text` が Windows で LF を CRLF に変え、Alpine の `sh` が `illegal option -` で落ちた。CLAUDE.md に記録した。
+
+
 ### `P1-C1` 既定グラフに全バージョンが載り、新旧の定義が同時に返る
 
 - **状態**: 完了(2026-09-05、`P1-15` / `P1-16` と同一ラウンドで実装)

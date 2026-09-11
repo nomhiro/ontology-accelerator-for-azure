@@ -88,7 +88,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 792 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 795 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -197,6 +197,14 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **`az postgres flexible-server firewall-rule` の引数は紛らわしい。** サーバは `--server-name` / `-s`、**規則名は `--name` / `-n`**。`--rule-name` は存在しない（`--name` にサーバ名を渡すと「`--server-name` が必要」と言われ、`--rule-name` を渡すと「認識されない引数」になる）。
 
 **新しい azd 環境を作ると `AZURE_SUBSCRIPTION_ID` は引き継がれない。** 環境ごとに独立しているため、`azd env new` の後に `azd env set AZURE_SUBSCRIPTION_ID <id>` が必要（`azd up` が `prompt required` で止まる）。
+
+**Python の `pathlib.Path.write_text` は Windows で LF を CRLF に変える。** 読み込み側
+(`read_text`)が CRLF を LF に正規化するので、LF のファイルを読んで書き戻すと**静かに
+CRLF になる**。シェルスクリプトでこれをやると Alpine の `sh` が
+`set: line 24: illegal option -` で落ちる(実測。`` が引数に混ざる)。Python で
+シェルスクリプトを書き換えるときは **`read_bytes` / `write_bytes` を使う**か
+`newline=""` を指定する。`.gitattributes` が `eol=lf` を宣言していても、
+**作業コピーの内容はそれとは別に壊れる**。
 
 **変異テストの復元表を「ファイルの基底名」で作ってはいけない。** `routers/mappings.py` と
 `repositories/mappings.py` のように基底名が同じファイルを 1 つの辞書に入れると
