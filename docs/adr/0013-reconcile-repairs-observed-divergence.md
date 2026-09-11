@@ -188,3 +188,16 @@ reconcile がローダと同じ保持ポリシーを適用できるようにな�
 |---|---|
 | `retired_namespaces` | 退役しているので射影しなかった名前空間 |
 | `retired_graphs_removed` | 退役した名前空間に残っていたので消したグラフ |
+
+## 補記: 孤児のマニフェストも視界に入れた (2026-09-12、`P2B-20`)
+
+[ADR-0033](0033-orphan-manifests.md) で `orphan_manifests` を足した。
+`orphan_blobs` は **`.ttl` だけ**を列挙するので、`_state.json` は
+視界に入っていなかった。
+
+**`orphan_blobs` と違って削除する。** TTL は**正本**(不変条件7)だが、
+マニフェストは PostgreSQL の状態の射影であって正本ではない
+([ADR-0010](0010-approval-and-projection.md) 決定7)。`graphs_removed` と
+同じ側である。
+
+**削除に成功しても報告から消さない。** 決定5 をそのまま適用した。

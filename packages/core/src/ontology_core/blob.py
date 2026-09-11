@@ -186,6 +186,47 @@ class OntologyBlobStore:
                     names.append(blob.name)
         return sorted(names)
 
+    async def list_manifests(self) -> list[str]:
+        """マニフェスト(`_state.json`)の Blob パスを列挙する(ADR-0033、`P2B-20`)。
+
+        **`list_versions` と分ける。** あちらは `.ttl` だけを返す契約で、
+        `reconcile` の `orphan_blobs`(**正本なので消さない**)の原資料である。
+        混ぜると、報告を読んだ運用者が「消してはいけない TTL」と
+        「消してよいマニフェスト」を手で選別することになる。
+        """
+        name_prefix = self._prefix
+        names: list[str] = []
+        async with _wrap_errors("マニフェスト一覧の取得"):
+            async for blob in self._container.list_blobs(name_starts_with=name_prefix):
+                if blob.name.endswith("/_state.json"):
+                    names.append(blob.name)
+        return sorted(names)
+
+    async def delete_manifest(self, namespace: str) -> bool:
+        """名前空間のマニフェストを削除する(ADR-0033 決定2)。無ければ `False`。
+
+        **引数は名前空間名であり、パスではない。** パスは `manifest_path_for`
+        が組み立てるので、**このメソッドで `.ttl` を消すことは構造的にできない**。
+
+        一般的な `delete_blob(path)` にしていないのは意図である。
+        **署名の狭さが強制である** — 「公開済みの版を削除しない」
+        (不変条件7)を規約やレビューで守るより、呼べない形にするほうが強い。
+
+        マニフェストは PostgreSQL の状態の射影であって正本ではない
+        (ADR-0010 決定7)ので、消しても `_refresh_manifest` / `reconcile` が
+        作り直す。
+        """
+        path = manifest_path_for(self._prefix, namespace)
+        blob = self._container.get_blob_client(path)
+        async with _wrap_errors("マニフェストの削除"):
+            from azure.core.exceptions import ResourceNotFoundError
+
+            try:
+                await blob.delete_blob()
+            except ResourceNotFoundError:
+                return False
+        return True
+
     async def aclose(self) -> None:
         """クライアントを閉じる。所有権のルールはクラス docstring を参照。"""
         await self._container.close()

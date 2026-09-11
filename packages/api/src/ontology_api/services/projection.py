@@ -72,7 +72,12 @@ from ontology_core.deprecation import (
     has_blocking,
 )
 from ontology_core.diff import DiffError, OntologyDiff, diff_ontologies
-from ontology_core.graphs import dataset_name, version_graph_iri
+from ontology_core.graphs import (
+    NamespaceNameError,
+    dataset_name,
+    validate_namespace_name,
+    version_graph_iri,
+)
 from ontology_core.models import Namespace, OntologyVersion, OntologyVersionStatus
 from ontology_core.retention import ProjectionTarget, decide_projection
 from ontology_core.shacl import ShaclReport, validate_turtle_with_shacl
@@ -385,6 +390,16 @@ class ReconcileReport:
     # **`graphs_removed`(正本に無い残留)とは分ける。** 前者は「正本にあるが
     # 載せない版」、後者は「正本に無い版」で、運用者が読むべき意味が違う。
     retention_removed: list[str] = field(default_factory=list)
+    # 正本に無い名前空間のマニフェスト(削除済み)(ADR-0033、`P2B-20`)。
+    #
+    # **`orphan_blobs`(TTL)とは扱いを分ける。** あちらは**正本**なので
+    # 報告するだけだが(不変条件7)、マニフェストは PostgreSQL の状態の射影で
+    # あって正本ではない(ADR-0010 決定7)。**正本ではないものに対して
+    # 保守的である理由が無い** — 失っても作り直せる(`graphs_removed` と同じ側)。
+    #
+    # **削除に成功しても報告から消さない**(ADR-0013 決定5 と同じ判断)。
+    # 毎回出るなら名前空間の削除経路に取りこぼしがある。
+    orphan_manifests: list[str] = field(default_factory=list)
     # 退役しているので射影しなかった名前空間(ADR-0032 決定4)。
     #
     # **黙って飛ばさない。** 報告に出ないと、運用者は「reconcile を回したのに
@@ -675,6 +690,43 @@ class ProjectionService:
         await self._refresh_manifest(namespace)
 
         return recorded, outcome
+
+    async def _remove_orphan_manifests(self, report: ReconcileReport, known: set[str]) -> None:
+        """正本に無い名前空間のマニフェストを消す(ADR-0033)。
+
+        **Blob へ到達できなければ何もしない。** 一覧が取れないことを
+        「孤児が無い」とは言わない(`report.failures` に残す)。
+        """
+        try:
+            manifests = await self._blob.list_manifests()
+        except BlobStoreError as exc:
+            report.failures.append(f"マニフェスト一覧の取得に失敗 ({exc})")
+            return
+        for path in manifests:
+            # `versions/<ns>/_state.json` の `<ns>` を取り出す。
+            parts = path.rstrip("/").split("/")
+            if len(parts) < 2:
+                continue
+            namespace = parts[-2]
+            if namespace in known:
+                continue
+            # **削除に成功しても報告から消さない**(ADR-0013 決定5)。
+            report.orphan_manifests.append(path)
+            try:
+                validate_namespace_name(namespace)
+            except NamespaceNameError:
+                # **名前空間名として使えない段を消しに行かない**(不変条件5)。
+                # `delete_manifest` は名前空間名からパスを組み立てる契約なので
+                # (ADR-0033 決定2)、ここで通すと検証を回避したことになる。
+                # 報告に残して運用者の判断に委ねる。
+                report.failures.append(
+                    f"{path}: 名前空間名として使えない段を含むため自動削除しません"
+                )
+                continue
+            try:
+                await self._blob.delete_manifest(namespace)
+            except BlobStoreError as exc:
+                report.failures.append(f"{namespace}: マニフェストの削除に失敗 ({exc})")
 
     async def retire(self, *, namespace: str, actor: str, reason: str) -> Namespace:
         """名前空間を退役させる(ADR-0032)。**削除ではない。**
@@ -1452,6 +1504,16 @@ class ProjectionService:
         # orphan_datasets と同じ理由。final-fix-brief.md 修正2(b) / I-2)。
         all_blobs = set(await self._blob.list_versions())
         report.orphan_blobs = sorted(all_blobs - await versions.all_blob_paths())
+
+        # ---- 孤児のマニフェストを消す(ADR-0033、`P2B-20`) ----
+        #
+        # `orphan_blobs` は `.ttl` だけを見るので、`_state.json` は視界に
+        # 入っていなかった。**マニフェストは正本ではない**(ADR-0010 決定7)
+        # ので、`graphs_removed` と同じく**報告して削除する**。
+        #
+        # 判定は PostgreSQL に置く — 「マニフェストがあるのに名前空間が無い」。
+        # `.ttl` の有無は見ない(ADR-0033 決定4)。
+        await self._remove_orphan_manifests(report, {ns.name for ns in namespaces})
 
         # `unprojected()` は draft を除外済み(ADR-0010 決定5)。状態によって
         # 射影先が変わる: in-review/superseded は名前付きグラフのみ、approved は
