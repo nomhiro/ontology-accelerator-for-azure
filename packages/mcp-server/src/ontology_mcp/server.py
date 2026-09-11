@@ -182,9 +182,28 @@ async def list_namespaces(ctx: Context[Any, Any]) -> list[dict[str, Any]]:
 async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> dict[str, Any]:
     """指定した名前空間に対して読み取り専用の SPARQL クエリを実行する。
 
+    **このエンドポイントは推論しない**(ADR-0028)。承認された定義がそのまま
+    載っているだけで、OWL の含意は展開されていない。`Premium ⊑ Customer ⊑ Party`
+    と定義されていても、`?s rdfs:subClassOf ex:Party` は `Customer` しか
+    返さない。**「Party の部分クラスは Customer だけ」と答えてはいけない。**
+
+    階層を辿るには**プロパティパス**を使う。
+
+    | 知りたいこと | 書き方 |
+    |---|---|
+    | ある用語の下位クラス全部 | `?s rdfs:subClassOf+ ex:Party` |
+    | ある個体が属するクラス全部 | `ex:alice rdf:type/rdfs:subClassOf* ?c` |
+    | 上位の概念全部(SKOS) | `ex:x skos:broader+ ?c` |
+
+    **プロパティパスで届かない含意もある。** `owl:someValuesFrom` を通じた
+    含意、`owl:equivalentClass` の対称性、互いに素なクラスからの帰結は
+    パスでは辿れない。それらが必要な問いには「このエンドポイントでは
+    判定できない」と答えるのが正確である。
+
     Args:
         namespace: 対象の名前空間の名前。`list_namespaces` で取得できる。
-        query: SPARQL の SELECT または ASK クエリ。更新操作と SERVICE 句は使えない。
+        query: SPARQL の SELECT または ASK クエリ。更新操作と SERVICE 句は
+            使えない。**推論は行われないのでプロパティパスを使うこと**(上記)。
 
     Returns:
         SPARQL Results JSON 形式の結果。

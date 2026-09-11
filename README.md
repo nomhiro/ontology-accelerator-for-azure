@@ -70,7 +70,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 733 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 737 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -420,6 +420,40 @@ just check-reasoning samples/retail-core.ttl
 **推論は `approve` の同期パスには入れません**([ADR-0005](docs/adr/0005-reasoner-boundary.md) 決定3)。実行時間が予測しづらいためです。承認時に止めるのは SHACL 検証と廃止の検査です。
 
 **HermiT(LGPL-3.0)は配布物に同梱しません**(ADR-0005 決定4)。完全な OWL 2 DL 推論が必要な場合の選択肢ですが、Apache-2.0 の配布物としての単純さを優先します。**同梱していないことは CI が jar の中身を見て機械的に検査します。**
+
+#### SPARQL エンドポイントは推論しません — 階層はプロパティパスで辿ってください
+
+**推論器は CI にしかいません。** トリプルストアには承認された TTL がそのまま載っているだけで、**OWL の含意は展開されていません**([ADR-0028](docs/adr/0028-no-entailment-projection.md)、`P2B-15`)。
+
+```turtle
+ex:Premium  rdfs:subClassOf ex:Customer .
+ex:Customer rdfs:subClassOf ex:Party .
+```
+
+この定義に対して `SELECT ?s WHERE { ?s rdfs:subClassOf ex:Party }` は **`ex:Customer` しか返しません**。`ex:Premium` は OWL の意味論では `ex:Party` の部分クラスですが、**そのトリプルは書かれていません**。
+
+**階層を辿るにはプロパティパスを使ってください。**
+
+| 知りたいこと | 書き方 |
+|---|---|
+| ある用語の下位クラス全部 | `?s rdfs:subClassOf+ ex:Party` |
+| ある個体が属するクラス全部 | `ex:alice rdf:type/rdfs:subClassOf* ?c` |
+| 上位の概念全部(SKOS) | `ex:x skos:broader+ ?c` |
+
+プロパティパスは推論ではなく**グラフの到達可能性**なので、**返ってきた経路はすべて誰かが承認した公理です**。MCP の `sparql_query` のツール説明にも同じ案内が入っています(エージェントは README を読まないため)。
+
+**プロパティパスで届かない含意もあります。** `owl:someValuesFrom` を通じた含意、`owl:equivalentClass` の対称性、互いに素なクラスからの帰結はパスでは辿れません。
+
+**導出された含意を射影しない理由は 4 つあり、どれか 1 つでも致命的です**(ADR-0028 決定1)。
+
+| # | 理由 |
+|---|---|
+| a | **ELK の結論は実用的なオントロジーではほぼ常に不完全**なので、載るのは中途半端な部分閉包になる。エージェントには「導出されなかった」と「計算されなかった」を区別する手段が無い |
+| b | **ローダは Blob の `.ttl` だけを読み、推論器を走らせない。** 導出トリプルはレプリカの再作成で静かに消え、`reconcile` も気づけない(不変条件1) |
+| c | **主張と導出が区別できなくなる。** 「誰が承認した定義に基づく答えか」を説明できることがこの製品の中核価値です |
+| d | **不変リビジョンの中身が推論器の版で変わる。** ELK 0.6.0 → 0.7.0 で同じ版の意味が変わります(不変条件7) |
+
+**クエリ時推論(Jena の `ja:InfModel`)も有効にしません。** 最大の理由は「**少しだけ推論する」は「推論しない」より危険**だからです — 一部の含意が返ると、エージェントは「このエンドポイントは推論する」と結論し、返らなかった含意を「成り立たない」と読みます。
 
 #### 想定質問（Competency Questions）で「目的を果たしているか」を判定する
 
