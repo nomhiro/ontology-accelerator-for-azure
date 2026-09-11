@@ -58,11 +58,30 @@ def alembic_head() -> str:
     return _alembic_head()
 
 
+# ロック待ちの上限(`P2B-12`、ADR-0024)。
+#
+# **これが無いとスイート全体が固まる。** 前のテストがトランザクションを開いた
+# まま終わると、次のテストの `drop_all` の `DROP TABLE` が**無期限に待つ**
+# (実測: 行ロックの変異テストで publish のトランザクションが残り、次のテストの
+# `drop_all` が返らなくなった)。タイムアウトを置くと「固まる」代わりに
+# 「落ちる」ので、**原因が分かる**。
+#
+# 行ロックの検証(`test_delete_publish_race.py`)は 1 秒の待ちを観測するので、
+# それより十分に長くする。
+_LOCK_TIMEOUT = "15s"
+
+
+async def _limit_lock_wait(s: AsyncSession) -> None:
+    """そのセッションのロック待ちに上限を置く。"""
+    await s.execute(sa.text(f"SET lock_timeout = '{_LOCK_TIMEOUT}'"))
+
+
 @pytest_asyncio.fixture
 async def session() -> AsyncIterator[AsyncSession]:
     """テーブルを作り直したまっさらな DB のセッションを返す。"""
     engine, factory = create_engine_and_factory(_test_settings())
     async with engine.begin() as conn:
+        await conn.execute(sa.text(f"SET lock_timeout = '{_LOCK_TIMEOUT}'"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
         # `alembic_version` を head で stamp する(P1-23)。
@@ -89,7 +108,34 @@ async def session() -> AsyncIterator[AsyncSession]:
             {"head": _alembic_head()},
         )
     async with factory() as s:
-        yield s
+        await _limit_lock_wait(s)
+        try:
+            yield s
+        finally:
+            # **ロックを残したまま終わらせない。** 失敗したテストが開いた
+            # トランザクションが残ると、次のテストの `drop_all` が待たされる。
+            await s.rollback()
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def other_session(session: AsyncSession) -> AsyncIterator[AsyncSession]:
+    """`session` と同じ DB に対する**独立したトランザクション**(`P2B-12`)。
+
+    **1 つのセッションでは行ロックが効いているかを確かめられない** — 同じ
+    トランザクションは自分のロックを待たないので、`SELECT ... FOR UPDATE` を
+    2 回呼んでも何も起きない。ADR-0024 の排他を検証するには 2 本の接続が要る。
+
+    `session` に依存させているのは、テーブルの作り直しが先に済んでいる
+    必要があるためである(このフィクスチャ自身は作り直さない)。
+    """
+    engine, factory = create_engine_and_factory(_test_settings())
+    async with factory() as s:
+        await _limit_lock_wait(s)
+        try:
+            yield s
+        finally:
+            await s.rollback()
     await engine.dispose()
 
 

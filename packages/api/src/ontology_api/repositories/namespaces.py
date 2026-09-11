@@ -85,6 +85,37 @@ class NamespaceRepository:
         row = await self._session.get(NamespaceRow, name)
         return _to_model(row) if row is not None else None
 
+    async def get_locked(self, name: str) -> Namespace | None:
+        """行ロック(`SELECT ... FOR UPDATE`)を取ってから返す(ADR-0024 決定1)。
+
+        **Blob に `.ttl` を書く経路と、名前空間を削除する経路が、これを使う。**
+        ロックはトランザクションの終わり(`commit` / `rollback`)まで保持される。
+
+        これが無いと、削除の「Blob は空か」の確認と PostgreSQL の行の削除の間に
+        `publish` が入り込み、**Blob に TTL があって PostgreSQL には何も無い**
+        状態ができる。ローダは PostgreSQL を見ず Blob だけを見て再構築するので、
+        **削除したはずの名前空間が次のレプリカ再作成で復活する**(ADR-0024)。
+
+        **「後から Blob を再検査する」では閉じられない。** publish が Blob を
+        書く前に削除が commit してしまう順序が残る(決定2)。
+
+        `get` と別のメソッドにしているのは、**呼び出し側でロックを取ったことが
+        読めるようにするため**である。既定でロックする実装にすると、
+        一覧や参照の経路まで直列化してしまう。
+
+        **SQLAlchemy は SQLite に `FOR UPDATE` を出さない。** テストも本番も
+        PostgreSQL なので実害は無いが、SQLite に戻すならこの排他は成立しない。
+        """
+        stmt = (
+            select(NamespaceRow)
+            .where(NamespaceRow.name == name)
+            .with_for_update()
+            # 同一セッションで既に読んでいた行を返さず、ロック付きで読み直す。
+            .execution_options(populate_existing=True)
+        )
+        row = (await self._session.execute(stmt)).scalar_one_or_none()
+        return _to_model(row) if row is not None else None
+
     async def list_all(self) -> list[Namespace]:
         result = await self._session.execute(select(NamespaceRow).order_by(NamespaceRow.name))
         return [_to_model(row) for row in result.scalars()]

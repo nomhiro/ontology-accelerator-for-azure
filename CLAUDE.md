@@ -40,6 +40,7 @@
 14. **受け入れ基準を、その基準で審査される側が書き換えられてはならない。** 想定質問の集合は**名前空間ごとの不変改訂**であり、版ごとに持たない（版ごとにすると新しい版が自分の合格条件を自分で書き換えられる。[ADR-0022](docs/adr/0022-competency-question-sets.md) 決定2）。書き込みは `owner`、`approve` は `maintainer` 以上に分けてある（決定6）。**ただしロールは階層なので `owner` は両方できる — これは「防止」ではなく「可視化」の仕組みである**（改訂は不変、`reason` 必須、減った質問が監査に出る）
 15. **承認時の検査でトリプルストアに問い合わせてはならない。** その時点でその版はまだ射影されていない。SHACL・廃止・想定質問はいずれも**正本の TTL** に対して評価する（ADR-0022 決定3）。ストアに依存させると、不変条件3 が守ろうとしているものの逆向きになる（射影の可用性が正本の書き込みを止める）
 16. **領域をまたぐ用語を論理的帰結を持つ述語で結んではならない。** マッピングに使える述語は SKOS の 5 つ（`exactMatch` / `closeMatch` / `broadMatch` / `narrowMatch` / `relatedMatch`）だけである（[ADR-0023](docs/adr/0023-cross-domain-mappings.md) 決定1）。**`owl:equivalentClass` で結ぶと両方のクラスが充足不能になる**（ELK で実測。ADR-0009 決定8 は候補に挙げていたが却下した）。**相違は消さない** — 逆向きのマッピングを自動生成せず（決定3）、両側の述語が食い違ったら両方残して `disputed` で見せる（決定4）
+17. **名前空間を削除する経路と Blob に `.ttl` を書く経路は、同じ行ロックを取る。** `NamespaceRepository.get_locked`(`SELECT ... FOR UPDATE`)を、削除は**Blob の検査より前**に、`publish` は**Blob への書き込みより前**に呼ぶ（[ADR-0024](docs/adr/0024-namespace-delete-locking.md)）。**`DELETE` 文が暗黙に取る行ロックでは遅すぎる** — その時点では既に Blob に TTL が書かれている。ローダは PostgreSQL を見ず Blob だけを見て再構築するので、**Blob に TTL があって PostgreSQL に名前空間が無い状態は「削除したはずの名前空間の復活」を意味する**。「後から Blob を再検査する」では窓は閉じない
 
 ## 開発環境
 
@@ -56,6 +57,12 @@ just dev-api             # Core API 起動
   **ただし `scripts/check-questions.py` には効かない**（`SPARQL_QUERY_ENDPOINT` という完全な URL を読むため。`P2A-13`）。3030 を別プロジェクトが握っていると**そちらへクエリが飛んで HTTP 405 になり、質問が落ちたように見える**（実測）。`SPARQL_QUERY_ENDPOINT='http://localhost:3131/{dataset}/sparql'` を明示する
 - **`just up` は Azurite に Blob コンテナを作る。** これを飛ばすと publish と削除が `ContainerNotFound` で失敗する。名前空間の作成と SPARQL 参照は Blob を触らないため動いてしまい、原因が分かりにくい
 - **`just clean` は PostgreSQL のボリュームごと消す。** 消した後は `just migrate` をやり直す必要がある。さらに `alembic` を素で叩くときは `.env` を読まないので、`POSTGRES_*` を環境変数で明示する（`just migrate` は `--env-file` を使っている）。読み込まれないと既定値で接続を試み、`InvalidPasswordError` になる
+- **integration テストがトランザクションを開いたまま失敗すると、スイート全体が固まる。**
+  次のテストの `drop_all` の `DROP TABLE` が**無期限に待つ**(実測。行ロックの変異
+  テストで踏んだ)。`packages/api/tests/conftest.py` は `SET lock_timeout = '15s'` を
+  置き、セッションのフィクスチャで必ず `rollback` するようにしてある。
+  **タスクやロックを残すテストを書くときは `try` / `finally` で必ず片付けること**
+  (`test_delete_publish_race.py` の `_cleanup` がその形)
 - **`git checkout -- <ディレクトリ>` は未コミットの変更を巻き戻す。** 変異テストの
   復元に使うと、**変異と無関係な実装まで消える**。新規ファイルは untracked なので
   残り、既存ファイルの変更だけが消えるため**被害が分かりにくい**(実際に 1 度、
@@ -81,7 +88,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 618 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 625 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数

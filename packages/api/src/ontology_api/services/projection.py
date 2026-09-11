@@ -406,7 +406,15 @@ class ProjectionService:
             ConcurrentUpdateError: `base_version` が最新版と一致しないとき。
         """
         namespaces = NamespaceRepository(self._session)
-        if await namespaces.get(namespace) is None:
+        # **行ロックを取る**(ADR-0024 決定1)。**位置が本質** — 下の
+        # `put_version`(Blob への `.ttl` 書き込み)より前でなければならない。
+        #
+        # これが無いと、`DELETE /namespaces/{name}` の「Blob は空か」の確認と
+        # PostgreSQL の行の削除の間にこの publish が入り込み、**Blob に TTL が
+        # あって PostgreSQL には何も無い**状態ができる。ローダは PostgreSQL を
+        # 見ず Blob だけを見て再構築するので、**削除したはずの名前空間が次の
+        # レプリカ再作成で復活する**。
+        if await namespaces.get_locked(namespace) is None:
             raise UnknownNamespaceError(f"名前空間 '{namespace}' が見つかりません")
 
         versions = VersionRepository(self._session)

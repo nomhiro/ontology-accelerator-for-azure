@@ -209,7 +209,15 @@ async def delete_namespace(
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
-    if await NamespaceRepository(session).get(name) is None:
+    # **行ロックを取る**(ADR-0024 決定1)。**位置が本質** — 下の Blob の
+    # 検査より前でなければならない。`publish` も同じ行ロックを取るので、
+    # 「Blob は空か」の確認から行の削除までの間に publish が割り込めない。
+    #
+    # これが無いと、publish が Blob に `.ttl` を書いた直後にこの削除が
+    # commit してしまい、**Blob に TTL があって PostgreSQL には何も無い**
+    # 状態が残る。ローダは Blob だけを見て再構築するので、削除したはずの
+    # 名前空間が次のレプリカ再作成で復活する(`P2B-12`)。
+    if await NamespaceRepository(session).get_locked(name) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"名前空間 '{name}' が見つかりません",
