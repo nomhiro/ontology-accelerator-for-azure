@@ -15,15 +15,19 @@ ADR-0006 決定3 が約束していた「PROV-O で表現する」の口であ�
    `P2A-16`)。**列に入れた値が PROV-O のクラスとして出る**ところまでを
    1 本で繋ぐ。`prov.py` 側の単体テストはフェイクの `AuditEvent` を使うので、
    **列 → モデル → 書き出しの写し間違いはここでしか捕まらない**
+6. **`Accept` で JSON-LD になる**([ADR-0036](../../../docs/adr/0036-jsonld-serialization.md)、
+   `P2A-17`)。既定は Turtle で、**内容交渉は足すだけ**である
 """
 
 from __future__ import annotations
 
 import inspect
+import json
 
 import pytest
 from fastapi import HTTPException
 from rdflib import Graph, Literal, URIRef
+from rdflib.compare import isomorphic
 from rdflib.namespace import PROV, RDF
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +37,7 @@ from ontology_api.repositories.versions import AuditRepository
 from ontology_api.routers.audit import export_provenance, query_audit
 from ontology_core.auth.entra import Principal
 from ontology_core.db import AuditEventRow
+from ontology_core.jsonld import JSONLD_MEDIA_TYPE, PROVENANCE_CONTEXT
 from ontology_core.models import ActorType, NamespaceRole, PlatformRole
 from ontology_core.prov import AGENT_BASE, BUNDLE_BASE, ONT, REVISION_BASE
 
@@ -219,15 +224,26 @@ async def test_照会の指定の誤りは_422(session: AsyncSession) -> None:
 def test_絞り込みは_JSON_と_Turtle_で揃っている() -> None:
     """**片方だけ絞り込みが増えると、表現によって見える範囲が変わる。**
 
-    `cursor` だけは意図的に無い(ADR-0026 決定1)。RDF は順序を持たないので、
-    カーソルで切り出した断片を RDF として渡す意味が薄い。
+    差は 2 つだけで、どちらも ADR に理由がある。
+
+    | 片方だけにある | 理由 |
+    |---|---|
+    | `cursor`(JSON 側) | RDF は順序を持たないので、カーソルで切り出した断片を |
+    |  | RDF として渡す意味が薄い(ADR-0026 決定1) |
+    | `accept`(RDF 側) | **絞り込みではなく直列化の選択**である |
+    |  | (ADR-0036 決定1)。見える範囲を変えない |
+
+    **`accept` をここで許すのは、それが絞り込みではないからである。**
+    絞り込みを足したときは両方に足すか、ADR に理由を書くこと。
     """
     json_params = set(inspect.signature(query_audit).parameters)
     turtle_params = set(inspect.signature(export_provenance).parameters)
     assert json_params - turtle_params == {"cursor"}, (
         "JSON だけが取る絞り込みがある。両方に足すか、ADR に理由を書くこと"
     )
-    assert turtle_params - json_params == set()
+    assert turtle_params - json_params == {"accept"}, (
+        "RDF だけが取る引数が増えている。絞り込みなら両方に足すこと"
+    )
 
 
 # ----------------------------------------- 主体の種別(ADR-0035、`P2A-16`)
@@ -336,3 +352,113 @@ async def test_監査の照会でも種別が読める(session: AsyncSession) ->
     )
     page = await query_audit(namespace=_NS, principal=_ANALYST, session=session)
     assert [e.actor_type for e in page.events] == [ActorType.SERVICE_PRINCIPAL]
+
+
+# ------------------------------- JSON-LD の内容交渉(ADR-0036、`P2A-17`)
+
+
+@pytest.mark.integration
+async def test_Accept_で_JSON_LD_が返る(session: AsyncSession) -> None:
+    """**同じ URL・同じパラメータで、形だけ変わる**(ADR-0036 決定1)。
+
+    ADR-0026 決定1 が却下したのは `/audit`(JSON のページ)と RDF の交渉で、
+    理由は「同じ URL が表現によって違うパラメータを取る」ことだった。
+    **同じグラフの 2 つの直列化はパラメータが同じ**なので当たらない。
+    """
+    await _setup(session)
+    await _record(session, action="published", subject=f"{_NS}@1.0.0")
+
+    response = await export_provenance(
+        namespace=_NS,
+        principal=_ANALYST,
+        session=session,
+        accept="application/ld+json",
+    )
+    assert response.media_type == JSONLD_MEDIA_TYPE
+    document = json.loads(bytes(response.body).decode("utf-8"))
+    # **`@context` は埋め込まれている**(決定2)。外部 URL を指さない。
+    assert isinstance(document["@context"], dict)
+    assert isinstance(document["@graph"], list)
+    # **ルータが渡すコンテキストを固定する。** 取り違えても同型性は壊れない
+    # (圧縮しか変わらない)ので、同型性のテストでは捕まらない。
+    assert document["@context"] == dict(PROVENANCE_CONTEXT)
+
+
+@pytest.mark.integration
+async def test_既定は_Turtle_のまま(session: AsyncSession) -> None:
+    """**既存のクライアントの振る舞いを変えない**(ADR-0036 決定5)。"""
+    await _setup(session)
+    for accept in (None, "*/*", "application/json", "application/ld+json;q=0"):
+        response = await export_provenance(
+            namespace=_NS, principal=_ANALYST, session=session, accept=accept
+        )
+        assert response.media_type is not None
+        assert response.media_type.startswith("text/turtle"), accept
+
+
+@pytest.mark.integration
+async def test_2_つの表現が同じグラフを返す(session: AsyncSession) -> None:
+    """**これが ADR-0036 決定6 の実効部分である。**
+
+    経路ごとにトリプルを組み立てると、片方だけ直したときに表現によって
+    内容が違うという静かな不整合になる。**ルータを通した状態で**同型性を
+    固定する(`test_jsonld.py` は `provenance_graph` を直接呼ぶので、
+    ルータが片方だけ別の引数で呼ぶ誤りは捕まらない)。
+    """
+    await _setup(session)
+    await _record(
+        session,
+        action="published",
+        subject=f"{_NS}@1.0.0",
+        reason="初版",
+        actor_type=ActorType.USER,
+    )
+    await _record(session, action="approved", subject=f"{_NS}@1.0.0", actor="bob-oid")
+
+    turtle_response = await export_provenance(namespace=_NS, principal=_ANALYST, session=session)
+    jsonld_response = await export_provenance(
+        namespace=_NS, principal=_ANALYST, session=session, accept=JSONLD_MEDIA_TYPE
+    )
+    from_turtle = Graph()
+    from_turtle.parse(data=bytes(turtle_response.body).decode("utf-8"), format="turtle")
+    from_jsonld = Graph()
+    from_jsonld.parse(data=bytes(jsonld_response.body).decode("utf-8"), format="json-ld")
+
+    # **`ont:exportedAt` は呼ぶたびに変わる**ので、比べる前に外す。
+    for graph in (from_turtle, from_jsonld):
+        graph.remove((None, ONT.exportedAt, None))
+    assert isomorphic(from_turtle, from_jsonld), "表現によって内容が違う"
+
+
+@pytest.mark.integration
+async def test_JSON_LD_でも絞り込みが効く(session: AsyncSession) -> None:
+    """**表現を変えても見える範囲が変わらない**(ADR-0026 決定1 の趣旨)。"""
+    await _setup(session)
+    await _record(session, action="published", subject=f"{_NS}@1.0.0")
+    await _record(session, action="approved", subject=f"{_NS}@1.0.0")
+
+    response = await export_provenance(
+        namespace=_NS,
+        principal=_ANALYST,
+        session=session,
+        action="approved",
+        accept=JSONLD_MEDIA_TYPE,
+    )
+    graph = Graph()
+    graph.parse(data=bytes(response.body).decode("utf-8"), format="json-ld")
+    bundle = URIRef(f"{BUNDLE_BASE}{_NS}")
+    assert set(graph.objects(bundle, ONT.eventCount)) == {Literal(1)}
+
+
+@pytest.mark.integration
+async def test_権限は表現によって変わらない(session: AsyncSession) -> None:
+    """**形を変えれば読めるようになる、という抜け道を作らない。**"""
+    await _setup(session)
+    with pytest.raises(HTTPException) as exc:
+        await export_provenance(
+            namespace=_NS,
+            principal=_STRANGER,
+            session=session,
+            accept=JSONLD_MEDIA_TYPE,
+        )
+    assert exc.value.status_code == 403

@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep
@@ -48,10 +48,16 @@ from ontology_api.services.authorization import (
 )
 from ontology_api.services.mapping_targets import resolve_target_lifecycles
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
+from ontology_core.jsonld import (
+    JSONLD_MEDIA_TYPE,
+    MAPPING_CONTEXT,
+    prefers_jsonld,
+    render_jsonld,
+)
 from ontology_core.mapping import (
     MappingPredicate,
     MappingValidationError,
-    render_mappings,
+    mapping_graph,
     validate_mapping,
 )
 from ontology_core.models import Namespace, NamespaceRole, TermMapping
@@ -218,8 +224,14 @@ async def export_mappings(
         MappingDirection,
         Query(description="JSON の一覧と同じ。`outgoing` / `incoming`"),
     ] = MappingDirection.OUTGOING,
+    # **`Annotated` で受ける**(既定値の位置に書くと `Header` オブジェクトが
+    # 値として流れ込む。`Query` と同じ罠)。
+    accept: Annotated[
+        str | None,
+        Header(description="`application/ld+json` を明示すると JSON-LD で返る(ADR-0036)"),
+    ] = None,
 ) -> Response:
-    """マッピングを `text/turtle` で返す。`data-analyst` で読める。
+    """マッピングを RDF で返す(既定は `text/turtle`)。`data-analyst` で読める。
 
     **トリプルストアには射影していない**(ADR-0023 決定7、
     [ADR-0031](../../../../../docs/adr/0031-mapping-export.md) 決定1)。
@@ -234,6 +246,11 @@ async def export_mappings(
 
     **`ont:targetStatus` は `unknown` でも出る**(決定4)。省略すると
     「問題なし」と読まれる。
+
+    **`Accept: application/ld+json` で JSON-LD になる**
+    ([ADR-0036](../../../../../docs/adr/0036-jsonld-serialization.md)、
+    `P2A-17`)。`/provenance` と**同じ規則**である — RDF を返す口を片方だけ
+    交渉可能にすると、説明のつかない差になる。`@context` は文書に埋め込む。
     """
     mappings = await _with_target_status(
         session,
@@ -242,7 +259,15 @@ async def export_mappings(
         namespace=namespace,
         direction=direction,
     )
-    turtle = render_mappings(mappings, exported_at=datetime.now(UTC))
+    # **1 つのグラフから 2 つの直列化を出す**(ADR-0036 決定6)。
+    graph = mapping_graph(mappings, exported_at=datetime.now(UTC))
+    if prefers_jsonld(accept):
+        return Response(
+            content=render_jsonld(graph, context=MAPPING_CONTEXT),
+            media_type=JSONLD_MEDIA_TYPE,
+        )
+    serialized = graph.serialize(format="turtle")
+    turtle = serialized if isinstance(serialized, str) else serialized.decode("utf-8")
     return Response(content=turtle, media_type=TURTLE_MEDIA_TYPE)
 
 

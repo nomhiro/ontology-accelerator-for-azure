@@ -63,6 +63,7 @@ __all__ = [
     "MappingValidationError",
     "compare_with_counterpart",
     "inverse_of",
+    "mapping_graph",
     "mapping_node_iri",
     "predicate_iri",
     "render_mappings",
@@ -259,8 +260,11 @@ def mapping_node_iri(namespace: str, source_term: str, target_term: str) -> str:
     )
 
 
-def render_mappings(mappings: Sequence[TermMapping], *, exported_at: datetime) -> str:
-    """マッピングを Turtle にする(ADR-0031 決定3)。
+def mapping_graph(mappings: Sequence[TermMapping], *, exported_at: datetime) -> Graph:
+    """マッピングをグラフにする(ADR-0031 決定3)。
+
+    **直列化はしない。** Turtle と JSON-LD が**同じグラフから出る**ことを
+    構造で保証するためにここで切ってある(ADR-0036 決定6)。
 
     **素の SKOS のトリプルと、記述ノードの両方を出す。**
 
@@ -280,7 +284,7 @@ def render_mappings(mappings: Sequence[TermMapping], *, exported_at: datetime) -
         exported_at: 書き出した時刻。タイムゾーン付きで渡すこと。
 
     Returns:
-        Turtle。
+        グラフ。
     """
     graph = Graph()
     graph.bind("skos", SKOS)
@@ -323,5 +327,14 @@ def render_mappings(mappings: Sequence[TermMapping], *, exported_at: datetime) -
         if mapping.target_status_note:
             graph.add((node, ont.targetStatusNote, Literal(mapping.target_status_note)))
 
-    serialized = graph.serialize(format="turtle")
+    return graph
+
+
+def render_mappings(mappings: Sequence[TermMapping], *, exported_at: datetime) -> str:
+    """`mapping_graph` の結果を Turtle にする。
+
+    Returns:
+        Turtle。
+    """
+    serialized = mapping_graph(mappings, exported_at=exported_at).serialize(format="turtle")
     return serialized if isinstance(serialized, str) else serialized.decode("utf-8")

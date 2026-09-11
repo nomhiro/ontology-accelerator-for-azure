@@ -170,7 +170,7 @@ flowchart TB
 - **azd 一発デプロイ** — リポジトリ自体が Azure Developer CLI テンプレートです。`azd up` を唯一のデプロイ手段とし、`azd down` で完全削除できることを保証します
 - **監査可能** — オントロジーは不変リビジョン(コンテンツハッシュ + semver)として保存し、誰が提案・誰が承認・いつ・差分・理由を記録し、`GET /namespaces/{namespace}/provenance` が W3C PROV-O の Turtle として書き出します
 
-現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、保持ポリシー、健全性指標、監査証跡の PROV-O 書き出し、そして主体の種別（人間 / サービスプリンシパル）の記録です。
+現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、保持ポリシー、健全性指標、監査証跡の PROV-O 書き出し（Turtle / JSON-LD）、そして主体の種別（人間 / サービスプリンシパル）の記録です。
 **未実装のもの**は、R2RML による連邦クエリ(Phase 3)、LLM によるオントロジー生成(Phase 2)です。
 PROV-O の書き出しは**測った事実だけを標準語彙で主張します**。**`prov:wasDerivedFrom` が出るのは、`publish` に `base_version` を渡した版だけ**です — **承認の順序は派生ではない**ため、渡されなかった版には辺を出さず `ont:editedFromRecorded false` を出します([ADR-0026](docs/adr/0026-provenance-export.md) 決定2、[ADR-0027](docs/adr/0027-revision-lineage.md))。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
@@ -884,6 +884,53 @@ curl -G "$API/namespaces/retail-core/provenance" \
 **`cursor` は受けません**（決定1）。RDF は順序を持たないため、カーソルで切り出した断片を RDF として渡す意味が薄いからです。代わりに**切り詰めたことを Turtle の中に書きます**（`ont:truncated`）。件数が多い名前空間は `since` / `until` で期間を区切ってください。
 
 **この書き出しはトリプルストアには射影されません**（決定6）。出自の記録はどの版にも属さないため版の名前付きグラフに混ぜられず、既定グラフを単一の承認済み版に保つ決定（[ADR-0010](docs/adr/0010-approval-and-projection.md) 決定6）とも衝突します。
+
+#### JSON-LD で受け取る
+
+**`Accept: application/ld+json` を付けると、同じグラフが JSON-LD で返ります**（[ADR-0036](docs/adr/0036-jsonld-serialization.md)、`P2A-17`）。`GET /namespaces/{ns}/mappings/export` も同じです。
+
+```bash
+curl -G "$API/namespaces/retail-core/provenance" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Accept: application/ld+json'
+```
+
+```json
+{
+  "@context": {
+    "ont": "urn:ontology:prov#",
+    "prov": "http://www.w3.org/ns/prov#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "@graph": [
+    {
+      "@id": "urn:ontology:activity/41",
+      "@type": ["prov:Activity", "ont:Publish"],
+      "ont:action": "published",
+      "ont:actorType": "user"
+    }
+  ]
+}
+```
+
+**同じ 1 つの文書が、JSON パーサからは普通の JSON に見え、RDF ツールからは PROV-O のグラフに見えます。** `jq` で読めて、`rdflib` でも読めます。
+
+**`@context` は文書に埋め込みます。外部の URL を指しません**（決定2）。これが `P2A-17` を保留させていた「`@context` をどこで公開するか」という問題への答えです — **公開しないことで消しました**。外に置く案はいずれも「解決できる URL を名乗っているのに解決できない」形になります。
+
+| 置き場所 | なぜ成り立たないか |
+|---|---|
+| この API | **認証が要る**。JSON-LD プロセッサは Bearer トークンを持ちません |
+| この API（デプロイごとの URL） | 書き出した文書を第三者に渡した時点で壊れます |
+| リポジトリの raw URL | 移転・改名で過去の書き出しが読めなくなります |
+
+**既定は Turtle です。`application/ld+json` を明示してください**（決定5）。`application/json` では切り替わりません — 既定で `Accept: application/json` を送る HTTP クライアントは多く、そこで切り替えると**いまこの口を Turtle として使っているクライアントが黙って壊れます**。解釈できない `Accept` でも 406 にはせず Turtle を返します（内容交渉は**足すだけ**です）。
+
+**`application/ld+json;q=0`（明示的な拒否）は尊重します。** 部分文字列一致で判定すると、拒否を肯定として読むことになります。
+
+**キーには接頭辞が付きます**（`ont:action`。決定3）。短い別名（`action`）は作りません — **Turtle の述語名と JSON のキー名という 2 つの語彙**を同期させ続けることになり、情報は 1 つも増えないからです。`jq` からは`jq '.["@graph"][] | .["ont:action"]'` のように読みます。
+
+**2 つの表現は同じグラフから出ます**（決定6）。同型であることをテストが固定しているので、片方だけ直す変更は落ちます。
 
 #### 「この用語は誰に聞けばよいか」を記録して解決する
 

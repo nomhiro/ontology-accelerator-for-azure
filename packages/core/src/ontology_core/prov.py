@@ -95,6 +95,7 @@ __all__ = [
     "ONT",
     "REVISION_BASE",
     "VERSION_ACTIONS",
+    "provenance_graph",
     "referenced_versions",
     "render_provenance",
 ]
@@ -284,15 +285,20 @@ def _agent_classes(events: Sequence[AuditEvent]) -> dict[str, URIRef]:
     return classes
 
 
-def render_provenance(
+def provenance_graph(
     events: Sequence[AuditEvent],
     *,
     namespace: str,
     truncated: bool,
     exported_at: datetime,
     versions: Sequence[OntologyVersion] = (),
-) -> str:
-    """監査イベントを PROV-O の Turtle にする。
+) -> Graph:
+    """監査イベントを PROV-O のグラフにする。
+
+    **直列化はしない。** Turtle と JSON-LD が**同じグラフから出る**ことを
+    構造で保証するためにここで切ってある(ADR-0036 決定6)。2 つの経路が
+    別々にトリプルを組み立てると、片方だけ直したときに**表現によって
+    内容が違う**という静かな不整合になる。
 
     Args:
         events: 書き出す監査イベント。並び順は結果に影響しない(RDF は順序を
@@ -312,7 +318,7 @@ def render_provenance(
             (ADR-0027 決定5)。
 
     Returns:
-        Turtle。
+        グラフ。
 
     Raises:
         NamespaceNameError: `namespace` が名前空間名として使えないとき。
@@ -382,5 +388,33 @@ def render_provenance(
                     graph, namespace=namespace, revision=revision, row=lineage.get(version)
                 )
 
+    return graph
+
+
+def render_provenance(
+    events: Sequence[AuditEvent],
+    *,
+    namespace: str,
+    truncated: bool,
+    exported_at: datetime,
+    versions: Sequence[OntologyVersion] = (),
+) -> str:
+    """`provenance_graph` の結果を Turtle にする。
+
+    引数の意味は `provenance_graph` と同じである。
+
+    Returns:
+        Turtle。
+
+    Raises:
+        NamespaceNameError: `namespace` が名前空間名として使えないとき。
+    """
+    graph = provenance_graph(
+        events,
+        namespace=namespace,
+        truncated=truncated,
+        exported_at=exported_at,
+        versions=versions,
+    )
     serialized = graph.serialize(format="turtle")
     return serialized if isinstance(serialized, str) else serialized.decode("utf-8")

@@ -673,3 +673,80 @@ async def test_incoming_も書き出せる(session: AsyncSession, blob_store: On
     graph = Graph()
     graph.parse(data=bytes(response.body).decode("utf-8"), format="turtle")
     assert (URIRef(_SALES_TERM), SKOS.closeMatch, URIRef(_LIVE)) in graph
+
+
+@pytest.mark.integration
+async def test_Accept_で_JSON_LD_でも書き出せる(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**RDF を返す口はすべて同じ規則で交渉する**
+    ([ADR-0036](../../../docs/adr/0036-jsonld-serialization.md) 決定8、`P2A-17`)。
+
+    片方だけ交渉可能にすると「なぜマッピングは JSON-LD で取れないのか」に
+    技術的な答えが無い(どちらも同じ `Graph` である)。
+
+    **2 つの表現が同型であることをここで固定する**(決定6)。`exportedAt` は
+    呼ぶたびに変わるので比べる前に外す。
+    """
+    import json
+
+    from rdflib import Graph, URIRef
+    from rdflib.compare import isomorphic
+
+    from ontology_api.routers.mappings import export_mappings
+    from ontology_core.jsonld import JSONLD_MEDIA_TYPE, MAPPING_CONTEXT
+    from ontology_core.mapping import MAPPING_ONT_NAMESPACE
+
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="1.0.0")
+    await _declare(session, target=_LIVE)
+
+    turtle_response = await export_mappings(
+        namespace=_SALES, principal=_BOTH, session=session, blob=blob_store
+    )
+    jsonld_response = await export_mappings(
+        namespace=_SALES,
+        principal=_BOTH,
+        session=session,
+        blob=blob_store,
+        accept=JSONLD_MEDIA_TYPE,
+    )
+    assert turtle_response.media_type is not None
+    assert turtle_response.media_type.startswith("text/turtle")
+    assert jsonld_response.media_type == JSONLD_MEDIA_TYPE
+
+    body = bytes(jsonld_response.body).decode("utf-8")
+    # **コンテキストを取り違えても同型性は壊れない**(圧縮しか変わらない)ので、
+    # ルータが**マッピングの**コンテキストを渡していることを別に固定する。
+    # **変異テストで見つけた穴である** — PROV-O のコンテキストを渡す変異が
+    # 同型性のテストだけでは生き残った。
+    assert json.loads(body)["@context"] == dict(MAPPING_CONTEXT)
+
+    from_turtle = Graph()
+    from_turtle.parse(data=bytes(turtle_response.body).decode("utf-8"), format="turtle")
+    from_jsonld = Graph()
+    from_jsonld.parse(data=body, format="json-ld")
+    exported_at = URIRef(MAPPING_ONT_NAMESPACE + "exportedAt")
+    for graph in (from_turtle, from_jsonld):
+        graph.remove((None, exported_at, None))
+    assert isomorphic(from_turtle, from_jsonld), "表現によって内容が違う"
+
+
+@pytest.mark.integration
+async def test_マッピングの書き出しも既定は_Turtle(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**内容交渉は足すだけ**(ADR-0036 決定5)。"""
+    from ontology_api.routers.mappings import export_mappings
+
+    await _setup(session)
+    for accept in (None, "*/*", "application/json"):
+        response = await export_mappings(
+            namespace=_SALES,
+            principal=_BOTH,
+            session=session,
+            blob=blob_store,
+            accept=accept,
+        )
+        assert response.media_type is not None
+        assert response.media_type.startswith("text/turtle"), accept

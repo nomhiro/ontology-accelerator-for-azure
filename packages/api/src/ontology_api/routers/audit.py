@@ -26,9 +26,15 @@ ADR-0026 / ADR-0027)。
 更新されて表現によって見える範囲が変わる。回帰テストで署名の一致も固定して
 ある(`test_provenance_api.py`)。
 
-**内容交渉(`Accept: text/turtle`)にはしなかった**(ADR-0026 の代替案)。
+**`/audit` と `/provenance` の間では内容交渉しない**(ADR-0026 の代替案)。
 JSON には `cursor` が要るが RDF では意味が薄く、**同じ URL が表現によって
 違うパラメータを取る**形になる。
+
+**`/provenance` の中では内容交渉する**
+([ADR-0036](../../../../../docs/adr/0036-jsonld-serialization.md)、`P2A-17`)。
+`Accept: application/ld+json` で同じグラフが JSON-LD で返る。
+**却下した理由が当たらない** — 同じグラフの 2 つの直列化はパラメータが
+同じなので、「表現によって違うパラメータを取る」形にならない。
 """
 
 from __future__ import annotations
@@ -36,15 +42,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 
 from ontology_api.dependencies import CurrentPrincipal, SessionDep
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
 from ontology_api.services.authorization import PermissionDeniedError, require_namespace_role
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
+from ontology_core.jsonld import (
+    JSONLD_MEDIA_TYPE,
+    PROVENANCE_CONTEXT,
+    prefers_jsonld,
+    render_jsonld,
+)
 from ontology_core.models import AuditPage, NamespaceRole
-from ontology_core.prov import referenced_versions, render_provenance
+from ontology_core.prov import provenance_graph, referenced_versions
 from ontology_core.turtle import TURTLE_MEDIA_TYPE
 
 router = APIRouter(prefix="/namespaces", tags=["audit"])
@@ -149,12 +161,13 @@ async def query_audit(
 
 @router.get(
     "/{namespace}/provenance",
-    summary="監査証跡を PROV-O で書き出す",
+    summary="監査証跡を PROV-O で書き出す(Turtle / JSON-LD)",
     response_class=Response,
     responses={
         200: {
-            "content": {"text/turtle": {}},
-            "description": "W3C PROV-O の Turtle",
+            "content": {"text/turtle": {}, JSONLD_MEDIA_TYPE: {}},
+            "description": "W3C PROV-O。既定は Turtle、"
+            "`Accept: application/ld+json` で JSON-LD(ADR-0036)",
         }
     },
 )
@@ -184,8 +197,16 @@ async def export_provenance(
         datetime | None, Query(description="この時刻より前(**含まない**)。タイムゾーン必須")
     ] = None,
     limit: Annotated[int, Query(description="書き出す件数の上限")] = AuditRepository.DEFAULT_LIMIT,
+    # **`Annotated` で受ける。** 既定値の位置に `Header(...)` を書くと、
+    # ハンドラを直接呼ぶテストで `Header` オブジェクトが値として流れ込む
+    # (`Query` と同じ罠。FastAPI 経由なら解決されるので HTTP で叩く
+    # テストだけでは気づけない)。
+    accept: Annotated[
+        str | None,
+        Header(description="`application/ld+json` を明示すると JSON-LD で返る(ADR-0036)"),
+    ] = None,
 ) -> Response:
-    """監査証跡を W3C PROV-O の Turtle として返す。`data-analyst` が必要。
+    """監査証跡を W3C PROV-O として返す。`data-analyst` が必要。
 
     ADR-0006 決定3 が約束していた「PROV-O で表現する」の実装である
     (ADR-0026)。権限は `/audit` と同じ — **同じ情報を別の語彙で出すだけ**
@@ -201,6 +222,15 @@ async def export_provenance(
     渡さなかった版は「何から編集したか分からない」ので辺が出ず、
     代わりに `ont:editedFromRecorded false` が出る。**承認の順序から派生を
     出すのは、測っていないことを標準語彙で主張することになる。**
+
+    **既定は Turtle である**(ADR-0036 決定5)。`Accept: application/ld+json`
+    を明示したときだけ JSON-LD になる。`application/json` では切り替わらず、
+    解釈できない `Accept` でも 406 にはしない — 内容交渉は**足すだけ**にして
+    既存のクライアントの振る舞いを変えない。
+
+    **JSON-LD の `@context` は文書に埋め込む**(決定2)。この API のコンテキスト
+    URL は認証が要る(= JSON-LD プロセッサから解決できない)うえ、デプロイごとに
+    違う。埋め込めば文書が自己完結する。
     """
     await _authorize(session, namespace=namespace, principal=principal)
 
@@ -230,11 +260,21 @@ async def export_provenance(
     # **`next_cursor` の有無が「続きがあるか」である。** 件数が `limit`
     # ちょうどでも続きがあるとは限らないので、`len(events) == limit` で
     # 判定しない(リポジトリが `limit + 1` 件取って確かめている)。
-    turtle = render_provenance(
+    # **1 つのグラフから 2 つの直列化を出す**(ADR-0036 決定6)。経路ごとに
+    # トリプルを組み立てると、片方だけ直したときに表現によって内容が違う
+    # という静かな不整合になる。
+    graph = provenance_graph(
         page.events,
         namespace=namespace,
         truncated=page.next_cursor is not None,
         exported_at=datetime.now(UTC),
         versions=versions,
     )
+    if prefers_jsonld(accept):
+        return Response(
+            content=render_jsonld(graph, context=PROVENANCE_CONTEXT),
+            media_type=JSONLD_MEDIA_TYPE,
+        )
+    serialized = graph.serialize(format="turtle")
+    turtle = serialized if isinstance(serialized, str) else serialized.decode("utf-8")
     return Response(content=turtle, media_type=TURTLE_MEDIA_TYPE)
