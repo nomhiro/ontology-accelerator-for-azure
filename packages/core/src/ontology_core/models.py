@@ -222,6 +222,23 @@ class OntologyVersion(BaseModel):
     approved_by: str | None = None
     # 射影(Fuseki への反映)が完了した時刻。NULL なら未射影で reconcile の対象。
     projected_at: datetime | None = None
+    # 何から編集したか(ADR-0027、`P2A-15`)。**2 つの欄で 3 状態を表す。**
+    #
+    # | `edited_from_recorded` | `edited_from` | 意味 |
+    # |---|---|---|
+    # | `False` | `None` | **分からない**(宣言されなかった) |
+    # | `True` | `None` | この名前空間に先行する版が無かった(最初の版) |
+    # | `True` | `"1.0.0"` | 1.0.0 から編集した |
+    edited_from: str | None = Field(
+        default=None,
+        description="編集の基準にした版。`edited_from_recorded` が false のときは常に null "
+        "(「分からない」の意味であり、「派生していない」ではない)",
+    )
+    edited_from_recorded: bool = Field(
+        default=False,
+        description="系譜が記録されているか。**false は「分からない」である。** "
+        "true かつ `edited_from` が null なら「この名前空間に先行する版が無かった」",
+    )
 
 
 class AuditEvent(BaseModel):

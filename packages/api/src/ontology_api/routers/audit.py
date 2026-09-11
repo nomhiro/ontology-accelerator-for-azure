@@ -1,4 +1,5 @@
-"""監査証跡の照会(`P2B-11`)と PROV-O での書き出し(`P2A-07`、ADR-0026)。
+"""監査証跡の照会(`P2B-11`)と PROV-O での書き出し(`P2A-07` / `P2A-15`、
+ADR-0026 / ADR-0027)。
 
 ## 版単位の `decisions` との違い
 
@@ -39,11 +40,11 @@ from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from ontology_api.dependencies import CurrentPrincipal, SessionDep
 from ontology_api.repositories.namespaces import NamespaceRepository
-from ontology_api.repositories.versions import AuditRepository
+from ontology_api.repositories.versions import AuditRepository, VersionRepository
 from ontology_api.services.authorization import PermissionDeniedError, require_namespace_role
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.models import AuditPage, NamespaceRole
-from ontology_core.prov import render_provenance
+from ontology_core.prov import referenced_versions, render_provenance
 
 router = APIRouter(prefix="/namespaces", tags=["audit"])
 
@@ -198,9 +199,11 @@ async def export_provenance(
     **切り詰めたことを Turtle の中に書く**(`ont:truncated`)。件数が多い
     名前空間は `since` / `until` で期間を区切って取る。
 
-    **`prov:wasDerivedFrom` は出ない**(決定2)。このシステムは承認の順序しか
-    記録しておらず、「どの版から編集したか」を知らない。承認の順序から派生を
-    出すのは、測っていないことを標準語彙で主張することになる。
+    **`prov:wasDerivedFrom` は、系譜が記録されている版にだけ出る**
+    (ADR-0026 決定2 / ADR-0027 決定5)。`publish` に `base_version` を
+    渡さなかった版は「何から編集したか分からない」ので辺が出ず、
+    代わりに `ont:editedFromRecorded false` が出る。**承認の順序から派生を
+    出すのは、測っていないことを標準語彙で主張することになる。**
     """
     await _authorize(session, namespace=namespace, principal=principal)
 
@@ -219,6 +222,14 @@ async def export_provenance(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
 
+    # **系譜は参照されている版だけ引く**(ADR-0027 決定6)。名前空間の全版を
+    # 引かない。対象の解析規則は `referenced_versions` に閉じてある — ここに
+    # 書き写すと、片方だけ直したときに「実体は出るが系譜が出ない」という
+    # 静かな不整合になる。
+    versions = await VersionRepository(session).get_many(
+        namespace, referenced_versions(page.events, namespace=namespace)
+    )
+
     # **`next_cursor` の有無が「続きがあるか」である。** 件数が `limit`
     # ちょうどでも続きがあるとは限らないので、`len(events) == limit` で
     # 判定しない(リポジトリが `limit + 1` 件取って確かめている)。
@@ -227,5 +238,6 @@ async def export_provenance(
         namespace=namespace,
         truncated=page.next_cursor is not None,
         exported_at=datetime.now(UTC),
+        versions=versions,
     )
     return Response(content=turtle, media_type=TURTLE_MEDIA_TYPE)

@@ -116,7 +116,8 @@ reconcile                      -> 孤児ゼロ
 - pyshacl による SHACL 検証 — **完了**（2026-09-09。`P2A-05`）
 - 名前空間 RBAC の強制 — **完了**（2026-09-09。`P2A-06`、[ADR-0014](adr/0014-namespace-rbac.md)。四眼原則を含む）
 - 結果件数の上限（`SPARQL_MAX_RESULTS`）の強制 — **完了**（2026-09-11。`P2A-08`、[ADR-0025](adr/0025-result-limit-enforcement.md)。**ストア側に行数の上限が無いことを実測した**ので、API の境界が唯一の強制点である）
-- 監査証跡の PROV-O 表現 — **完了**（2026-09-12。`P2A-07`、[ADR-0026](adr/0026-provenance-export.md)。**ADR-0006 が名前を挙げていた `prov:wasDerivedFrom` は意図的に出さない** — `base_version` を保存していないので、このシステムは承認の順序しか知らない）
+- 監査証跡の PROV-O 表現 — **完了**（2026-09-12。`P2A-07`、[ADR-0026](adr/0026-provenance-export.md)。**`prov:wasDerivedFrom` は系譜が記録されている版にだけ出す** — 承認の順序は派生ではないため。系譜の記録は `P2A-15`／[ADR-0027](adr/0027-revision-lineage.md)）
+- 何から編集したかの記録 — **完了**（2026-09-12。`P2A-15`、[ADR-0027](adr/0027-revision-lineage.md)。`edited_from` と `edited_from_recorded` の**2 列で 3 状態**を表し、「分からない」を「派生していない」と書かない）
 
 ### 柱 B: 運用し続けられる
 

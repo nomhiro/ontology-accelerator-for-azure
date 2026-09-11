@@ -236,3 +236,35 @@ PostgreSQL のままにする。
   ないことが、ここで問題として表面化した
 - [ADR-0023](0023-cross-domain-mappings.md) 決定7 — 射影しない判断を同じ理由で
   再利用した
+
+---
+
+## 補記: 系譜を記録したので `prov:wasDerivedFrom` を出すようになった (2026-09-12、`P2A-15`)
+
+決定2 は `prov:wasDerivedFrom` を出さないと決めたが、その理由は
+**「記録していないから」**だった。[ADR-0027](0027-revision-lineage.md) で
+`publish` の `base_version` を `ontology_versions.edited_from` に保存したので、
+**記録されている版にだけ辺を出す**ようになった。
+
+決定2 の判断は変わっていない。**承認の順序から派生を出さない**。
+`base_version` を渡さずに publish された版には辺が出ず、代わりに
+`ont:editedFromRecorded false` が出る。
+
+`prov:wasRevisionOf` は依然として使わない。`wasDerivedFrom` の下位で
+「改訂である」とより強く主張するが、記録しているのは「この版を編集するとき
+基準にした版」であって、両者が改訂の関係にあるとまでは言えない。
+
+**3 段の「分からなさ」を区別する**(ADR-0027 決定5)。
+
+| 状況 | 出力 |
+|---|---|
+| 記録あり・親あり | `ont:editedFromRecorded true` + `prov:wasDerivedFrom` |
+| 記録あり・親なし | `ont:editedFromRecorded true` のみ(この名前空間の根) |
+| 記録なし | `ont:editedFromRecorded false` |
+| **版の行が引けなかった** | **何も出さない** |
+
+最後の行が本質である。`false` は「行を見て、記録されていなかった」であり、
+**行を見られなかった**ことと混ぜない(`audit_events` には名前空間への外部キーが
+無いので、名前空間を削除して同名で作り直すと版の行が無い監査イベントが残りうる)。
+
+主体の種別(決定3、`P2A-16`)と JSON-LD(`P2A-17`)は未着手のままである。

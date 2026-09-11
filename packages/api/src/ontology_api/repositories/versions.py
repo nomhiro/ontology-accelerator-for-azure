@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -26,6 +27,8 @@ def _to_model(row: OntologyVersionRow) -> OntologyVersion:
         approved_at=row.approved_at,
         approved_by=row.approved_by,
         projected_at=row.projected_at,
+        edited_from=row.edited_from,
+        edited_from_recorded=row.edited_from_recorded,
     )
 
 
@@ -45,7 +48,20 @@ class VersionRepository:
         blob_path: str,
         created_by: str,
         status: OntologyVersionStatus,
+        edited_from: str | None = None,
+        edited_from_recorded: bool = False,
     ) -> OntologyVersion:
+        """版を 1 行書く。
+
+        Args:
+            edited_from: 編集の基準にした版(ADR-0027、`P2A-15`)。
+            edited_from_recorded: 系譜が記録されているか。**既定は `False`
+                =「分からない」である。** `True` かつ `edited_from` が `None`
+                なら「この名前空間に先行する版が無かった」。
+                **`None` の 2 つの意味を分けるためにこの旗がある** —
+                1 本の列にすると「宣言されなかった」が「派生していない」と
+                して読める。
+        """
         row = OntologyVersionRow(
             namespace=namespace,
             version=version,
@@ -54,6 +70,8 @@ class VersionRepository:
             blob_path=blob_path,
             created_by=created_by,
             status=status.value,
+            edited_from=edited_from,
+            edited_from_recorded=edited_from_recorded,
         )
         self._session.add(row)
         await self._session.flush()
@@ -93,6 +111,24 @@ class VersionRepository:
         )
         row = (await self._session.execute(stmt)).scalar_one_or_none()
         return _to_model(row) if row is not None else None
+
+    async def get_many(self, namespace: str, versions: Collection[str]) -> list[OntologyVersion]:
+        """指定した版だけを引く(ADR-0027 決定6、`P2A-15`)。
+
+        PROV-O の書き出しが系譜(`edited_from`)を引くために使う。
+        **名前空間の全版を引かない** — 書き出しに含まれる監査イベントが
+        参照している版だけでよい。
+
+        **空の集合では問い合わせない。** 版を参照する監査イベントが 1 件も
+        無い名前空間(マッピングの宣言だけ、など)で往復を 1 回省く。
+        """
+        if not versions:
+            return []
+        stmt = select(OntologyVersionRow).where(
+            OntologyVersionRow.namespace == namespace,
+            OntologyVersionRow.version.in_(list(versions)),
+        )
+        return [_to_model(r) for r in (await self._session.execute(stmt)).scalars()]
 
     async def mark_projected(self, namespace: str, version: str) -> None:
         stmt = select(OntologyVersionRow).where(

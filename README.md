@@ -70,7 +70,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
   **同梱サンプルの名前空間だけは `require_two_person_approval: false` で作られます**
   (`azd up` の `postdeploy` が 1 主体で publish → submit → approve するため)。
   **実運用の名前空間では有効のままにしてください。**
-- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 709 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
+- lint (ruff) / 型検査 (mypy strict) / テスト (pytest 733 件) / Web ビルド (tsc + vite) / `az bicep build` / shellcheck がすべて通る
 
 ### 動作を確認済み(Azure 実環境 / japaneast)
 
@@ -172,7 +172,7 @@ flowchart TB
 
 現時点で**動作するもの**は、RDF / OWL / SPARQL 1.1 によるクエリ、ストアの差し替え、MCP による読み取り提供、`azd up` / `azd down`、submit/approve/reject による承認フロー、SHACL 検証、名前空間ごとの RBAC と四眼原則の強制、用語単位の責任者、監査の照会、意味的差分、廃止のライフサイクル、コンテキストのアクセスログ、保持ポリシー、健全性指標、そして監査証跡の PROV-O 書き出しです。
 **未実装のもの**は、R2RML による連邦クエリ(Phase 3)、LLM によるオントロジー生成(Phase 2)です。
-PROV-O の書き出しには **`prov:wasDerivedFrom` を含めていません** — `publish` が受け取る `base_version` を保存しておらず、このシステムは「承認の順序」だけを知っているためです(`P2A-15`。[ADR-0026](docs/adr/0026-provenance-export.md) 決定2)。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
+PROV-O の書き出しで **`prov:wasDerivedFrom` が出るのは、`publish` に `base_version` を渡した版だけ**です — **承認の順序は派生ではない**ため、渡されなかった版には辺を出さず `ont:editedFromRecorded false` を出します([ADR-0026](docs/adr/0026-provenance-export.md) 決定2、[ADR-0027](docs/adr/0027-revision-lineage.md))。各フェーズの区切りは下記の[ロードマップ](#ロードマップ)を参照してください。
 
 ---
 
@@ -270,6 +270,8 @@ POST /namespaces/{ns}/versions/{v}/validate       この版を SHACL で検証�
 渡さないと検査しません。**人が編集する経路では必ず渡してください。** 渡さない場合、2 人が同じ版から編集して公開すると、版番号は自動採番で衝突しないため、**後の版が前の変更を静かに消します**。最初の公開では渡しません(まだ基準が無いため)。
 
 同じ本文の再送(タイムアウト後のリトライ)は、`base_version` が古くても 409 になりません。内容ハッシュによる冪等判定が基準バージョンの検査より先にあるためです。
+
+**`base_version` は競合検出だけでなく、系譜の記録にも使われます**([ADR-0027](docs/adr/0027-revision-lineage.md)、`P2A-15`)。渡すと `edited_from` に保存され、PROV-O の書き出しで `prov:wasDerivedFrom` として出ます。**渡さなければ「何から編集したか分からない」として記録されます** — このシステムは承認の順序から親を推測しません(推測して書いた値は、後から事実と区別できません)。名前空間の**最初の版**は、先行する版が無いことが確かなので「先行版なし」として記録されます。
 
 **エージェント(`GRAPH` 句を書かないクエリ)は常に承認済みの現行版だけを見ます。** `draft` は Blob と PostgreSQL にのみ存在し、Fuseki には一切現れません。レビュアは `GRAPH` 句で `in-review` の版を検証してから approve してください。
 
@@ -747,7 +749,24 @@ curl -G "$API/namespaces/retail-core/provenance" \
     ont:action "published" .
 ```
 
-**`prov:wasDerivedFrom` と `prov:wasRevisionOf` は出力しません**（[ADR-0026](docs/adr/0026-provenance-export.md) 決定2）。このシステムが記録しているのは**承認の順序**だけで、「著者がどの版から編集したか」は保存していません（`publish` の `base_version` は lost update の検出にだけ使っています）。承認の順序から派生を出せば、**測っていないことを標準語彙で主張する**ことになります。相互運用性のある形式で嘘を書くと、外部の PROV ツールがそれを著作の系譜として表示し、誰も疑いません。派生を出せるようにするには `base_version` の保存が必要です（`P2A-15`）。
+**`prov:wasDerivedFrom` は、系譜が記録されている版にだけ出ます**（[ADR-0026](docs/adr/0026-provenance-export.md) 決定2、[ADR-0027](docs/adr/0027-revision-lineage.md) 決定5）。**承認の順序は派生ではありません** — 2.0.0 が 1.0.0 より後に承認されたことと、2.0.0 が 1.0.0 を元に書かれたことは別の事実です。承認の順序から派生を出せば、**測っていないことを標準語彙で主張する**ことになります。相互運用性のある形式で嘘を書くと、外部の PROV ツールがそれを著作の系譜として表示し、誰も疑いません。
+
+**系譜を残すには `publish` に `base_version` を渡してください。** 渡さなかった版には辺が出ず、代わりに `ont:editedFromRecorded false`（=「分からない」）が出ます。`ont:editedFromRecorded` は真偽どちらでも出るので、**辺が無い理由が「根だから」なのか「記録していないから」なのかを読み手が区別できます**。
+
+```turtle
+# 基準を渡して publish した版
+<urn:ontology:revision/retail-core/2.0.0> a prov:Entity ;
+    ont:version "2.0.0" ;
+    ont:editedFromRecorded true ;
+    prov:wasDerivedFrom <urn:ontology:revision/retail-core/1.0.0> .
+
+# 基準を渡さずに publish した版(最初の版を除く)
+<urn:ontology:revision/retail-core/3.0.0> a prov:Entity ;
+    ont:version "3.0.0" ;
+    ont:editedFromRecorded false .
+```
+
+**`prov:wasRevisionOf` は使いません。** `wasDerivedFrom` の下位で「改訂である」とより強く主張しますが、記録しているのは「この版を編集するとき基準にした版」であって、両者が改訂の関係にあるとまでは言えません。
 
 **主体は `prov:Agent` のままで、`prov:Person` / `prov:SoftwareAgent` に分けません**（決定3）。`actor` は Entra のオブジェクト ID だけで、人間かサービスプリンシパルかを記録していません。**四眼原則を記録する監査証跡で、人間の承認を自動化された行為として見せるのは最悪の誤りです**（`P2A-16`）。
 

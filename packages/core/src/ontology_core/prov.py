@@ -5,17 +5,27 @@
 表現の側が未実装だった。記録は独自スキーマのままで、**W3C 標準忠実を掲げる
 プロジェクトが自身のメタデータだけ独自スキーマで出している**状態だった。
 
-## 記録していない派生関係は主張しない
+## 派生は記録されているときだけ出す
 
-**`prov:wasDerivedFrom` と `prov:wasRevisionOf` を出さない**(ADR-0026 決定2)。
-ADR-0006 が名前を挙げていた語彙だが、意図的に出さない。
+**`prov:wasDerivedFrom` は `edited_from` が記録されている版にだけ出す**
+(ADR-0026 決定2 / [ADR-0027](../../../../docs/adr/0027-revision-lineage.md)
+決定5)。
 
-このシステムが記録しているのは**承認の順序**だけである。`publish` は
-`base_version` を受け取るが lost update の検出にだけ使って保存していないので、
-**「著者が実際に何から編集したか」を知らない。** 承認の順序から派生を出せば、
-それは測っていないことを標準語彙で主張することになる。しかも
+承認の順序は派生ではない。`publish` に `base_version` を渡さなかった版は
+**何から編集されたか分からない**ので、辺を出さない。そこで「当時の最新版」を
+親として出すのは、測っていないことを標準語彙で主張することである。しかも
 **相互運用性があるぶん害が大きい** — 外部の PROV ツールは `wasDerivedFrom` を
 著作の系譜として表示し、誰も疑わない。
+
+**`ont:editedFromRecorded` を真偽どちらでも出す。** これが無いと、
+`prov:wasDerivedFrom` が無いことが「根である」とも「記録していない」とも
+読める。**版の行が引けなかったときはこの旗も出さない** — それは
+「行を見て、記録されていなかった」ではなく「**行を見られなかった**」であり、
+`false` と混ぜない(ADR-0027 決定5)。
+
+**`prov:wasRevisionOf` は使わない。** `wasDerivedFrom` の下位で、より強く
+「改訂である」と主張する。記録しているのは「この版を編集するとき基準にした版」
+であって、両者が改訂の関係にあるとまでは言えない。
 
 同じ理由で**主体を `prov:Person` / `prov:SoftwareAgent` に分けない**(決定3)。
 `audit_events.actor` は Entra のオブジェクト ID だけで、人間かサービス
@@ -56,7 +66,7 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import PROV, RDF, RDFS, XSD
 
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name, validate_version
-from ontology_core.models import AuditEvent
+from ontology_core.models import AuditEvent, OntologyVersion
 
 __all__ = [
     "ACTIVITY_TYPES",
@@ -66,6 +76,7 @@ __all__ = [
     "ONT",
     "REVISION_BASE",
     "VERSION_ACTIONS",
+    "referenced_versions",
     "render_provenance",
 ]
 
@@ -128,12 +139,16 @@ def _safe_segment(value: str) -> str:
     return quote(value, safe="")
 
 
-def _revision_iri(namespace: str, subject: str) -> URIRef | None:
-    """`<名前空間>@<バージョン>` 形の対象を版の IRI に直す。
+def _subject_version(namespace: str, subject: str) -> str | None:
+    """`<名前空間>@<バージョン>` 形の対象からバージョンを取り出す。
 
     形が違えば `None` を返す。**推測しない** — 版でないものを版として
     出すほうが、版の情報が出ないより悪い。呼び出し側は `None` でも
     `ont:subject` に生の文字列を残す。
+
+    `questions-revised` の対象は `<名前空間>#questions@<改訂>` で `@` を
+    含むため、**素朴に `@` で分けると改訂番号が版に化ける。** 前置きを
+    `<名前空間>@` で固定しているのはそのためである。
     """
     prefix = f"{namespace}@"
     if not subject.startswith(prefix):
@@ -143,7 +158,69 @@ def _revision_iri(namespace: str, subject: str) -> URIRef | None:
         validate_version(version)
     except NamespaceNameError:
         return None
+    return version
+
+
+def _revision_iri(namespace: str, version: str) -> URIRef:
+    """版の IRI を組み立てる。"""
     return URIRef(f"{REVISION_BASE}{_safe_segment(namespace)}/{_safe_segment(version)}")
+
+
+def referenced_versions(events: Sequence[AuditEvent], *, namespace: str) -> set[str]:
+    """監査イベントが参照している版を返す(ADR-0027 決定6)。
+
+    ルータはこの集合だけを引いて `render_provenance` に渡す。
+    **名前空間の全版を引かない。**
+
+    **対象の解析規則をこのモジュールに閉じるためでもある。**
+    `<名前空間>@<バージョン>` の読み方が呼び出し側にも書かれていると、
+    片方だけ直したときに「実体は出るが系譜が出ない」という静かな不整合に
+    なる。
+    """
+    found: set[str] = set()
+    for event in events:
+        if event.action not in VERSION_ACTIONS:
+            continue
+        if (version := _subject_version(namespace, event.subject)) is not None:
+            found.add(version)
+    return found
+
+
+def _add_lineage(
+    graph: Graph,
+    *,
+    namespace: str,
+    revision: URIRef,
+    row: OntologyVersion | None,
+) -> None:
+    """版の実体に系譜を足す(ADR-0027 決定5)。
+
+    3 段の「分からなさ」を区別する。
+
+    | 状況 | 出力 |
+    |---|---|
+    | 行が引けた・記録あり・親あり | `ont:editedFromRecorded true` + `prov:wasDerivedFrom` |
+    | 行が引けた・記録あり・親なし | `ont:editedFromRecorded true` のみ(この名前空間の根) |
+    | 行が引けた・記録なし | `ont:editedFromRecorded false` |
+    | **行が引けなかった** | **何も出さない** |
+
+    最後の行が本質である。`false` を出すと「行を見て、記録されていなかった」
+    と読めるが、実際には**行を見られなかった**。`audit_events` には
+    名前空間への外部キーが無いので、名前空間を削除して同名で作り直すと
+    版の行が無い監査イベントが残りうる。
+    """
+    if row is None:
+        return
+    # **真偽どちらでも書く。** これが無いと `prov:wasDerivedFrom` の不在が
+    # 「根である」とも「記録していない」とも読める。
+    graph.add((revision, ONT.editedFromRecorded, Literal(row.edited_from_recorded)))
+    if not row.edited_from_recorded or row.edited_from is None:
+        return
+    parent = _revision_iri(namespace, row.edited_from)
+    graph.add((parent, RDF.type, PROV.Entity))
+    graph.add((parent, ONT.namespace, Literal(namespace)))
+    graph.add((parent, ONT.version, Literal(row.edited_from)))
+    graph.add((revision, PROV.wasDerivedFrom, parent))
 
 
 def render_provenance(
@@ -152,6 +229,7 @@ def render_provenance(
     namespace: str,
     truncated: bool,
     exported_at: datetime,
+    versions: Sequence[OntologyVersion] = (),
 ) -> str:
     """監査イベントを PROV-O の Turtle にする。
 
@@ -163,6 +241,11 @@ def render_provenance(
         truncated: 上限で切り詰めたか。**偽でも `ont:truncated false` として
             明示的に出る**(ADR-0026 決定5)。
         exported_at: 書き出した時刻。タイムゾーン付きで渡すこと。
+        versions: 系譜を引くための版の行(`referenced_versions` で絞った
+            ものを渡す)。**渡されなかった版には `ont:editedFromRecorded` を
+            出さない** — それは「記録されていなかった」ではなく
+            「**行を見られなかった**」であり、`false` と混ぜない
+            (ADR-0027 決定5)。
 
     Returns:
         Turtle。
@@ -171,6 +254,8 @@ def render_provenance(
         NamespaceNameError: `namespace` が名前空間名として使えないとき。
     """
     validate_namespace_name(namespace)
+
+    lineage = {row.version: row for row in versions if row.namespace == namespace}
 
     graph = Graph()
     graph.bind("prov", PROV)
@@ -211,13 +296,17 @@ def render_provenance(
             graph.add((activity, ONT.diffSummary, Literal(event.diff)))
 
         if event.action in VERSION_ACTIONS:
-            revision = _revision_iri(namespace, event.subject)
-            if revision is not None:
+            version = _subject_version(namespace, event.subject)
+            if version is not None:
+                revision = _revision_iri(namespace, version)
                 graph.add((revision, RDF.type, PROV.Entity))
                 graph.add((revision, ONT.namespace, Literal(namespace)))
-                graph.add((revision, ONT.version, Literal(event.subject[len(namespace) + 1 :])))
+                graph.add((revision, ONT.version, Literal(version)))
                 predicate = PROV.generated if event.action in GENERATING_ACTIONS else PROV.used
                 graph.add((activity, predicate, revision))
+                _add_lineage(
+                    graph, namespace=namespace, revision=revision, row=lineage.get(version)
+                )
 
     serialized = graph.serialize(format="turtle")
     return serialized if isinstance(serialized, str) else serialized.decode("utf-8")

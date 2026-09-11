@@ -234,6 +234,6 @@ IRI の削除と再利用を禁じる。追加しかできないオントロジ�
 
 | 何が要るか | バックログ |
 |---|---|
-| `base_version` を保存する(そうすれば `prov:wasDerivedFrom` を出せる) | `P2A-15` |
+| ~~`base_version` を保存する~~ — **完了**(2026-09-12、[ADR-0027](0027-revision-lineage.md))。`prov:wasDerivedFrom` は**記録されている版にだけ**出るようになった。記録されていない版には `ont:editedFromRecorded false` が出る | `P2A-15` |
 | 主体が人間か機械かを記録する(トークンの `idtyp` クレーム等) | `P2A-16` |
 | JSON-LD 表現(`@context` の公開先の設計が要る) | `P2A-17` |

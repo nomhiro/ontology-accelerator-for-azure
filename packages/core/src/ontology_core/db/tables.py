@@ -142,6 +142,25 @@ class OntologyVersionRow(Base):
     approved_by: Mapped[str | None] = mapped_column(String(255), default=None)
     # 射影が完了した時刻。NULL なら未射影で、reconcile の対象になる。
     projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # 編集の基準にした版(ADR-0027 決定1、`P2A-15`)。**2 列で 3 状態を表す。**
+    #
+    # | `edited_from_recorded` | `edited_from` | 意味 |
+    # |---|---|---|
+    # | `false` | `NULL` | **分からない**(宣言されなかった)。既存の全行がこれ |
+    # | `true` | `NULL` | この名前空間に先行する版が無かった(最初の版) |
+    # | `true` | `'1.0.0'` | 1.0.0 から編集した |
+    #
+    # 1 本の nullable 列にすると「宣言されなかった」が「派生していない」として
+    # 読める。**`prov:wasDerivedFrom` を出すのは `recorded` かつ非 NULL の
+    # ときだけ**である(ADR-0026 決定2 / ADR-0027 決定5)。
+    #
+    # **`ontology_versions` への外部キーは張らない**(ADR-0027)。書き込み時に
+    # 「当時の最新版」と一致することを検査しているので実在は保証され、版の行は
+    # 個別には削除されない(不変条件7。名前空間の削除は CASCADE で全版が消える)。
+    edited_from: Mapped[str | None] = mapped_column(String(64), default=None)
+    edited_from_recorded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
 
 
 class AccessEventRow(Base):

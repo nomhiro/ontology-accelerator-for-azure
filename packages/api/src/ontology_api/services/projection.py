@@ -441,6 +441,29 @@ class ProjectionService:
                     "最新を取得してから編集し直してください。"
                 )
 
+        # ---- 系譜を決める(ADR-0027 決定1・2、`P2A-15`) ----
+        #
+        # **3 状態を区別する。** `edited_from` を 1 本の nullable 列で扱うと
+        # 「宣言されなかった」が「派生していない」として読める。
+        #
+        #   1. `base_version` を渡した       → その版から編集した(記録済み)
+        #   2. 渡さなかったが版が 1 つも無い → 先行する版が無かった(記録済み)
+        #   3. 渡さず、既に版がある           → **分からない**
+        #
+        # 2 は推測ではない。**この時点で名前空間の行ロックを持っている**ので
+        # (上の `get_locked`)、`latest is None` は「この名前空間に版が
+        # 存在しない」という測った事実である。
+        #
+        # 3 で「当時の最新版」を書いてはいけない。それは ADR-0026 決定2 が
+        # 拒否したもの(承認の順序を派生として主張する)を正本に書き込む形
+        # である。
+        if base_version is not None:
+            edited_from, edited_from_recorded = base_version, True
+        elif latest is None:
+            edited_from, edited_from_recorded = None, True
+        else:
+            edited_from, edited_from_recorded = None, False
+
         resolved = version or _next_version(latest)
         graph_iri = version_graph_iri(self._base, namespace, resolved)
 
@@ -497,6 +520,8 @@ class ProjectionService:
                     # `approved_by` / `approved_at` も未設定のままにする(既定が None)。
                     # 承認 API を実装するまで APPROVED には到達しない。
                     status=OntologyVersionStatus.DRAFT,
+                    edited_from=edited_from,
+                    edited_from_recorded=edited_from_recorded,
                 )
         except IntegrityError:
             # 競合に負けた側。勝った側が書いたはずの行を取り直す。

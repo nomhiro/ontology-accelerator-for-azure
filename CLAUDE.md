@@ -88,7 +88,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 709 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 733 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -197,6 +197,14 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **`az postgres flexible-server firewall-rule` の引数は紛らわしい。** サーバは `--server-name` / `-s`、**規則名は `--name` / `-n`**。`--rule-name` は存在しない（`--name` にサーバ名を渡すと「`--server-name` が必要」と言われ、`--rule-name` を渡すと「認識されない引数」になる）。
 
 **新しい azd 環境を作ると `AZURE_SUBSCRIPTION_ID` は引き継がれない。** 環境ごとに独立しているため、`azd env new` の後に `azd env set AZURE_SUBSCRIPTION_ID <id>` が必要（`azd up` が `prompt required` で止まる）。
+
+**`uv run pytest` を 2 つ同時に走らせてはいけない。** `packages/api/tests/conftest.py` の
+`session` フィクスチャは**テストごとにスキーマを作り直す**(`drop_all` / `create_all`)ため、
+2 プロセスが同じ PostgreSQL に対して走ると `DROP TABLE` で
+`DeadlockDetectedError: deadlock detected` になる。**症状が原因を指さない** — 落ちるのは
+`drop_all` をしたテストではなく、その隣で「publish した版が見つかりません」と言うテストである
+(実測で 5 failed + 2 errors。単独で走らせると全件通った)。背景プロセスでスイートを走らせた
+まま前景でもう一度走らせると踏む。
 
 ## 新しいテストを書くときの規律
 

@@ -1,17 +1,19 @@
-"""監査証跡の PROV-O 表現(ADR-0026、`P2A-07`)。
+"""監査証跡の PROV-O 表現(ADR-0026 / ADR-0027、`P2A-07` / `P2A-15`)。
 
 ADR-0006 決定3 は「監査証跡を PROV-O で表現する」と決め、`prov:Entity` /
 `prov:Activity` / `prov:Agent` / **`prov:wasDerivedFrom`** という具体名まで
-挙げていた。ここで固定するのは、その約束のうち**意図的に果たさない部分**を
-含む。
+挙げていた。ここで固定するのは、**何を出し、何を出さないか**である。
 
-1. **`prov:wasDerivedFrom` と `prov:wasRevisionOf` を出さない**(決定2)。
-   このシステムは承認の順序しか記録しておらず、「どの版から編集したか」を
-   知らない
-2. **主体を `prov:Person` / `prov:SoftwareAgent` に分けない**(決定3)。
+1. **`prov:wasDerivedFrom` は系譜が記録されている版にだけ出す**
+   (ADR-0026 決定2 / ADR-0027 決定5)。承認の順序は派生ではない。
+   `prov:wasRevisionOf` は使わない(`wasDerivedFrom` より強い主張になる)
+2. **「記録していない」が読み取れる**(ADR-0027 決定5)。`ont:editedFromRecorded`
+   は真偽どちらでも出し、**版の行が引けなかったときは出さない**
+   (3 段の「分からなさ」を区別する)
+3. **主体を `prov:Person` / `prov:SoftwareAgent` に分けない**(ADR-0026 決定3)。
    人間かサービスプリンシパルかを記録していない
-3. **行為の種類を落とさない**(決定4)
-4. **切り詰めを RDF の中に書く**(決定5)
+4. **行為の種類を落とさない**(ADR-0026 決定4)
+5. **切り詰めを RDF の中に書く**(ADR-0026 決定5)
 
 **検査は Turtle の文字列ではなくパースし直したグラフに対して行う。**
 文字列一致だと接頭辞の付き方や整形の違いで落ちるし、逆に
@@ -20,6 +22,7 @@ ADR-0006 決定3 は「監査証跡を PROV-O で表現する」と決め、`pro
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import pytest
@@ -27,13 +30,14 @@ from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import PROV, RDF, RDFS
 
 from ontology_core.graphs import NamespaceNameError
-from ontology_core.models import AuditEvent
+from ontology_core.models import AuditEvent, OntologyVersion, OntologyVersionStatus
 from ontology_core.prov import (
     ACTIVITY_TYPES,
     AGENT_BASE,
     BUNDLE_BASE,
     ONT,
     REVISION_BASE,
+    referenced_versions,
     render_provenance,
 )
 
@@ -64,10 +68,19 @@ def _event(
     )
 
 
-def _render(*events: AuditEvent, truncated: bool = False, namespace: str = _NS) -> Graph:
+def _render(
+    *events: AuditEvent,
+    truncated: bool = False,
+    namespace: str = _NS,
+    versions: Sequence[OntologyVersion] = (),
+) -> Graph:
     """書き出してパースし直す。**壊れた Turtle はここで例外になる。**"""
     turtle = render_provenance(
-        events, namespace=namespace, truncated=truncated, exported_at=_EXPORTED
+        events,
+        namespace=namespace,
+        truncated=truncated,
+        exported_at=_EXPORTED,
+        versions=versions,
     )
     graph = Graph()
     graph.parse(data=turtle, format="turtle")
@@ -89,12 +102,12 @@ def _activity(id: int) -> URIRef:
     "predicate",
     [PROV.wasDerivedFrom, PROV.wasRevisionOf, PROV.wasInfluencedBy, PROV.specializationOf],
 )
-def test_派生を表す述語を出さない(predicate: URIRef) -> None:
-    """**ADR-0006 が名前を挙げていた語彙を、意図的に出さない**(ADR-0026 決定2)。
+def test_系譜が記録されていなければ派生を表す述語を出さない(predicate: URIRef) -> None:
+    """**承認の順序から派生を出さない**(ADR-0026 決定2 / ADR-0027 決定5)。
 
-    記録されているのは「2.0.0 は 1.0.0 の次に承認された」であって
-    「2.0.0 は 1.0.0 から派生した」ではない。`base_version` を保存していない
-    (`P2A-15`)。
+    ここでは版の行を渡していない(= 系譜が引けない)。記録されているのは
+    「2.0.0 は 1.0.0 の次に承認された」であって「2.0.0 は 1.0.0 から
+    派生した」ではない。**承認の順序を並べて辺を作ってはいけない。**
 
     **相互運用性があるぶん害が大きい** — 外部の PROV ツールは
     `wasDerivedFrom` を著作の系譜として表示し、誰も疑わない。
@@ -176,7 +189,7 @@ def test_版でない対象に_prov_Entity_を作らない(action: str, subject:
 
 
 def test_版の形でない対象でも生の文字列は残る() -> None:
-    """**推測しない。しかし落とさない**(`_revision_iri` が `None` を返す経路)。
+    """**推測しない。しかし落とさない**(`_subject_version` が `None` を返す経路)。
 
     版を表す行為の対象が想定の形でなければ `prov:Entity` は作らないが、
     記録された文字列は `ont:subject` に残る。ここを落とすと
@@ -334,3 +347,176 @@ def test_名前空間名は検証する() -> None:
     """名前空間名はセキュリティ境界である(不変条件5)。"""
     with pytest.raises(NamespaceNameError):
         render_provenance((), namespace="../etc", truncated=False, exported_at=_EXPORTED)
+
+
+# --------------------------------------------------------------- 版の系譜
+
+
+def _version(
+    *,
+    version: str = "2.0.0",
+    edited_from: str | None = None,
+    edited_from_recorded: bool = False,
+    namespace: str = _NS,
+) -> OntologyVersion:
+    return OntologyVersion(
+        namespace=namespace,
+        version=version,
+        content_hash="0" * 64,
+        status=OntologyVersionStatus.APPROVED,
+        graph_iri=f"urn:ontology:graph/{namespace}/{version}",
+        blob_path=f"approved/{namespace}/{version}.ttl",
+        created_at=_AT,
+        created_by="actor-oid",
+        edited_from=edited_from,
+        edited_from_recorded=edited_from_recorded,
+    )
+
+
+def test_記録されている系譜は_prov_wasDerivedFrom_で出る() -> None:
+    """**測った事実なので出す**(ADR-0027 決定5)。
+
+    `publish` に `base_version` を渡した版は「その版から編集した」ことが
+    記録されている。
+    """
+    graph = _render(
+        _event(action="published", subject=f"{_NS}@2.0.0"),
+        versions=(_version(version="2.0.0", edited_from="1.0.0", edited_from_recorded=True),),
+    )
+    parent = URIRef(f"{REVISION_BASE}{_NS}/1.0.0")
+    assert (_REVISION, PROV.wasDerivedFrom, parent) in graph
+    assert (_REVISION, ONT.editedFromRecorded, Literal(True)) in graph
+    # **親も実体として型付けする。** 辺の先が型無しだと読み手が版だと分からない。
+    assert (parent, RDF.type, PROV.Entity) in graph
+    assert (parent, ONT.version, Literal("1.0.0")) in graph
+
+
+def test_先行する版が無かったことは記録として出るが辺は出ない() -> None:
+    """**「根である」と「記録していない」を区別する**(ADR-0027 決定1)。
+
+    名前空間の最初の版は `edited_from_recorded = true` かつ
+    `edited_from = NULL` である。辺は出ないが、**出ない理由が分かる。**
+    """
+    graph = _render(
+        _event(action="published", subject=f"{_NS}@2.0.0"),
+        versions=(_version(version="2.0.0", edited_from=None, edited_from_recorded=True),),
+    )
+    assert (_REVISION, ONT.editedFromRecorded, Literal(True)) in graph
+    assert not list(graph.triples((_REVISION, PROV.wasDerivedFrom, None)))
+
+
+def test_記録されていない系譜は_false_として出る() -> None:
+    """**無言の欠落にしない**(ADR-0027 決定5)。
+
+    これが無いと `prov:wasDerivedFrom` の不在が「根である」とも
+    「記録していない」とも読める。RDF は「無い」と「記録していない」を
+    区別できない。
+    """
+    graph = _render(
+        _event(action="published", subject=f"{_NS}@2.0.0"),
+        versions=(_version(version="2.0.0", edited_from_recorded=False),),
+    )
+    assert (_REVISION, ONT.editedFromRecorded, Literal(False)) in graph
+    assert not list(graph.triples((_REVISION, PROV.wasDerivedFrom, None)))
+
+
+def test_記録なしなのに親があっても辺を出さない() -> None:
+    """**旗が偽なら値は信じない**(ADR-0027 決定1 の状態表)。
+
+    `recorded=false` かつ `edited_from` が非 NULL という組み合わせは
+    正本には現れないが、ここで通すと**旗の意味が失われる**。
+    """
+    graph = _render(
+        _event(action="published", subject=f"{_NS}@2.0.0"),
+        versions=(_version(version="2.0.0", edited_from="1.0.0", edited_from_recorded=False),),
+    )
+    assert (_REVISION, ONT.editedFromRecorded, Literal(False)) in graph
+    assert not list(graph.triples((_REVISION, PROV.wasDerivedFrom, None)))
+
+
+def test_版の行が引けなければ旗すら出さない() -> None:
+    """**3 段目の「分からない」**(ADR-0027 決定5)。
+
+    `false` を出すと「行を見て、記録されていなかった」と読めるが、実際には
+    **行を見られなかった**。`audit_events` には名前空間への外部キーが無いので、
+    名前空間を削除して同名で作り直すと版の行が無い監査イベントが残りうる。
+    """
+    graph = _render(_event(action="published", subject=f"{_NS}@2.0.0"), versions=())
+    assert (_REVISION, RDF.type, PROV.Entity) in graph
+    assert not list(graph.triples((_REVISION, ONT.editedFromRecorded, None)))
+    assert not list(graph.triples((_REVISION, PROV.wasDerivedFrom, None)))
+
+
+def test_他の名前空間の版の行は系譜に使わない() -> None:
+    """名前空間は隔離の境界である(不変条件5)。版の突き合わせも内側で行う。"""
+    graph = _render(
+        _event(action="published", subject=f"{_NS}@2.0.0"),
+        versions=(
+            _version(
+                version="2.0.0",
+                edited_from="1.0.0",
+                edited_from_recorded=True,
+                namespace="other-ns",
+            ),
+        ),
+    )
+    assert not list(graph.triples((_REVISION, ONT.editedFromRecorded, None)))
+    assert not list(graph.triples((_REVISION, PROV.wasDerivedFrom, None)))
+
+
+def test_系譜を出しても_wasRevisionOf_は出さない() -> None:
+    """**`wasDerivedFrom` より強い主張はしない**(ADR-0027 決定5)。
+
+    記録しているのは「この版を編集するとき基準にした版」であって、
+    両者が改訂の関係にあるとまでは言えない。
+    """
+    graph = _render(
+        _event(action="published", subject=f"{_NS}@2.0.0"),
+        versions=(_version(version="2.0.0", edited_from="1.0.0", edited_from_recorded=True),),
+    )
+    assert not list(graph.triples((None, PROV.wasRevisionOf, None)))
+
+
+# ------------------------------------------------ 参照されている版の抜き出し
+
+
+def test_参照されている版だけを抜き出す() -> None:
+    """**名前空間の全版を引かないため**(ADR-0027 決定6)。"""
+    found = referenced_versions(
+        (
+            _event(id=1, action="published", subject=f"{_NS}@1.0.0"),
+            _event(id=2, action="approved", subject=f"{_NS}@1.0.0"),
+            _event(id=3, action="submitted", subject=f"{_NS}@2.0.0"),
+        ),
+        namespace=_NS,
+    )
+    assert found == {"1.0.0", "2.0.0"}
+
+
+@pytest.mark.parametrize(
+    ("action", "subject"),
+    [
+        ("questions-revised", f"{_NS}#questions@3"),
+        ("mapping-declared", "https://a/#X skos:closeMatch https://b/#Y"),
+        ("access-log-purged", f"{_NS}/access-log"),
+        ("published", "other-ns@1.0.0"),
+        ("published", f"{_NS}@../../etc"),
+        # **対応表に無い行為は、対象が版の形でも拾わない。**
+        # `render_provenance` は `VERSION_ACTIONS` 以外に `prov:Entity` を
+        # 作らないので、ここで拾うと**使われない版の行を引くだけ**になる。
+        # 2 か所の門が同じ集合を見ていることをここで固定する。
+        ("frobnicated", f"{_NS}@2.0.0"),
+    ],
+)
+def test_版でない対象は抜き出さない(action: str, subject: str) -> None:
+    """**`questions-revised` の対象も `@` を含む。**
+
+    素朴に `@` で分けると改訂番号が版として引かれる。解析規則を
+    `render_provenance` と共有しているので、ここがずれると
+    「実体は出るが系譜が出ない」という静かな不整合になる。
+    """
+    assert referenced_versions((_event(action=action, subject=subject),), namespace=_NS) == set()
+
+
+def test_イベントが無ければ空集合() -> None:
+    assert referenced_versions((), namespace=_NS) == set()
