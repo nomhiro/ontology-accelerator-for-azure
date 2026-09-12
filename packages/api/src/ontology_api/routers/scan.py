@@ -60,6 +60,7 @@ from ontology_core.scan import (
     ScanDriver,
     UnsupportedDriverError,
     validate_driver,
+    validate_host,
 )
 
 router = APIRouter(prefix="/namespaces", tags=["scan"])
@@ -183,12 +184,12 @@ async def register_scan_source(
             detail="auth_mode が key-vault-secret のときは vault_secret_name が必要です",
         )
 
-    if payload.host not in settings.scan_allowed_host_list:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"ホスト '{payload.host}' への接続は許可されていません。"
-            "SCAN_ALLOWED_HOSTS に追加してください(既定は空です)",
-        )
+    try:
+        # **規則の定義は 1 か所に置く。** ここで `not in` を書き直すと、
+        # 「空なら拒否」(不変条件11)が 2 か所に分かれて片方だけ変わりうる。
+        validate_host(payload.host, settings.scan_allowed_host_list)
+    except HostNotAllowedError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     repo = ScanRepository(session)
     if await repo.get_source(namespace=namespace, name=payload.name) is not None:
