@@ -108,33 +108,44 @@ async def sweep_sources(
 
     **例外を握り潰さない。** 理由は `SweepReport.failures` に入り、
     WARNING でログに出る。
+
+    **対象の一覧を素のタプルで持つ。** ORM の行をループで持ち回してはいけない
+    — `session.rollback()` は**すべてのオブジェクトを期限切れにする**ので、
+    巻き戻した後に `source.host` を読むだけで**同期の文脈で IO が起きて
+    `MissingGreenlet` になる**(実測。変異テストで見つけた)。つまり
+    「1 件の失敗が残りを止めない」はずの `rollback` 自身が、残りを止めていた。
     """
     repo = ScanRepository(session)
-    sources = await repo.list_all_source_rows()
-    report = SweepReport(total=len(sources))
+    # **名前だけを取り出しておく。** 行そのものは巻き戻しで使えなくなる。
+    targets = [(row.namespace, row.name) for row in await repo.list_all_source_rows()]
+    report = SweepReport(total=len(targets))
 
-    for source in sources:
-        service = ScanService(session=session, settings=settings, secret_resolver=secret_resolver)
+    for namespace, name in targets:
         try:
+            # **毎回読み直す。** 前の反復で巻き戻していても影響を受けない。
+            source = await repo.get_source(namespace=namespace, name=name)
+            if source is None:
+                # 掃引の最中に運用者が削除した。**「消えた」を黙って飛ばさない**
+                # — 飛ばすと `total` と成功・失敗の和が食い違う。
+                raise LookupError("掃引の最中に削除されました")
+            service = ScanService(
+                session=session, settings=settings, secret_resolver=secret_resolver
+            )
             run_id, table_count = await service.scan(source=source, actor=actor)
         except Exception as exc:
             # **broad にしているのは掃引を止めないためである。** 想定して
             # いない例外(マネージド ID が使えない等)でも、残りのソースは
             # スキャンできる。理由は必ず残す。
-            report.failures.append(
-                ScanFailure(namespace=source.namespace, name=source.name, reason=str(exc))
-            )
-            logger.warning(
-                "ソース %s/%s のスキャンに失敗しました: %s", source.namespace, source.name, exc
-            )
+            report.failures.append(ScanFailure(namespace=namespace, name=name, reason=str(exc)))
+            logger.warning("ソース %s/%s のスキャンに失敗しました: %s", namespace, name, exc)
             # **巻き戻してから次へ進む**(決定4)。
             await session.rollback()
             continue
         report.succeeded += 1
         logger.info(
             "ソース %s/%s をスキャンしました(run=%s、テーブル %s 件)",
-            source.namespace,
-            source.name,
+            namespace,
+            name,
             run_id,
             table_count,
         )

@@ -22,9 +22,16 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ontology_api import scan_job
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.scan import ScanRepository
-from ontology_api.scan_job import FALLBACK_ACTOR, _actor_of, sweep_sources
+from ontology_api.scan_job import (
+    FALLBACK_ACTOR,
+    ScanFailure,
+    SweepReport,
+    _actor_of,
+    sweep_sources,
+)
 from ontology_core.config import AuthMode, Settings
 from ontology_core.db import ScanSourceRow
 
@@ -35,6 +42,22 @@ _USER = os.environ.get("POSTGRES_USER", "ontology")
 _PASSWORD = os.environ.get("POSTGRES_PASSWORD", "localdev")
 
 _ACTOR = "job-identity-client-id"
+
+
+def _returning(report: SweepReport) -> Any:
+    async def _run(factory: Any, settings: Settings) -> SweepReport:
+        return report
+
+    return _run
+
+
+def _null_engine(settings: Settings) -> tuple[Any, Any]:
+    """エンジンを作らない代役。**`dispose` だけ応じる。**"""
+
+    class _Engine:
+        async def dispose(self) -> None: ...
+
+    return _Engine(), None
 
 
 def _settings(*, allowed: str | None = None) -> Settings:
@@ -207,6 +230,62 @@ async def test_想定外の例外でも残りを掃引する(session: AsyncSessi
 
 
 @pytest.mark.integration
+async def test_失敗したトランザクションを引き継がない(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**これが `rollback` が守っているものである**(ADR-0042 決定4)。
+
+    **変異テストで見つけた穴。** `test_想定外の例外でも残りを掃引する` は
+    `rollback` を外しても通ってしまう — 秘密の解決が落ちる時点では
+    `running` の run が**既に commit されている**ので、巻き戻すものが無い。
+
+    本当に守っているのは**PostgreSQL のトランザクションが失敗状態のまま
+    残る**場合である。そのとき後続の文はすべて
+    `InFailedSqlTransaction` になり、**残り全部が「失敗」になって症状が
+    原因を指さなくなる**。
+
+    ここではスキャンの途中で不正な SQL を発行してトランザクションを
+    失敗させ、次のソースが成功することを確かめる。
+    """
+    import contextlib
+
+    from sqlalchemy import text
+
+    from ontology_api.services.scan import ScanService
+
+    await _add_source(session, namespace="job-ns-a", name="poisons")
+    await _add_source(session, namespace="job-ns-b", name="healthy")
+
+    original = ScanService.scan
+
+    async def _poison(self: ScanService, *, source: ScanSourceRow, actor: str) -> tuple[int, int]:
+        if source.name == "poisons":
+            # **トランザクションを失敗状態にする。** 以降の文は巻き戻すまで
+            # すべて失敗する(PostgreSQL の振る舞い)。
+            with contextlib.suppress(Exception):
+                await session.execute(text("SELECT * FROM absolutely_no_such_table"))
+            raise RuntimeError("スキャンの途中で落ちた")
+        return await original(self, source=source, actor=actor)
+
+    monkeypatch.setattr(ScanService, "scan", _poison)
+
+    report = await sweep_sources(
+        session=session, settings=_settings(), actor=_ACTOR, secret_resolver=_local_password
+    )
+
+    assert report.total == 2
+    assert [f.name for f in report.failures] == ["poisons"]
+    assert report.succeeded == 1, (
+        "失敗したトランザクションを引き継いでいる(1 件目の失敗が 2 件目を巻き込んでいる)"
+    )
+
+    repo = ScanRepository(session)
+    healthy = await repo.get_source(namespace="job-ns-b", name="healthy")
+    assert healthy is not None
+    assert [r.status for r in await repo.list_runs(source_id=healthy.id)] == ["succeeded"]
+
+
+@pytest.mark.integration
 async def test_成功と失敗の和が総数になる(session: AsyncSession) -> None:
     """**「数えられなかった」を作らない。**
 
@@ -284,6 +363,84 @@ async def test_run_の主体にジョブの_ID_が入る(session: AsyncSession) 
     )
     runs = await ScanRepository(session).list_runs(source_id=source_id)
     assert runs[0].started_by == _ACTOR
+
+
+# ----------------------------- 終了コードの意味(ADR-0042 決定3)
+
+
+async def _fake_engine_factory(settings: Settings) -> Any:
+    """使わないので何も作らない。"""
+    raise AssertionError("呼ばれない")
+
+
+async def test_失敗があっても終了コードは_0(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**「掃引が走ったか」しか語らない**(ADR-0042 決定3)。
+
+    1 つの顧客 DB が落ちていることをジョブの失敗にすると、**ACA の再試行が
+    健全なソースを何度も叩く**。届かなかったことは `scan_runs` に残る。
+
+    **ここが 1 になると、計画停止しているソースが 1 つあるだけで毎回
+    赤くなり、アラートが意味を失う。**
+    """
+    report = SweepReport(total=2, succeeded=1)
+    report.failures.append(ScanFailure(namespace="ns", name="broken", reason="届かない"))
+    monkeypatch.setattr(scan_job, "_run", _returning(report))
+    monkeypatch.setattr(scan_job, "create_engine_and_factory", _null_engine)
+
+    assert await scan_job._main() == 0
+
+
+async def test_全部成功でも終了コードは_0(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scan_job, "_run", _returning(SweepReport(total=1, succeeded=1)))
+    monkeypatch.setattr(scan_job, "create_engine_and_factory", _null_engine)
+    assert await scan_job._main() == 0
+
+
+async def test_ソースが_0_件でも終了コードは_0(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**「0 件だった」は失敗ではない。**
+
+    ただし静かに終えない — 設定漏れと区別できないので、読むべき場所を言う。
+    """
+    monkeypatch.setattr(scan_job, "_run", _returning(SweepReport()))
+    monkeypatch.setattr(scan_job, "create_engine_and_factory", _null_engine)
+    assert await scan_job._main() == 0
+
+
+async def test_掃引そのものが走れなければ例外が出る(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**掃引が走らなかったことは終了コードに出す**(ADR-0042 決定3)。
+
+    例外をそのまま出すのは意図である — 運用者が必要とするのは
+    「走らなかった」ことと**その理由(トレースバック)**である。
+    """
+
+    async def _explode(factory: Any, settings: Settings) -> SweepReport:
+        raise RuntimeError("PostgreSQL に繋がらない")
+
+    monkeypatch.setattr(scan_job, "_run", _explode)
+    monkeypatch.setattr(scan_job, "create_engine_and_factory", _null_engine)
+    with pytest.raises(RuntimeError, match="PostgreSQL"):
+        await scan_job._main()
+
+
+async def test_エンジンを必ず捨てる(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**掃引が落ちても接続を残さない。**"""
+    disposed: list[bool] = []
+
+    class _Engine:
+        async def dispose(self) -> None:
+            disposed.append(True)
+
+    def _engine(settings: Settings) -> tuple[Any, Any]:
+        return _Engine(), None
+
+    async def _explode(factory: Any, settings: Settings) -> SweepReport:
+        raise RuntimeError("掃引が落ちた")
+
+    monkeypatch.setattr(scan_job, "_run", _explode)
+    monkeypatch.setattr(scan_job, "create_engine_and_factory", _engine)
+    with pytest.raises(RuntimeError):
+        await scan_job._main()
+    assert disposed == [True], "エンジンを捨てていない"
 
 
 def test_主体はマネージド_ID_の_client_id_である() -> None:

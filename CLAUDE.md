@@ -94,7 +94,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1224 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1230 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -162,6 +162,17 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 SQLAlchemy 2.0.52）。無効にしたいときは `poolclass=NullPool` を明示する。
 `poolclass=None` と書いて「プールしない」とコメントしていると、**接続が
 プロセスに残り続けていることに気づけない**。
+
+**`session.rollback()` はすべての ORM オブジェクトを期限切れにする。** 巻き戻した
+あとに素の属性アクセス(`row.host` など)をすると、**同期の文脈で IO が起きて
+`MissingGreenlet` になる**。ループで ORM の行を持ち回して途中で `rollback` する
+形は壊れる(実測。`scan_job.sweep_sources` で踏み、**巻き戻しそのものが
+「1 件の失敗が残りを止めない」を壊していた**)。**素の値(id や名前)で持ち、
+反復ごとに読み直す。**
+
+**`commit` の直後の `rollback` は no-op で、期限切れも起きない。** そのため
+「例外が出ても次へ進む」だけのテストでは上の罠を踏めない。**トランザクションが
+失敗状態で残っている条件**(不正な SQL を 1 つ発行する)を作らないと再現しない。
 
 **SQLAlchemy の `session.execute()` の戻り値に `rowcount` は無い（mypy strict）。** `rowcount` は `CursorResult` にしか無く、`execute()` の宣言型はそれより広い `Result[Any]` である。DELETE の件数が欲しいときは `cast` で型を潰すのではなく、**存在確認してから削除する**（1 クエリ増えるが意図が読める。`RoleRepository.revoke` がこの形）。
 
