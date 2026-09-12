@@ -98,7 +98,7 @@ flowchart LR
 | **Ontop VKG** (Phase 3) | R2RML マッピングに基づき、顧客 DB を仮想グラフとして連邦クエリ対象にする。実データは実体化しない | **internal ingress のみ** |
 | **PostgreSQL** | **正本**: 名前空間、RBAC、承認履歴と監査証跡、R2RML マッピング、メトリクス定義 | VNet(`production`)/ ファイアウォール(`minimal`) |
 | **Blob Storage** | **正本**: バージョン付き TTL(不変リビジョン)、取り込んだ文書 | Managed Identity 経由 |
-| **ACA Jobs** | `scan-job`(スキーマ・統計の抽出)、`reasoner-job`(OWL 推論、Phase 4) | 非公開 |
+| **ACA Jobs** | `scan-job`(スキーマ・統計の抽出。**まだ無い** — `P2A-19`。現在は Core API から同期で実行する)、`reasoner-job`(OWL 推論、Phase 4) | 非公開 |
 
 Fuseki と Ontop が **internal ingress のみ**であることは、[認証・認可・セキュリティ](#認証認可セキュリティ)で述べる SPARQL 攻撃面対策の前提です。
 
