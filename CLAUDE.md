@@ -253,6 +253,20 @@ cp932 で、日本語が壊れる)。
 
 **Windows の Azure CLI のトークンキャッシュは Linux から使えない。** `~/.azure/msal_token_cache.bin` は DPAPI 暗号化（先頭が `01 00 00 00 D0 8C 9D DF`）で、Windows ユーザーに紐づく。`~/.azure` をコンテナへ複製すると `az account show`（ローカルのメタデータだけ）は通るのに、**トークンを要求するコマンドはすべて失敗する**ので「az は動いている」と誤解しやすい。Linux 側で az を使うには、そちら側で `az login`（対話的）が別途必要。
 
+**`az` に Windows のパスを渡すときに `MSYS_NO_PATHCONV=1` を付けてはいけない。**
+docker のために変換を抑止する癖でこれを付けると、**`--file` などに渡した POSIX
+パスも変換されなくなり**、`az` が `[Errno 2] No such file or directory:
+'/c/Users/...'` で落ちる(実測。`az storage blob download` で踏んだ)。
+**抑止が必要なのは `/` で始まる引数を渡す場合だけ**である(ARM のリソース ID、
+docker の `-w /work`)。Blob の名前のような `/` を含むが先頭が `/` でない
+引数は**そのまま渡して問題ない**。
+
+**`curl -d '{...}'` も Git Bash で壊れることがある。** `az` の `--body` と
+同じ理由である(実測: 配列を含む JSON を `-d` で渡したら FastAPI が
+`There was an error parsing the body` を返した)。**`--data-binary @<ファイル>`
+で渡す** — 生成側の言語で `encoding="utf-8"` を明示して書いた一時ファイルなら、
+シェルの引用規則も文字コードも通らない。
+
 **`azd up` は docker が動いていないと即座に失敗する。** Docker Desktop が落ちていると `error checking for external tool Docker` で終わる（**課金は始まらない**）。azd 自身が `remoteBuild: true` を提案してくる（ACR 側でビルドする。ローカル docker が不要になる）。
 
 **`azd up` を `> log 2>&1` で包んで終了コードを見るときは、azd 自身の `$?` を取ること。** `azd up ... > log; echo $?` のように後続コマンドを挟むと、報告される終了コードは複合コマンド全体のものになり、**azd の失敗が成功に見える**（実際に一度誤読した）。
