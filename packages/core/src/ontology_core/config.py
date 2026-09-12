@@ -100,6 +100,39 @@ class Settings(BaseSettings):
         """`SCAN_ALLOWED_HOSTS` を分割して返す。"""
         return [host.strip() for host in self.scan_allowed_hosts.split(",") if host.strip()]
 
+    # ---- オントロジー候補の生成(ADR-0043、`P2A-02`) ----
+    #
+    # Azure OpenAI(Microsoft Foundry)のエンドポイント。**空なら候補の生成は
+    # 使えない**(不変条件11 と同じ向き — 設定が無ければ機能しない)。
+    model_endpoint: str = Field(default="", alias="MODEL_ENDPOINT")
+
+    # モデルのデプロイ名。Bicep が作ったデプロイの名前が入る。
+    model_deployment: str = Field(default="", alias="MODEL_DEPLOYMENT")
+
+    # モデル名。**監査に書くためだけに持つ**(ADR-0043 決定10)。
+    # 呼び出しに使うのはデプロイ名である。
+    model_name: str = Field(default="", alias="MODEL_NAME")
+
+    # 推論の API バージョン。
+    model_api_version: str = Field(default="2024-10-21", alias="MODEL_API_VERSION")
+
+    # 1 回の呼び出しのタイムアウト(秒)。オントロジーの生成は長い出力になる。
+    model_timeout_seconds: float = Field(default=180.0, alias="MODEL_TIMEOUT_SECONDS")
+
+    # 検証に落ちたときに何回まで再試行するか(ADR-0043 決定4)。
+    # **上限に達したら部分的に正しい Turtle を返さずに断る。**
+    proposal_max_attempts: int = Field(default=3, ge=1, le=10, alias="PROPOSAL_MAX_ATTEMPTS")
+
+    # 1 回の生成で渡せるテーブル数の上限(ADR-0043 決定6)。
+    # **超えたら切り詰めずに 413 で断る** — 候補の Turtle には「一部である」と
+    # 書く場所が無い(ADR-0034 決定4 と同じ「封筒が無い」問題)。
+    proposal_max_tables: int = Field(default=40, ge=1, le=500, alias="PROPOSAL_MAX_TABLES")
+
+    # モデルに許す出力トークン数。オントロジー 1 つ分の Turtle を収める。
+    proposal_max_output_tokens: int = Field(
+        default=16000, ge=1000, le=128000, alias="PROPOSAL_MAX_OUTPUT_TOKENS"
+    )
+
     # ---- SPARQL のガードレール ----
     # SERVICE 句は任意の URL へ HTTP リクエストを飛ばせるため、既定で禁止する
     # (Azure IMDS 169.254.169.254 等への SSRF を防ぐ)。

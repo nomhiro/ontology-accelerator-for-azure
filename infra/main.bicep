@@ -108,6 +108,24 @@ param fusekiMemory string = '1Gi'
 param fusekiJavaOptions string = '-Xmx768m -XX:+UseSerialGC'
 
 // ---------------------------------------------------------------------------
+// オントロジー候補の生成 (ADR-0043 / P2A-02)
+// ---------------------------------------------------------------------------
+@description('候補の生成に使うモデル名。既定は Japan East で割り当てを実測した gpt-4.1 (ADR-0043 決定11)。')
+param modelName string = 'gpt-4.1'
+
+@description('モデルの版。')
+param modelVersion string = '2025-04-14'
+
+@description('モデルのデプロイ SKU。')
+param modelSkuName string = 'GlobalStandard'
+
+@description('モデルのデプロイ容量 (千 TPM)。既定 10 は実測した割り当て 9,000 の約 0.1%。型が string なのは azd のパラメータ置換が文字列を渡すため。')
+param modelCapacity string = '10'
+
+@description('モデルのデプロイ名。アプリはこの名前で呼ぶ。')
+param modelDeploymentName string = 'ontology-proposer'
+
+// ---------------------------------------------------------------------------
 // ソース DB のスキャン (ADR-0041 / ADR-0042)
 // ---------------------------------------------------------------------------
 @description('スキャンで接続を許可するホスト (カンマ区切り)。**既定は空で、そのときスキャンは使えない** (ADR-0041 決定5、不変条件11)。「設定が無ければどこへでも」にしない。')
@@ -295,6 +313,10 @@ module api './modules/api.bicep' = {
     // いなかった(ADR-0042 でこの配線に気づいた)。
     scanAllowedHosts: scanAllowedHosts
     scanVaultUrl: resolvedScanVaultUrl
+    // オントロジー候補の生成(ADR-0043)。**空なら生成は使えない。**
+    modelEndpoint: model.outputs.endpoint
+    modelDeployment: model.outputs.deploymentName
+    modelName: model.outputs.modelName
   }
 }
 
@@ -324,6 +346,31 @@ module mcp './modules/mcp-server.bicep' = {
     coreApiUrl: api.outputs.uri
     applicationInsightsConnectionString: shared.outputs.applicationInsightsConnectionString
     logLevel: logLevel
+  }
+}
+
+// ---------------------------------------------------------------------------
+// モデル (Azure OpenAI / キー認証は無効)
+// ---------------------------------------------------------------------------
+// **API キーを使わない** (ADR-0043 決定9)。`disableLocalAuth: true` で
+// ローカル認証そのものを無効にし、マネージド ID だけで呼ぶ。
+//
+// **リージョンをアプリと分けられる** (R4)。Japan East で使えるモデルは
+// 限られるため、`MODEL_LOCATION` で別のリージョンを指定できる。
+module model './modules/model.bicep' = {
+  name: 'model'
+  scope: resourceGroup
+  params: {
+    name: '${abbrs.cognitiveServicesAccounts}${resourceToken}'
+    location: resolvedModelLocation
+    tags: tags
+    identityPrincipalId: shared.outputs.identityPrincipalId
+    customSubDomainName: '${abbrs.cognitiveServicesAccounts}${resourceToken}'
+    modelName: modelName
+    modelVersion: modelVersion
+    modelSkuName: modelSkuName
+    modelCapacity: int(modelCapacity)
+    deploymentName: modelDeploymentName
   }
 }
 
@@ -412,6 +459,10 @@ output SERVICE_SCAN_JOB_NAME string = scanJob.outputs.name
 // 起動する。`postdeploy` がイメージを差し替えるので、その前に走らせても
 // プレースホルダが動くだけである(決定5)。
 output SCAN_JOB_TRIGGER_TYPE string = scanJob.outputs.triggerType
+output MODEL_ENDPOINT string = model.outputs.endpoint
+output MODEL_DEPLOYMENT string = model.outputs.deploymentName
+output MODEL_NAME string = model.outputs.modelName
+
 output SCAN_ALLOWED_HOSTS string = scanAllowedHosts
 output SCAN_VAULT_URL string = resolvedScanVaultUrl
 

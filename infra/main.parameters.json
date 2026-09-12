@@ -59,6 +59,21 @@
     "supersededRetain": {
       "value": "${SUPERSEDED_RETAIN=0}"
     },
+    "modelName": {
+      "value": "${MODEL_NAME=gpt-4.1}"
+    },
+    "modelVersion": {
+      "value": "${MODEL_VERSION=2025-04-14}"
+    },
+    "modelSkuName": {
+      "value": "${MODEL_SKU_NAME=GlobalStandard}"
+    },
+    "modelCapacity": {
+      "value": "${MODEL_CAPACITY=10}"
+    },
+    "modelDeploymentName": {
+      "value": "${MODEL_DEPLOYMENT_NAME=ontology-proposer}"
+    },
     "scanAllowedHosts": {
       "value": "${SCAN_ALLOWED_HOSTS}"
     },

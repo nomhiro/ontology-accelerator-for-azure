@@ -2,6 +2,7 @@
   "appContainerApps": "ca-",
   "appContainerAppsJobs": "caj-",
   "appManagedEnvironments": "cae-",
+  "cognitiveServicesAccounts": "oai-",
   "containerRegistryRegistries": "acr",
   "dBforPostgreSQLServers": "psql-",
   "insightsComponents": "appi-",

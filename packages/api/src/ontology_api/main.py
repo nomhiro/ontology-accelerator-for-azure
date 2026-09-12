@@ -20,6 +20,7 @@ from ontology_api.routers import (
     health,
     mappings,
     namespaces,
+    proposals,
     questions,
     scan,
     sparql,
@@ -55,6 +56,7 @@ app.include_router(audit.router)
 app.include_router(health.router)
 app.include_router(mappings.router)
 app.include_router(namespaces.router)
+app.include_router(proposals.router)
 app.include_router(questions.router)
 app.include_router(scan.router)
 app.include_router(sparql.router)

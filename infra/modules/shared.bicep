@@ -382,3 +382,9 @@ output containerRegistryLoginServer string = containerRegistry.properties.loginS
 output identityId string = identity.id
 output identityName string = identity.name
 output identityClientId string = identity.properties.clientId
+
+// **`P1-24` で「未使用」として削除した出力を戻した** (`P2A-02`)。
+// モデルのアカウントへ `Cognitive Services OpenAI User` を付与するのに要る
+// (ADR-0043 決定9。ロール付与は principalId で行う。clientId では行えない)。
+// **消す前に参照を確かめること** — 今度は使っている。
+output identityPrincipalId string = identity.properties.principalId

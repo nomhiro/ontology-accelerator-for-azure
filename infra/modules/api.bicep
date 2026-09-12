@@ -96,6 +96,15 @@ param scanAllowedHosts string = ''
 @description('ソース DB のパスワードを置く Key Vault の URL。値はここにもカタログにも入らない (ADR-0041 決定4)。')
 param scanVaultUrl string = ''
 
+@description('候補の生成に使うモデルのエンドポイント (ADR-0043)。**空なら生成は使えない**。')
+param modelEndpoint string = ''
+
+@description('モデルのデプロイ名。アプリはこの名前で呼ぶ。')
+param modelDeployment string = ''
+
+@description('モデル名。**監査に書くためだけに持つ** (ADR-0043 決定10)。呼び出しに使うのはデプロイ名である。')
+param modelName string = ''
+
 @description('Application Insights の接続文字列。')
 param applicationInsightsConnectionString string
 
@@ -313,6 +322,22 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
               // 秘密の**在り処**。値はここにもカタログにも入らない(決定4)。
               name: 'SCAN_VAULT_URL'
               value: scanVaultUrl
+            }
+            {
+              // オントロジー候補の生成(ADR-0043)。**キーは渡さない** —
+              // マネージド ID で呼ぶ(決定9)。
+              name: 'MODEL_ENDPOINT'
+              value: modelEndpoint
+            }
+            {
+              name: 'MODEL_DEPLOYMENT'
+              value: modelDeployment
+            }
+            {
+              // **監査に書くためだけに持つ**(決定10)。呼び出しには
+              // デプロイ名を使う。
+              name: 'MODEL_NAME'
+              value: modelName
             }
           ], postgresPasswordEnv)
           // /healthz は認証不要でプロセスの生存だけを返す (依存先の到達性は含めない)。

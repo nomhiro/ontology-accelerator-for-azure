@@ -150,7 +150,7 @@ flowchart TB
 ```
 
 - **Scan** — ソース DB のスキーマ・コメント・統計を抽出し、PostgreSQL のカタログへ蓄積します(**実装済み**。`P2A-01`、[ADR-0041](adr/0041-source-schema-scan.md))。**実データを 1 行も読みません** — カタログは LLM のプロンプトへ流れるので、一度混ざったら消せません。発行する SQL は `information_schema` と `pg_catalog` に対する 5 本に固定され、テストがそれを機械的に検査します。**Core API から同期で 1 回**走らせる口と、`scan-job`(ACA Job)による掃引の 2 つがあります。**ジョブは既定で `Manual` トリガで、`SCAN_JOB_CRON` を設定するまで自動では走りません**([ADR-0042](adr/0042-scan-job.md))。ジョブは登録済みの全ソースを掃引し、**Core API と同じイメージ**を別のコマンドで動かします(Fuseki と Blob の資格情報は渡していません)。Blob の文書取り込みと LLM によるメタデータ強化は未実装です。任意で Microsoft Purview Data Map からの取り込みも行えます(依存はしません。[ADR-0007](adr/0007-no-purview-dependency.md))。
-- **Model** — Core API がカタログからオントロジー候補(OWL/SHACL)を LLM 生成し、Web で専門家がレビュー・承認したうえで、**新バージョンとして Blob + PostgreSQL にコミット**し、Fuseki へ射影します。**LLM の出力が人間の承認を経ずに正本へ入ることはありません。**
+- **Model** — Core API がカタログからオントロジー候補(OWL/SHACL)を LLM 生成し(**実装済み**。`P2A-02`、[ADR-0043](adr/0043-ontology-proposal.md))、専門家がレビュー・承認したうえで、**新バージョンとして Blob + PostgreSQL にコミット**し、Fuseki へ射影します。**LLM の出力が人間の承認を経ずに正本へ入ることはありません** — 生成された候補は検証を通っても `draft` にしか入らず、`draft` は Fuseki に現れないので**エージェントからは見えません**。この前提はこれまで「LLM を呼ぶ経路が無かったから」成り立っていましたが、`P2A-02` で**コードによる強制になりました**。レビューの画面は `P2A-03`(未実装)で、いまは API で操作します。
 - **Serve** — MCP Server / Core API が SPARQL(Fuseki)・連邦クエリ(Ontop)・ベクトル検索(AI Search)を **Context Manager 層**でオーケストレーションし、エージェントに提供します。
 
 ---

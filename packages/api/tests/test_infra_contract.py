@@ -1,4 +1,4 @@
-"""ジョブの定義が渡すもの・渡さないものを固定する(ADR-0042 決定6、`P2A-19`)。
+"""Bicep が渡すもの・渡さないものを固定する(ADR-0042 決定6 / ADR-0043 決定9)。
 
 ## なぜテキストで検査するのか
 
@@ -142,7 +142,10 @@ def test_cron_が空なら_Manual_になる() -> None:
 # ------------------------- API 側の配線(`P2A-01` が残していた穴)
 
 
-@pytest.mark.parametrize("required", ["SCAN_ALLOWED_HOSTS", "SCAN_VAULT_URL"])
+@pytest.mark.parametrize(
+    "required",
+    ["SCAN_ALLOWED_HOSTS", "SCAN_VAULT_URL", "MODEL_ENDPOINT", "MODEL_DEPLOYMENT", "MODEL_NAME"],
+)
 def test_API_にもスキャンの設定が届く(required: str) -> None:
     """**`P2A-01` はこれを配線していなかった**(ADR-0042 で気づいた)。
 
@@ -152,3 +155,51 @@ def test_API_にもスキャンの設定が届く(required: str) -> None:
     """
     body = _strip_comments(_API.read_text(encoding="utf-8"))
     assert required in body, f"api.bicep に '{required}' が無い"
+
+
+# ------------------------------- モデル(ADR-0043 決定9・11)
+
+_MODEL = _INFRA / "modules" / "model.bicep"
+
+
+def _model() -> str:
+    return _strip_comments(_MODEL.read_text(encoding="utf-8"))
+
+
+def test_モデルのキー認証を無効にしている() -> None:
+    """**キーが存在しなければ、キーが漏れることもない**(ADR-0043 決定9)。
+
+    ここが `false` に変わると、**アプリはマネージド ID で呼び続けるので
+    動作は変わらない** — つまり気づけない。だからテキストで固定する。
+    """
+    assert "disableLocalAuth: true" in _model()
+
+
+def test_モデルにキーを渡す経路が無い() -> None:
+    """**Bicep からアプリへキーを流さない。**"""
+    body = _model()
+    for banned in ("listKeys", "key1", "apiKey", "MODEL_API_KEY"):
+        assert banned not in body, f"model.bicep に '{banned}' がある"
+
+
+def test_付与するロールは推論だけである() -> None:
+    """**`Contributor` を付けない**(ADR-0043 決定9)。
+
+    デプロイの作成や削除はアプリの仕事ではない。
+    `Cognitive Services OpenAI User` の ID を固定する。
+    """
+    body = _model()
+    assert "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd" in body
+    assert "Contributor" not in body
+
+
+def test_既定のモデルは実測で決めたものである() -> None:
+    """**Japan East の割り当てを実測して決めた**(ADR-0043 決定11)。
+
+    既定を変えるときは、そのリージョンに割り当てがあることを
+    `az cognitiveservices usage list` で確かめること。
+    """
+    body = _model()
+    assert "param modelName string = 'gpt-4.1'" in body
+    assert "param modelSkuName string = 'GlobalStandard'" in body
+    assert "param modelCapacity int = 10" in body
