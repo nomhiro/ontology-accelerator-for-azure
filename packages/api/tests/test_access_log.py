@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -523,3 +524,128 @@ async def test_他の名前空間のイベントは消さない(session: AsyncSe
     assert result["deleted"] == 0
     page = await query_access_log(namespace=_NS, principal=_OWNER, session=session)
     assert len(page.events) == 1
+
+
+# ------------------- `ASK` の行数(ADR-0039、`P2B-22`)
+
+
+class _AskStore(_Store):
+    """`ASK` の SPARQL Results JSON を返す代役。**束縛を持たない。**"""
+
+    def __init__(self, *, answer: bool = True) -> None:
+        super().__init__()
+        self._answer = answer
+
+    async def query(self, sparql: str, *, dataset: str) -> dict:  # type: ignore[type-arg]
+        self.queries.append(sparql)
+        if "owl#deprecated" in sparql:
+            return {"head": {"vars": ["s"]}, "results": {"bindings": []}}
+        return {"head": {}, "boolean": self._answer}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("answer", [True, False])
+async def test_ASK_は行数を記録しない(
+    session: AsyncSession, settings: Settings, answer: bool
+) -> None:
+    """**`true` と答えた `ASK` を「0 行返した」として数えない**(ADR-0039 決定1)。
+
+    `P2A-14` で `CONSTRUCT` / `DESCRIBE` を `NULL` にしたとき、`ASK` は既存の
+    振る舞いを残していた(`P2B-22`)。ここでそれを閉じる。
+
+    **`returned_triple_count` も `NULL` である** — `ASK` にはトリプルの概念も
+    無い。`ASK` の行は結果について何も語らないが、答えは**記録したクエリと版で
+    再実行できる**(決定3)。
+    """
+    await _setup(session)
+    await _record_version(session, "2.0.0")
+    await _run(
+        session,
+        settings,
+        store=_AskStore(answer=answer),
+        query="ASK { ?s ?p ?o }",
+    )
+
+    page = await query_access_log(namespace=_NS, principal=_OWNER, session=session)
+    event = page.events[0]
+    assert event.returned_row_count is None, "行の概念が無いのに 0 を書いている"
+    assert event.returned_triple_count is None
+    assert event.returned_term_count == 0
+    # **形は `query_text` に残る**(決定3)。列を足さない理由である。
+    assert event.query_text.startswith("ASK")
+
+
+@pytest.mark.integration
+async def test_SELECT_の_0_行は測った_0_として残る(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """**区別しているのはまさにここである**(ADR-0039 決定1)。
+
+    `None` に丸めると、「何も返さないクエリ」を見つけられなくなる。
+    """
+    await _setup(session)
+    await _record_version(session, "2.0.0")
+    await _run(session, settings, store=_Store(results=[]))
+
+    page = await query_access_log(namespace=_NS, principal=_OWNER, session=session)
+    assert page.events[0].returned_row_count == 0
+
+
+@pytest.mark.integration
+async def test_読めない形でも記録は残り行数は作らない(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """**`0` を作っているのが本体である**(ADR-0039 決定2)。
+
+    ストアを差し替えられる設計(ADR-0001)なので、持ち込みストアが想定外の形を
+    返したときにも `0` を作ってはいけない。**記録自体は続ける** — アクセス
+    ログは読み取りの副産物であって前提条件ではない。
+    """
+
+    class _OddStore(_Store):
+        async def query(self, sparql: str, *, dataset: str) -> dict:  # type: ignore[type-arg]
+            self.queries.append(sparql)
+            if "owl#deprecated" in sparql:
+                return {"head": {"vars": ["s"]}, "results": {"bindings": []}}
+            # 束縛の配列が無い形(SPARQL 1.1 の形ではない)。
+            return {"head": {"vars": ["s"]}, "results": {}}
+
+    await _setup(session)
+    await _record_version(session, "2.0.0")
+    await _run(session, settings, store=_OddStore())
+
+    page = await query_access_log(namespace=_NS, principal=_OWNER, session=session)
+    assert len(page.events) == 1, "記録のために応答を壊してはいけない"
+    assert page.events[0].returned_row_count is None
+
+
+@pytest.mark.integration
+async def test_SELECT_で行数が測れなければ警告を出す(
+    session: AsyncSession, settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """**新しい `NULL` の理由を黙って作らない**(ADR-0039 決定5)。
+
+    以前は読めない形でも `0` を記録していたので、この劣化は**`0` に紛れて
+    見えなかった**。`ASK` の `NULL` は正常なので警告しない。
+    """
+
+    class _OddStore(_Store):
+        async def query(self, sparql: str, *, dataset: str) -> dict:  # type: ignore[type-arg]
+            self.queries.append(sparql)
+            if "owl#deprecated" in sparql:
+                return {"head": {"vars": ["s"]}, "results": {"bindings": []}}
+            return {"head": {"vars": ["s"]}, "results": {}}
+
+    await _setup(session)
+    await _record_version(session, "2.0.0")
+
+    with caplog.at_level(logging.WARNING, logger="ontology_api.routers.sparql"):
+        await _run(session, settings, store=_OddStore())
+    assert any("行数を数えられませんでした" in r.message for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="ontology_api.routers.sparql"):
+        await _run(session, settings, store=_AskStore(), query="ASK { ?s ?p ?o }")
+    assert not any("行数を数えられませんでした" in r.message for r in caplog.records), (
+        "ASK の NULL は正常なので警告してはいけない"
+    )

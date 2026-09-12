@@ -41,7 +41,12 @@ from ontology_core.deprecation import deprecated_iris_in_results
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.models import NamespaceRole, OntologyVersionStatus
 from ontology_core.sparql.client import SparqlStore, SparqlStoreError
-from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query, query_form
+from ontology_core.sparql.guards import (
+    QueryForm,
+    QueryRejectedError,
+    ensure_agent_safe_query,
+    query_form,
+)
 from ontology_core.sparql.limits import cap_bindings
 from ontology_core.sparql.rdf_results import (
     RdfParseError,
@@ -170,6 +175,16 @@ async def _record_access(
                 base_iri=ns.base_iri,
                 default_graph_version=version,
             )
+            # **`SELECT` で行数が測れなかったことを黙って `NULL` にしない**
+            # (ADR-0039 決定5)。`ASK` の `NULL` は正常なので警告しない。
+            # 以前は読めない形でも `0` を記録していたので、この劣化は
+            # **`0` に紛れて見えなかった**。
+            if record.returned_row_count is None and query_form(query) is not QueryForm.ASK:
+                logger.warning(
+                    "名前空間 '%s' のクエリの結果から行数を数えられませんでした"
+                    "(ストアの応答の形が想定と違います)。記録は続けます",
+                    namespace,
+                )
         await AccessRepository(session).record(record)
     except Exception:
         logger.exception(

@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from ontology_core.access import (
     MAX_QUERY_TEXT,
     AccessRecord,
@@ -221,3 +223,81 @@ def test_承認済みの版が無ければ版は_None() -> None:
     assert record.default_graph_version is None
     assert record.returned_row_count == 0
     assert record.terms == ()
+
+
+# ------------------- 束縛が無い結果(ADR-0039、`P2B-22`)
+
+
+def _ask(answer: bool) -> dict[str, object]:
+    """`ASK` の SPARQL Results JSON。**束縛を持たない。**"""
+    return {"head": {}, "boolean": answer}
+
+
+def _record(results: object) -> AccessRecord:
+    return build_access_record(
+        namespace="retail",
+        actor="agent-oid",
+        query="ASK { ?s ?p ?o }",
+        results=results,
+        base_iri=_BASE,
+        default_graph_version="1.0.0",
+    )
+
+
+@pytest.mark.parametrize("answer", [True, False])
+def test_ASK_は行数を記録しない(answer: bool) -> None:
+    """**`true` と答えた `ASK` を「0 行返した」として数えない**(ADR-0039 決定1)。
+
+    `ASK` の結果に束縛は無いので、行数は「測った `0`」ではなく
+    「行という概念が無い」である。ADR-0034 決定7 が `CONSTRUCT` について
+    決めたのと同じ規則が、ここにも当てはまる。
+    """
+    record = _record(_ask(answer))
+    assert record.returned_row_count is None, "行の概念が無いのに 0 を書いている"
+    assert record.returned_triple_count is None, "トリプルの概念も無い"
+    assert record.terms == ()
+
+
+def test_読めない形でも行数を作らない() -> None:
+    """**`0` を作っているのが本体である**(ADR-0039 決定2)。
+
+    `ASK` はそれが日常的に起きる経路にすぎない。ストアを差し替えられる設計
+    (ADR-0001)なので、持ち込みストアが想定外の形を返したときにも同じ誤りが
+    起きてはいけない。
+    """
+    broken_shapes: tuple[object, ...] = (
+        "これは JSON ではない",
+        [],
+        {"results": "文字列"},
+        {"results": {}},
+    )
+    for broken in broken_shapes:
+        assert _record(broken).returned_row_count is None, broken
+
+
+def test_空の束縛は測った_0_として残す() -> None:
+    """**「`SELECT` が 0 行返した」は測った事実である**(ADR-0039 決定1)。
+
+    区別しているのはまさにここである。`None` に丸めると、上限に張り付いて
+    いるクエリと何も返さないクエリの区別が消える。
+    """
+    record = build_access_record(
+        namespace="retail",
+        actor="agent-oid",
+        query="SELECT ?s WHERE { ?s ?p ?o }",
+        results=_results(),
+        base_iri=_BASE,
+        default_graph_version="1.0.0",
+    )
+    assert record.returned_row_count == 0
+
+
+def test_ASK_の真偽値は保存しない() -> None:
+    """**記録したクエリと版で再実行できる**(ADR-0039 決定3)。
+
+    ADR-0018 決定1 が用語の一覧を保存しなかったのと同じ理由である。
+    列を足さないことを構造で固定しておく。
+    """
+    fields = set(AccessRecord.__dataclass_fields__)
+    assert "returned_boolean" not in fields
+    assert "query_form" not in fields, "形は query_text の先頭に残る(決定3)"

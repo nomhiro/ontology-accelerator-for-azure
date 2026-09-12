@@ -81,8 +81,9 @@ class AccessRecord:
     query: QueryFingerprint
     default_graph_version: str | None
     used_graph_clause: bool
-    # **`CONSTRUCT` / `DESCRIBE` では `None`**(ADR-0034 決定7)。
-    # 「0 行返した」と「行という概念が無い」は違う。
+    # **行という概念が無いときは `None`**(ADR-0034 決定7 / ADR-0039 決定1)。
+    # 「0 行返した」と「行という概念が無い」は違う。`CONSTRUCT` / `DESCRIBE` と
+    # **`ASK`** がこれに当たる。読めない形のときも `None` である。
     returned_row_count: int | None = None
     # `CONSTRUCT` / `DESCRIBE` が返したトリプル数。`SELECT` / `ASK` では `None`。
     returned_triple_count: int | None = None
@@ -148,14 +149,32 @@ def returned_terms(results: Any, *, base_iri: str) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
-def _row_count(results: Any) -> int:
+def _row_count(results: Any) -> int | None:
+    """束縛の行数を返す。数えられなければ `None`(ADR-0039 決定1)。
+
+    | 結果の形 | 返す値 |
+    |---|---|
+    | `results.bindings` が配列 | **その長さ**(空配列なら `0`。測った `0` である) |
+    | `boolean` がある(`ASK`) | **`None`** |
+    | 読めない形 | **`None`** |
+
+    **`0` を作らない。** 「0 行返した」と「行という概念が無い」は違う
+    (ADR-0034 決定7 が `CONSTRUCT` について決めたのと同じ規則)。
+
+    **`ASK` を名前で分岐しない**(決定2)。上の表に `ASK` という語は要らない —
+    「束縛が無い」で足りる。形で分岐すると、持ち込みストアが別の形を返した
+    ときに再び `0` が生まれる([ADR-0001](../../../../docs/adr/0001-rdf-store-selection.md)
+    が「SPARQL 1.1 Protocol をハード境界にする」と決めている)。
+
+    **空の配列の `0` は残す。** 「`SELECT` が 0 行返した」は測った事実である。
+    """
     if not isinstance(results, dict):
-        return 0
+        return None
     section = results.get("results")
     if not isinstance(section, dict):
-        return 0
+        return None
     bindings = section.get("bindings")
-    return len(bindings) if isinstance(bindings, list) else 0
+    return len(bindings) if isinstance(bindings, list) else None
 
 
 def build_access_record(
@@ -171,6 +190,13 @@ def build_access_record(
 
     `CONSTRUCT` / `DESCRIBE` は `build_rdf_access_record` を使う
     (行とトリプルを混ぜない。ADR-0034 決定7)。
+
+    **`ASK` では `returned_row_count` が `None` になる**
+    ([ADR-0039](../../../../docs/adr/0039-ask-row-count.md) 決定1)。
+    `ASK` の結果に束縛は無いので、行数は「測った `0`」ではなく
+    「行という概念が無い」である。**真偽値は保存しない**(決定3) —
+    オントロジーは不変リビジョンなので、記録したクエリと版で再実行できる
+    (ADR-0018 決定1 が用語の一覧を保存しなかったのと同じ理由)。
     """
     return AccessRecord(
         namespace=namespace,
