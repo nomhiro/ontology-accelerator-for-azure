@@ -680,7 +680,14 @@ curl -G "$API/namespaces/retail-core/versions/2.0.0/diff" \
             "added_terms": ["https://example.com/ontology/retail#Shipment"],
             "removed_terms": [], "deprecated_terms": [],
             "modified_terms": ["https://example.com/ontology/retail#Product"],
-            "has_removed_terms": false, "truncated": false } }
+            "has_removed_terms": false, "truncated": false },
+  "owners": [
+    { "namespace": "retail-core",
+      "term_iri": "https://example.com/ontology/retail#Shipment",
+      "source": "term-owner", "principal_ids": ["..."] },
+    { "namespace": "retail-core",
+      "term_iri": "https://example.com/ontology/retail#Product",
+      "source": "namespace-owners", "principal_ids": ["..."] } ] }
 ```
 
 **接頭辞・トリプルの順序・空白ノードのラベルの違いは差分になりません。** テキスト差分ではこれが守れないため、rdflib の正規化を使っています。
@@ -694,6 +701,22 @@ curl -G "$API/namespaces/retail-core/versions/2.0.0/diff" \
 正規化のコストは空白ノードの数だけで決まります（トリプル総数はほとんど効きません）。実測で 2 グラフの差分が 300 個で 2〜4.5 秒、500 個で 8 秒、1,000 個で 42 秒です。SHACL の property shape は 1 つずつ空白ノードを作ります。
 
 **監査に保存されるのは要約です。** 版は Blob に不変で残るため、厳密な差分はいつでも再計算できます（監査行に全トリプルを積むと行が非有界に育ちます）。用語の一覧は 50 件で切り、切った場合は `truncated` が `true` になります。
+
+**`owners` に「誰に確認すべきか」が載ります**（[ADR-0040](docs/adr/0040-term-owner-not-an-approval-gate.md)、`P2B-13`）。差分に載った用語について、用語の責任者 → 名前空間の `owner` → 解決不能 の順に解決した結果です。
+
+| `source` | 意味 |
+|---|---|
+| `term-owner` | その用語の責任者である |
+| `namespace-owners` | **用語の責任者がいないので名前空間の `owner` へ回した** |
+| `unresolved` | **誰にも届かない**（`owner` も付与されていない） |
+
+**`source` を必ず見てください。** `namespace-owners` を「責任者がいる」と読むと、健全性指標の `without_owner_count` と食い違います。
+
+**用語の責任者は `approve` の条件ではありません**（決定1）。条件にすると「責任者がいない用語を含む版を承認できない」（人質）か「責任者がいなければ誰でも承認できる」（**権限の既定は拒否**という方針の逆）のどちらかになります。**報告はしますが、ブロックはしません。**
+
+承認の条件は 3 つだけです — `maintainer` 以上（[ADR-0014](docs/adr/0014-namespace-rbac.md)）、四眼原則、受け入れ基準の出自（[ADR-0029](docs/adr/0029-criteria-authorship.md)）。
+
+**`owners` は差分に載った用語についてだけ返ります。** 一覧は 50 件で切られるので、それを超える差分では全用語の分は出ません（`truncated` で分かります）。`modified_terms` が `null`（計算できなかった）のときも、その用語の分は出ません。
 
 #### 健全性を測る
 

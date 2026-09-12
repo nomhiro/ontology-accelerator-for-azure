@@ -435,3 +435,239 @@ async def test_差分の参照は状態を変えない(
     )
     after = await AuditRepository(session).list_for_subject(_NS, f"{_NS}@2.0.0")
     assert len(before) == len(after), "差分を見ただけで監査記録が増えてはいけない"
+
+
+# --------------- 差分レビューのルーティング先(ADR-0040、`P2B-13`)
+
+
+async def _diff(
+    session: AsyncSession,
+    blob: OntologyBlobStore,
+    settings: Settings,
+    *,
+    version: str = "2.0.0",
+    principal: Principal = _ANALYST,
+) -> dict[str, Any]:
+    return await diff_version(
+        namespace=_NS,
+        version=version,
+        principal=principal,
+        session=session,
+        blob=blob,
+        store=_NullStore(),
+        settings=settings,
+    )
+
+
+@pytest.mark.integration
+async def test_差分に問い合わせ先が載る(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """**ADR-0015 が「得られるもの」に挙げていた約束の実装である**(ADR-0040 決定2)。
+
+    > 差分レビューのルーティング先が決まる。`P2B-09`(意味的差分)が
+    > 「この差分を誰に見せるか」を答えられるようになる
+    """
+    from ontology_api.repositories.term_owners import TermOwnerRepository
+
+    await _setup(session)
+    await TermOwnerRepository(session).assign(
+        namespace=_NS,
+        term_iri="https://e.example/#Product",
+        principal_id="product-owner-oid",
+        assigned_by=_MAINTAINER.object_id,
+    )
+    await session.commit()
+    await _publish(session, blob_store, settings, version="1.0.0", turtle=_V1)
+    await _approve(session, blob_store, version="1.0.0")
+    await _publish(session, blob_store, settings, version="2.0.0", turtle=_V2)
+
+    result = await _diff(session, blob_store, settings)
+    owners = {entry["term_iri"]: entry for entry in result["owners"]}
+    assert owners["https://e.example/#Product"]["source"] == "term-owner"
+    assert owners["https://e.example/#Product"]["principal_ids"] == ["product-owner-oid"]
+
+
+@pytest.mark.integration
+async def test_責任者がいなければ名前空間の_owner_へ回す(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """**フォールバックを隠さない**(ADR-0015 決定2)。
+
+    `namespace-owners` は「用語の責任者がいないので名前空間の `owner` へ
+    回した」という意味である。**`source` を見なければ「責任者がいる」と
+    誤解する。**
+    """
+    from ontology_api.repositories.roles import RoleRepository
+
+    await _setup(session)
+    await RoleRepository(session).grant(
+        namespace=_NS,
+        principal_id="ns-owner-oid",
+        role=NamespaceRole.OWNER,
+        granted_by=_ADMIN.object_id,
+    )
+    await session.commit()
+    await _publish(session, blob_store, settings, version="1.0.0", turtle=_V1)
+    await _approve(session, blob_store, version="1.0.0")
+    await _publish(session, blob_store, settings, version="2.0.0", turtle=_V2)
+
+    result = await _diff(session, blob_store, settings)
+    owners = {entry["term_iri"]: entry for entry in result["owners"]}
+    entry = owners["https://e.example/#Product"]
+    assert entry["source"] == "namespace-owners"
+    assert entry["principal_ids"] == ["ns-owner-oid"]
+
+
+@pytest.mark.integration
+async def test_誰にも届かないことを明示する(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """**`unresolved` は「誰にも届かない」である**(ADR-0015 決定2)。
+
+    `_setup` は `owner` を付与していないので、この名前空間には回す先が無い。
+    **空のリストを「問題なし」と読ませない** — `source` がそれを言う。
+    """
+    await _setup(session)
+    await _publish(session, blob_store, settings, version="1.0.0", turtle=_V1)
+    await _approve(session, blob_store, version="1.0.0")
+    await _publish(session, blob_store, settings, version="2.0.0", turtle=_V2)
+
+    result = await _diff(session, blob_store, settings)
+    entry = next(e for e in result["owners"] if e["term_iri"] == "https://e.example/#Product")
+    assert entry["source"] == "unresolved"
+    assert entry["principal_ids"] == []
+
+
+@pytest.mark.integration
+async def test_差分が無い版でも応答の形は変わらない(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """最初の版(基準が無い)では `diff` が `null` になる(ADR-0016)。
+
+    **そのときも `owners` のキーは入る**(ADR-0040 決定2)。形が入力で変わる
+    契約はクライアントに分岐を強いる。空の配列は「回す用語が無い」であり、
+    `diff` が `null` であることが既にその理由を言っている。
+    """
+    await _setup(session)
+    await _publish(session, blob_store, settings, version="1.0.0", turtle=_V1)
+
+    result = await _diff(session, blob_store, settings, version="1.0.0")
+    assert result["diff"] is None
+    assert result["owners"] == []
+
+
+@pytest.mark.integration
+async def test_廃止した用語の問い合わせ先も載る(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """**廃止は縮めることの正しい形である**(不変条件8)。
+
+    廃止した用語こそ「誰に確認すべきか」が要る。`deprecated_terms` も
+    問い合わせ先の対象に含める(ADR-0040 決定4)。
+    """
+    await _setup(session)
+    await _publish(session, blob_store, settings, version="1.0.0", turtle=_V1)
+    await _approve(session, blob_store, version="1.0.0")
+    await _publish(session, blob_store, settings, version="2.0.0", turtle=_V_DEPRECATED)
+
+    result = await _diff(session, blob_store, settings)
+    assert result["diff"]["deprecated_terms"] == ["https://e.example/#Customer"]
+    listed = {entry["term_iri"] for entry in result["owners"]}
+    assert "https://e.example/#Customer" in listed
+
+
+def _with_blank_nodes(body: str, count: int) -> str:
+    """空白ノードを `count` 個持つ TTL を作る。
+
+    `MAX_BLANK_NODES` を超えると意味的差分は `modified_terms` を計算しない
+    (ADR-0016 決定5)。**そのとき `deprecated_terms` だけが廃止を伝える。**
+    """
+    # **SHACL の形状にしない。** `approve` が SHACL 検証をするので、
+    # 不正な shapes を混ぜると承認そのものが落ちる(実際に踏んだ)。
+    # 独自述語の空白ノードなら pyshacl は形状として読まない。
+    holders = "\n".join(f"ex:Holder{i} ex:detail [ ex:index {i} ] ." for i in range(count))
+    return body + holders + "\n"
+
+
+@pytest.mark.integration
+async def test_modified_terms_が計算できなくても廃止は問い合わせ先に載る(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """**`deprecated_terms` を対象に含める理由がここにある**(ADR-0040 決定4)。
+
+    廃止された用語は普通 `modified_terms` にも現れる(`owl:deprecated true` を
+    得たので変更されている)。**空白ノードが多い版では `modified_terms` が
+    `null` になる**(ADR-0016 決定5)ので、そのとき廃止を伝えるのは
+    `deprecated_terms` だけである。
+
+    **変異テストで見つけた穴である** — `deprecated_terms` を対象から外す変異が、
+    通常の版では `modified_terms` に救われて生き残った。
+    """
+    from ontology_core.diff import MAX_BLANK_NODES
+
+    over = MAX_BLANK_NODES + 1
+    await _setup(session)
+    await _publish(
+        session, blob_store, settings, version="1.0.0", turtle=_with_blank_nodes(_V1, over)
+    )
+    await _approve(session, blob_store, version="1.0.0")
+    await _publish(
+        session,
+        blob_store,
+        settings,
+        version="2.0.0",
+        turtle=_with_blank_nodes(_V_DEPRECATED, over),
+    )
+
+    result = await _diff(session, blob_store, settings)
+    assert result["diff"]["modified_terms"] is None, "空白ノードの上限に達していない"
+    assert result["diff"]["deprecated_terms"] == ["https://e.example/#Customer"]
+    listed = {entry["term_iri"] for entry in result["owners"]}
+    assert "https://e.example/#Customer" in listed, (
+        "modified_terms が計算できないとき、廃止を伝えるのは deprecated_terms だけである"
+    )
+
+
+@pytest.mark.integration
+async def test_問い合わせ先は重複しない(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """同じ用語が複数の一覧に現れても 1 件にまとめる。
+
+    廃止した用語は `deprecated_terms` と `modified_terms` の両方に現れうる。
+    """
+    await _setup(session)
+    await _publish(session, blob_store, settings, version="1.0.0", turtle=_V1)
+    await _approve(session, blob_store, version="1.0.0")
+    await _publish(session, blob_store, settings, version="2.0.0", turtle=_V_DEPRECATED)
+
+    result = await _diff(session, blob_store, settings)
+    listed = [entry["term_iri"] for entry in result["owners"]]
+    assert len(listed) == len(set(listed)), f"問い合わせ先が重複している: {listed}"
+
+
+@pytest.mark.integration
+async def test_責任者がいなくても承認は止まらない(
+    session: AsyncSession, blob_store: OntologyBlobStore, settings: Settings
+) -> None:
+    """**これが ADR-0040 決定1・3 の本題である。**
+
+    責任者を承認の条件にすると、「責任者がいない用語を含む版を承認できない」
+    (人質)か「責任者がいなければ誰でも承認できる」(不変条件11 が最も避ける
+    形)のどちらかになる。**報告はする、ブロックはしない。**
+
+    `_setup` は `term_owners` を 1 件も付けていない。それでも承認は通る。
+    """
+    await _setup(session)
+    await _publish(session, blob_store, settings, version="1.0.0", turtle=_V1)
+    await _approve(session, blob_store, version="1.0.0")
+    await _publish(session, blob_store, settings, version="2.0.0", turtle=_V2)
+
+    # 問い合わせ先は解決できない。
+    result = await _diff(session, blob_store, settings)
+    assert all(e["source"] == "unresolved" for e in result["owners"])
+
+    # それでも承認は通る。
+    approved = await _approve(session, blob_store, version="2.0.0")
+    assert approved.status.value == "approved"

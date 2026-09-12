@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
 from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, SettingsDep, StoreDep
+from ontology_api.repositories.term_owners import TermOwnerRepository
 from ontology_api.repositories.versions import AuditRepository, VersionRepository
 from ontology_api.services.authorization import (
     NamespaceRetiredError,
@@ -585,6 +586,25 @@ async def diff_version(
     **接頭辞・トリプルの順序・空白ノードのラベルの違いは差分にならない。**
     ただし空白ノードが多い版では、トリプル単位の差分と `modified_terms` が
     得られない(`triple_status` を見ること。ADR-0016 決定5)。
+
+    **`owners` に「誰に確認すべきか」が載る**
+    ([ADR-0040](../../../../../docs/adr/0040-term-owner-not-an-approval-gate.md)
+    決定2、`P2B-13`)。ADR-0015 が「差分レビューのルーティング先が決まる」と
+    書いていた約束の実装である。
+
+    **用語の責任者は `approve` の条件ではない**(決定1)。条件にすると
+    「責任者がいない用語を含む版を承認できない」(人質)か「責任者がいなければ
+    誰でも承認できる」(不変条件11 が最も避ける形)のどちらかになる。
+    **報告はする、ブロックはしない**(決定3)。
+
+    **`source` を必ず見ること**(ADR-0015 決定2)。`namespace-owners` は
+    **用語の責任者がいないので名前空間の `owner` へ回した**という意味であり、
+    `unresolved` は**誰にも届かない**という意味である。
+
+    **`owners` は `diff` に載った用語についてだけ返る**(決定4)。一覧は
+    `SUMMARY_MAX_TERMS` 件で切られているので(`truncated` を見ること)、
+    それを超える差分では全用語の問い合わせ先は出ない。`modified_terms` が
+    `null`(計算できなかった)のときはその用語の分も出ない。
     """
     try:
         validate_namespace_name(namespace)
@@ -626,7 +646,17 @@ async def diff_version(
     if base_row is None:
         # **404 にしない。** 「基準が無い」はエラーではなく、この API が
         # 答えるべき事実である(最初の版では必ずこうなる)。
-        return {"namespace": namespace, "version": version, "base_version": None, "diff": None}
+        #
+        # **`owners` のキーは必ず入れる**(ADR-0040 決定2)。形が入力で変わる
+        # 契約はクライアントに分岐を強いる。空の配列は「回す用語が無い」で
+        # あり、`diff` が `null` であることが既にその理由を言っている。
+        return {
+            "namespace": namespace,
+            "version": version,
+            "base_version": None,
+            "diff": None,
+            "owners": [],
+        }
 
     try:
         diff = await service.compute_diff(namespace=namespace, base=base_row, target=target)
@@ -641,11 +671,26 @@ async def diff_version(
             detail=f"差分を計算できませんでした(正本の TTL を取得できません): {exc}",
         ) from exc
 
+    summary = diff.summary()
+    # **差分に載った用語についてだけ解決する**(ADR-0040 決定4)。全用語を
+    # 解決すると、`truncated` が真のときに「一覧に無い用語の問い合わせ先」が
+    # 並び、どの用語のものか分からなくなる。
+    touched: list[str] = []
+    for key in ("added_terms", "removed_terms", "modified_terms", "deprecated_terms"):
+        listed = summary.get(key)
+        if isinstance(listed, list):
+            touched.extend(str(iri) for iri in listed)
+    resolved = await TermOwnerRepository(session).resolve_many(
+        namespace=namespace, term_iris=touched
+    )
     return {
         "namespace": namespace,
         "version": version,
         "base_version": base_row.version,
-        "diff": diff.summary(),
+        "diff": summary,
+        # **`source` をそのまま渡す。** 代替で解決したことを隠さない
+        # (ADR-0015 決定2)。
+        "owners": [resolved[iri].model_dump(mode="json") for iri in dict.fromkeys(touched)],
     }
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,20 +111,54 @@ class TermOwnerRepository:
         向きが逆である — 権限は「無いなら拒否」が安全側だが、ルーティングは
         「無いなら上位に回す」が安全側である(誰にも届かない問い合わせは
         放置され、放置されたことも分からない)。
+
+        **`resolve_many` に委譲する**
+        ([ADR-0040](../../../../../docs/adr/0040-term-owner-not-an-approval-gate.md)
+        決定5)。**規則を 2 か所に書かない** — フォールバックの順序が片方だけ
+        変わると、1 件で引いたときと差分で見たときで問い合わせ先が違うという
+        静かな不整合になる。
         """
-        owner = await self.get(namespace=namespace, term_iri=term_iri)
-        if owner is not None:
-            return OwnerResolution(
-                namespace=namespace,
-                term_iri=term_iri,
-                source=OwnerResolutionSource.TERM_OWNER,
-                principal_ids=(owner.principal_id,),
+        resolved = await self.resolve_many(namespace=namespace, term_iris=(term_iri,))
+        return resolved[term_iri]
+
+    async def resolve_many(
+        self, *, namespace: str, term_iris: Sequence[str]
+    ) -> dict[str, OwnerResolution]:
+        """複数の用語の問い合わせ先をまとめて解決する(ADR-0040 決定5)。
+
+        **クエリは 2 回で、用語数に依らない。** 1 回目で `term_owners` の該当行を、
+        2 回目で名前空間の `owner` を引く。用語ごとに問い合わせると、差分に
+        50 用語あれば最大 100 クエリになる。
+
+        **返る辞書には渡した全 IRI が入る。** 解決できなかったものも
+        `unresolved` として入る — 欠落させると、呼び出し側が「載っていない
+        ものは問題なし」と読む(`resolve_target_lifecycles` と同じ契約)。
+
+        Returns:
+            用語 IRI から `OwnerResolution` への辞書。
+        """
+        wanted = list(dict.fromkeys(term_iris))
+        if not wanted:
+            return {}
+
+        rows = (
+            await self._session.execute(
+                select(TermOwnerRow).where(
+                    TermOwnerRow.namespace == namespace,
+                    TermOwnerRow.term_iri.in_(wanted),
+                )
             )
+        ).scalars()
+        by_term = {row.term_iri: row.principal_id for row in rows}
 
         # 名前空間の `owner` ロール保持者へ回す。**`platform-admin` は含めない** —
         # トークンのクレームで決まるものであり、DB からは列挙できない。
         # 運用者がロックアウトから回復する経路(ADR-0014 決定5)であって、
         # 日常の問い合わせ先ではない。
+        #
+        # **用語の責任者が全員そろっていても引く。** 引かないと、
+        # 「責任者がいる用語だけを渡したとき」と「いない用語が混ざったとき」で
+        # クエリ回数が変わる(測りにくくなる)。1 回は定数である。
         stmt = (
             select(NamespaceRoleRow.principal_id)
             .where(
@@ -131,16 +167,28 @@ class TermOwnerRepository:
             )
             .order_by(NamespaceRoleRow.principal_id)
         )
-        owners = tuple((await self._session.execute(stmt)).scalars())
-        if owners:
-            return OwnerResolution(
-                namespace=namespace,
-                term_iri=term_iri,
-                source=OwnerResolutionSource.NAMESPACE_OWNERS,
-                principal_ids=owners,
-            )
-        return OwnerResolution(
-            namespace=namespace,
-            term_iri=term_iri,
-            source=OwnerResolutionSource.UNRESOLVED,
-        )
+        fallback = tuple((await self._session.execute(stmt)).scalars())
+
+        result: dict[str, OwnerResolution] = {}
+        for iri in wanted:
+            if (principal_id := by_term.get(iri)) is not None:
+                result[iri] = OwnerResolution(
+                    namespace=namespace,
+                    term_iri=iri,
+                    source=OwnerResolutionSource.TERM_OWNER,
+                    principal_ids=(principal_id,),
+                )
+            elif fallback:
+                result[iri] = OwnerResolution(
+                    namespace=namespace,
+                    term_iri=iri,
+                    source=OwnerResolutionSource.NAMESPACE_OWNERS,
+                    principal_ids=fallback,
+                )
+            else:
+                result[iri] = OwnerResolution(
+                    namespace=namespace,
+                    term_iri=iri,
+                    source=OwnerResolutionSource.UNRESOLVED,
+                )
+        return result

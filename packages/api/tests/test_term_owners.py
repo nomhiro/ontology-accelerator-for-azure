@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_api.repositories.namespaces import NamespaceRepository
@@ -388,3 +389,129 @@ async def test_名前空間を消すと責任者も消える(session: AsyncSessi
     await NamespaceRepository(session).delete(_NS)
     await session.commit()
     assert await TermOwnerRepository(session).get(namespace=_NS, term_iri=_TERM) is None
+
+
+# ------------------- まとめて解決する(ADR-0040 決定5、`P2B-13`)
+
+
+@pytest.mark.integration
+async def test_まとめて解決しても規則は同じ(session: AsyncSession) -> None:
+    """**`resolve` は `resolve_many` に委譲する**(ADR-0040 決定5)。
+
+    規則を 2 か所に書くと、フォールバックの順序が片方だけ変わったときに
+    「1 件で引いたときと差分で見たときで問い合わせ先が違う」という静かな
+    不整合になる。**両方を同じ入力で突き合わせて固定する。**
+    """
+    await _make_namespace(session)
+    repo = TermOwnerRepository(session)
+    await repo.assign(
+        namespace=_NS,
+        term_iri=_TERM,
+        principal_id=_EXPERT.object_id,
+        assigned_by=_MAINTAINER.object_id,
+    )
+    await session.commit()
+
+    other = "https://e.example/#Unowned"
+    many = await repo.resolve_many(namespace=_NS, term_iris=(_TERM, other))
+    for iri in (_TERM, other):
+        one = await repo.resolve(namespace=_NS, term_iri=iri)
+        assert many[iri] == one, iri
+
+
+@pytest.mark.integration
+async def test_渡した全_IRI_が返る(session: AsyncSession) -> None:
+    """**欠落させない**(ADR-0040 決定5)。
+
+    載っていないものを呼び出し側が「問題なし」と読む
+    (`resolve_target_lifecycles` と同じ契約)。
+    """
+    await _make_namespace(session, with_owner=False)
+    iris = (_TERM, "https://e.example/#A", "https://other.example/#B")
+    resolved = await TermOwnerRepository(session).resolve_many(namespace=_NS, term_iris=iris)
+    assert set(resolved) == set(iris)
+    assert all(r.source is OwnerResolutionSource.UNRESOLVED for r in resolved.values())
+
+
+@pytest.mark.integration
+async def test_重複した_IRI_でも_1_件だけ返る(session: AsyncSession) -> None:
+    """**出力の契約を固定する。** 実装の重複排除を固定するものではない
+    (辞書のキーが自然に 1 件にまとめるので、内部で `dict.fromkeys` を
+    通さなくても同じ結果になる。変異テストで確認した)。
+    """
+    await _make_namespace(session, with_owner=False)
+    resolved = await TermOwnerRepository(session).resolve_many(
+        namespace=_NS, term_iris=(_TERM, _TERM, _TERM)
+    )
+    assert set(resolved) == {_TERM}
+
+
+@pytest.mark.integration
+async def test_空の入力では何も返さない(session: AsyncSession) -> None:
+    """差分が空のときの契約。**クエリ数は次のテストが見る。**"""
+    await _make_namespace(session, with_owner=False)
+    assert await TermOwnerRepository(session).resolve_many(namespace=_NS, term_iris=()) == {}
+
+
+@pytest.mark.integration
+async def test_クエリ数は用語数に依らない(session: AsyncSession) -> None:
+    """**ADR-0040 決定5 の実効部分である。**
+
+    用語ごとに問い合わせると、差分に 50 用語あれば最大 100 クエリになる。
+    **2 回で、用語数に依らない**ことをここで固定する(「まとめて引いている」
+    と書いてあっても、実際にそうなっているかは数えないと分からない)。
+
+    空の入力では 0 回である。
+    """
+    await _make_namespace(session, with_owner=False)
+    repo = TermOwnerRepository(session)
+    statements: list[str] = []
+
+    engine = session.get_bind()
+
+    def _count(conn: object, cursor: object, statement: str, *args: object) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        statements.clear()
+        await repo.resolve_many(namespace=_NS, term_iris=())
+        assert statements == [], "空の入力で問い合わせている"
+
+        statements.clear()
+        await repo.resolve_many(namespace=_NS, term_iris=(_TERM,))
+        one_term = len(statements)
+        assert one_term == 2, f"用語 1 件で {one_term} 回問い合わせている"
+
+        statements.clear()
+        many = tuple(f"https://e.example/#T{i}" for i in range(30))
+        await repo.resolve_many(namespace=_NS, term_iris=many)
+        assert len(statements) == one_term, (
+            f"用語 30 件で {len(statements)} 回。用語数に依らないはずである"
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+
+
+@pytest.mark.integration
+async def test_他の名前空間の責任者をまとめて解決でも見ない(session: AsyncSession) -> None:
+    """名前空間の境界は `resolve_many` でも同じである。"""
+    await _make_namespace(session, with_owner=False)
+    other_ns = "other-owner-ns"
+    await NamespaceRepository(session).create(
+        name=other_ns,
+        display_name=other_ns,
+        description="",
+        base_iri="https://o.example/#",
+        created_by=_ADMIN.object_id,
+    )
+    await TermOwnerRepository(session).assign(
+        namespace=other_ns,
+        term_iri=_TERM,
+        principal_id="other-owner-oid",
+        assigned_by=_ADMIN.object_id,
+    )
+    await session.commit()
+
+    resolved = await TermOwnerRepository(session).resolve_many(namespace=_NS, term_iris=(_TERM,))
+    assert resolved[_TERM].source is OwnerResolutionSource.UNRESOLVED
