@@ -158,6 +158,17 @@ _RESULT_LIMIT_HEADER = "X-Ontology-Result-Limit"
 _RESULT_TOTAL_ROWS_HEADER = "X-Ontology-Result-Total-Rows"
 
 
+def _deprecation_warnings(response: httpx.Response) -> list[str]:
+    """廃止済み用語の警告をヘッダから取り出す(ADR-0017 決定3 / ADR-0038 決定1)。
+
+    **`SELECT` と `CONSTRUCT` / `DESCRIBE` の両方で使う。** 片方だけに書くと、
+    **クエリの形によって警告が消える**(実際に `P2A-14` で RDF の経路に穴が
+    開いていた)。1 か所に閉じて、両方から呼ぶ。
+    """
+    header = response.headers.get(_DEPRECATED_TERMS_HEADER, "")
+    return [part.strip() for part in header.split(",") if part.strip()]
+
+
 def _api_client(headers: dict[str, str] | None = None) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=_settings.core_api_url,
@@ -272,6 +283,16 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
             triples = count_triples(turtle)
             if triples is not None:
                 rdf_result["triple_count"] = triples
+            # ---- 廃止された用語の警告(`P2B-23`、ADR-0038 決定1) ----
+            #
+            # **この経路は早期 return するので、ここに書かないと警告が
+            # 届かない。** `P2A-14` で RDF を通したとき、Core API 側が
+            # ヘッダを付けていなかったので**穴が開いたままだった**。
+            # 下の `SELECT` の経路と**同じヘッダ・同じキー**である —
+            # クエリの形で警告の受け取り方が変わってはいけない。
+            rdf_warnings = _deprecation_warnings(response)
+            if rdf_warnings:
+                rdf_result["deprecation_warnings"] = rdf_warnings
             return rdf_result
 
         result: dict[str, Any] = response.json()
@@ -288,8 +309,7 @@ async def sparql_query(namespace: str, query: str, ctx: Context[Any, Any]) -> di
     # ツール結果の形はこの製品が定義するものであり、SPARQL の protocol では
     # ないため、キーを 1 つ足しても矛盾しない(`head` / `results` は
     # そのまま残るので、標準の形として読む側も壊れない)。
-    header = response.headers.get(_DEPRECATED_TERMS_HEADER, "")
-    deprecated = [part.strip() for part in header.split(",") if part.strip()]
+    deprecated = _deprecation_warnings(response)
     if deprecated:
         result["deprecation_warnings"] = deprecated
 

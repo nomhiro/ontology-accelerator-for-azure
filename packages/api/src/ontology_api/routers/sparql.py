@@ -47,8 +47,9 @@ from ontology_core.sparql.rdf_results import (
     RdfParseError,
     RdfResult,
     TripleLimitExceededError,
+    deprecated_iris_in_graph,
     load_construct_result,
-    terms_in_graph,
+    terms_with_prefix,
 )
 from ontology_core.turtle import TURTLE_MEDIA_TYPE
 
@@ -155,7 +156,9 @@ async def _record_access(
                 actor=actor,
                 query=query,
                 triple_count=rdf.triple_count,
-                terms=terms_in_graph(rdf.turtle, base_iri=ns.base_iri),
+                # **解析し直さない**(ADR-0038 決定3)。上限の検査で
+                # 集めた IRI を絞るだけである。
+                terms=terms_with_prefix(rdf.iris, base_iri=ns.base_iri),
                 default_graph_version=version,
             )
         else:
@@ -194,10 +197,27 @@ async def _run_rdf_query(
     ヘッダに書いてもエージェントは見ない(ADR-0017 決定3)ので、
     **不完全なグラフが完全なものとして届く**。
 
-    **廃止済み用語のヘッダは付けない。** `deprecated_iris_in_results` は
-    SPARQL Results JSON の形を前提にしている。RDF の結果に対して同じ警告を
-    出す設計は別途必要なので、**出せないものを出したふりをしない**
-    (`P2B-23` として記録する)。
+    **廃止済み用語の警告は `SELECT` と同じヘッダで出す**
+    ([ADR-0038](../../../../../docs/adr/0038-rdf-deprecation-warning.md)、
+    `P2B-23`)。**クエリの形によって警告の受け取り方が変わってはいけない。**
+
+    **ヘッダは「返す `Response` に」載せる。** FastAPI はハンドラが `Response`
+    を返したとき、注入された `Response` のヘッダを**合流させない**
+    (`routing.py` が `raw_response` をそのまま使う)。注入側に載せると
+    **ヘッダが黙って消える**ので、返すオブジェクトに載せる。
+
+    **警告を RDF の中には入れない**(決定2)。ADR-0034 決定4 が切り詰めのために
+    拒んだのと同じ理由である — トリプルを足せば**利用者のグラフにこちらが
+    作った主張を混ぜる**。`CONSTRUCT` の結果は自分のストアへ読み込む用途が
+    あるので、混ぜたトリプルは利用者のオントロジーの一部として永続する。
+
+    **切り詰めとは問題の形が違う**(ADR-0038 のコンテキスト)。切り詰めは
+    **グラフが不完全になる**のでヘッダでは足りなかった。廃止の警告は
+    **グラフが完全で正しい**うえでの助言なので、Core API の層ではヘッダで
+    足りる(エージェント向けには MCP が本文へ載せ替える。ADR-0017 決定3)。
+
+    **413 のときは警告しない**(決定7)。返していないものを警告しない
+    (ADR-0025 決定3 と同じ理屈)。
     """
     try:
         body = await store.construct(query, dataset=namespace)
@@ -217,6 +237,11 @@ async def _run_rdf_query(
         # 混同すると、エージェントが誤った結論を出す。
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
+    # **上限を通った結果に対してだけ検査する**(ADR-0038 決定7)。413 で
+    # 断った場合はここに来ないので、返していないものを警告しない。
+    deprecated = await deprecated_terms_in_dataset(store, namespace=namespace)
+    found = deprecated_iris_in_graph(result.iris, deprecated)
+
     await _record_access(
         session,
         namespace=namespace,
@@ -224,7 +249,11 @@ async def _run_rdf_query(
         query=query,
         rdf=result,
     )
-    return Response(content=result.turtle, media_type=TURTLE_MEDIA_TYPE)
+    rdf_response = Response(content=result.turtle, media_type=TURTLE_MEDIA_TYPE)
+    if found:
+        # ヘッダの値は ASCII に限られる。IRI は ASCII なのでそのまま並べる。
+        rdf_response.headers[DEPRECATED_TERMS_HEADER] = ", ".join(found)
+    return rdf_response
 
 
 @router.post(

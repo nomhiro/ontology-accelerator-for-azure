@@ -487,3 +487,101 @@ async def test_sparql_query_omits_the_key_when_nothing_is_deprecated(
         "retail-core", "SELECT ?s WHERE { ?s ?p ?o }", _ctx({"authorization": "Bearer t"})
     )
     assert "deprecation_warnings" not in result
+
+
+async def test_sparql_query_surfaces_deprecation_warnings_for_rdf_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`P2B-23`: **RDF の経路でも本文に載せる**(ADR-0038 決定1)。
+
+    `sparql_query` は `text/turtle` のとき**早期 return する**ので、そこに
+    書かないと警告が届かない。`P2A-14` で RDF を通したとき Core API 側が
+    ヘッダを付けていなかったため、**クエリの形を変えるだけで警告が消える
+    状態だった。**
+
+    **`SELECT` と同じキー(`deprecation_warnings`)である。** クエリの形で
+    受け取り方が変わってはいけない。
+    """
+    _use_auth_mode(monkeypatch, AuthMode.ENTRA)
+    _use_verifier(monkeypatch, _FakeVerifier())
+
+    turtle = "@prefix e: <https://e.example/#> .\ne:Old e:p e:O .\n"
+
+    class _FakeResponse:
+        headers: ClassVar[dict[str, str]] = {
+            "content-type": "text/turtle; charset=utf-8",
+            "X-Ontology-Deprecated-Terms": "https://e.example/#Old",
+        }
+        text = turtle
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            raise AssertionError("RDF の経路で json() を呼んではいけない")
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            return None
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, path: str, json: dict[str, Any]) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    result = await server.sparql_query(
+        "retail-core",
+        "CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }",
+        _ctx({"authorization": "Bearer t"}),
+    )
+
+    assert result["deprecation_warnings"] == ["https://e.example/#Old"]
+    # **形が違うことを形で伝える**(ADR-0034 決定8)。`head` / `results` を偽造しない。
+    assert result["turtle"] == turtle
+    assert result["form"] == "construct"
+    assert result["triple_count"] == 1
+    assert "results" not in result
+
+
+async def test_sparql_query_omits_the_key_for_rdf_without_deprecation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RDF の経路でも、廃止が無いときにキーを付けない(`SELECT` と同じ判断)。"""
+    _use_auth_mode(monkeypatch, AuthMode.ENTRA)
+    _use_verifier(monkeypatch, _FakeVerifier())
+
+    class _FakeResponse:
+        headers: ClassVar[dict[str, str]] = {"content-type": "text/turtle"}
+        text = "@prefix e: <https://e.example/#> .\ne:A e:p e:B .\n"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            raise AssertionError("RDF の経路で json() を呼んではいけない")
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            return None
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, path: str, json: dict[str, Any]) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    result = await server.sparql_query(
+        "retail-core", "DESCRIBE <https://e.example/#A>", _ctx({"authorization": "Bearer t"})
+    )
+    assert "deprecation_warnings" not in result

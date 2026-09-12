@@ -94,7 +94,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1002 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1018 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -152,6 +152,8 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **SQLAlchemy の `session.execute()` の戻り値に `rowcount` は無い（mypy strict）。** `rowcount` は `CursorResult` にしか無く、`execute()` の宣言型はそれより広い `Result[Any]` である。DELETE の件数が欲しいときは `cast` で型を潰すのではなく、**存在確認してから削除する**（1 クエリ増えるが意図が読める。`RoleRepository.revoke` がこの形）。
 
 **`io.open(path, "w", ...)` は引数を検証する前にファイルを切り詰める。** 不正な `newline` を渡すと `ValueError` になるが、**その時点でファイルは既に 0 バイトになっている**（実際に既存のテストファイルを消した。コミット済みだったので復元できた）。生成スクリプトでファイルを書き換えるときは、**開く前に引数を確定させる**か、一時ファイルに書いて差し替える。
+
+**FastAPI のハンドラが `Response` を返すと、注入された `Response` のヘッダは消える。** `def handler(response: Response) -> Response` で `response.headers[...]` に載せても、`return Response(...)` した時点で**その Response がそのまま使われる**(`fastapi/routing.py` が `raw_response` を採用し、注入側のヘッダを合流させない。実測で確認)。**ヘッダが黙って消えるので、返すオブジェクトに載せること。**回帰テストあり(`test_construct_api.py`)。
 
 **FastAPI の `Query(...)` を既定値の位置に書くと、ハンドラを直接呼ぶテストで `Query` オブジェクトが値として流れ込む。** `limit: int = Query(default=50)` の既定値は `50` ではなく `Query` インスタンスである。FastAPI 経由なら解決されるので、**HTTP で叩くテストだけでは気づけない**。このリポジトリのルータのテストはハンドラを直接呼ぶため必ず踏む。`limit: Annotated[int, Query(...)] = 50` と書けば既定値は素の値になる。
 

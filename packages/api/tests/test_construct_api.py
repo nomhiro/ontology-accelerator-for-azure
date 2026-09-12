@@ -14,6 +14,10 @@
    意図的に違う判断である
 4. **行とトリプルを混ぜない**(決定7)。`returned_row_count` は `NULL`
 5. **退役と権限の検査は `SELECT` と同じ経路を通る**
+6. **廃止済み用語を `SELECT` と同じヘッダで警告する**
+   ([ADR-0038](../../../docs/adr/0038-rdf-deprecation-warning.md)、`P2B-23`)。
+   **ヘッダは返す `Response` に載せる** — FastAPI は注入された `Response` の
+   ヘッダを合流させない(そこに載せると黙って消える)
 """
 
 from __future__ import annotations
@@ -28,7 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ontology_api.repositories.access import AccessRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.roles import RoleRepository
-from ontology_api.routers.sparql import SparqlQueryRequest, run_query
+from ontology_api.routers.sparql import (
+    DEPRECATED_TERMS_HEADER,
+    SparqlQueryRequest,
+    run_query,
+)
 from ontology_core.auth.entra import Principal
 from ontology_core.config import AuthMode, Settings
 from ontology_core.models import NamespaceRole, PlatformRole
@@ -60,14 +68,29 @@ class _GraphStore(SparqlStore):
     `Accept` と実際の応答が食い違い、ADR-0025 決定8 が直した 502 に戻る。
     """
 
-    def __init__(self, triples: int = 3, *, body: str | None = None) -> None:
+    def __init__(
+        self,
+        triples: int = 3,
+        *,
+        body: str | None = None,
+        deprecated: tuple[str, ...] = (),
+    ) -> None:
         self._triples = triples
         self._body = body
+        self._deprecated = deprecated
         self.construct_calls: list[str] = []
+        #: 廃止済み用語を引いた回数。**413 のときに引かないこと**を見る。
+        self.deprecated_calls = 0
 
     async def query(self, sparql: str, *, dataset: str) -> dict[str, Any]:
         if "deprecated" in sparql.lower():
-            return {"head": {"vars": ["term"]}, "results": {"bindings": []}}
+            self.deprecated_calls += 1
+            return {
+                "head": {"vars": ["s"]},
+                "results": {
+                    "bindings": [{"s": {"type": "uri", "value": iri}} for iri in self._deprecated]
+                },
+            }
         raise AssertionError("CONSTRUCT / DESCRIBE が query を通っている(502 の原因)")
 
     async def construct(self, sparql: str, *, dataset: str) -> str:
@@ -288,6 +311,32 @@ async def test_グラフから用語を数える(session: AsyncSession) -> None:
 
 
 @pytest.mark.integration
+async def test_他の名前空間の用語は数えない(session: AsyncSession) -> None:
+    """**その名前空間が発行した IRI だけを記録する**(ADR-0018 決定6)。
+
+    絞らないと `rdf:type` や外部語彙の参照回数まで数えることになり、
+    **健全性指標が「自分のオントロジーのどの用語が使われていないか」に
+    答えられなくなる**。副作用として行数の上界も失う。
+
+    **変異テストで見つけた穴である** — `terms_with_prefix` を通さず
+    `rdf.iris` をそのまま渡す変異が生き残った(ADR-0038 決定3 で
+    `terms_in_graph` を置き換えたときに、絞り込みが呼び出し側へ移った)。
+    """
+    await _setup(session)
+    body = (
+        f"@prefix e: <{_BASE}> .\n"
+        "e:S0 <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> "
+        "<https://other.example/#Thing> .\n"
+    )
+    await _run(session, store=_GraphStore(body=body))
+    await session.commit()
+
+    events = await AccessRepository(session).query_events(namespace=_NS)
+    # この名前空間の用語は `e:S0` だけである。
+    assert events.events[0].returned_term_count == 1
+
+
+@pytest.mark.integration
 async def test_SELECT_はトリプル数を記録しない(session: AsyncSession) -> None:
     """**逆向きも混ぜない。** `SELECT` に `returned_triple_count` は付かない。"""
     await _setup(session)
@@ -369,3 +418,124 @@ async def test_形を判定できないクエリは_400(session: AsyncSession) -
         )
     assert exc.value.status_code == 400
     assert "判定できません" in exc.value.detail
+
+
+# ------------------- 廃止済み用語の警告(ADR-0038、`P2B-23`)
+
+
+@pytest.mark.integration
+async def test_廃止済み用語がヘッダで警告される(session: AsyncSession) -> None:
+    """**ADR-0017 決定3 の穴が RDF の経路でも閉じる**(ADR-0038 決定1)。
+
+    `P2A-14` で `CONSTRUCT` を通したとき警告を付けなかったので、
+    **クエリの形を変えるだけで警告なしに廃止済み用語が取れた。**
+    """
+    await _setup(session)
+    store = _GraphStore(deprecated=(_BASE + "S1",))
+    response = await _run(session, store=store)
+    assert response.headers[DEPRECATED_TERMS_HEADER] == _BASE + "S1"
+    assert store.deprecated_calls == 1
+
+
+@pytest.mark.integration
+async def test_廃止が無ければヘッダを付けない(session: AsyncSession) -> None:
+    await _setup(session)
+    response = await _run(session, store=_GraphStore())
+    assert DEPRECATED_TERMS_HEADER not in response.headers
+
+
+@pytest.mark.integration
+async def test_述語の廃止も警告される(session: AsyncSession) -> None:
+    """**`SELECT` では出せない警告である**(ADR-0038 決定4)。
+
+    `deprecated_iris_in_results` は束縛のセルしか見ないので、述語は拾えない
+    (`SELECT ?s ?o` の結果に述語は現れない)。グラフからなら主語・述語・
+    目的語のすべてを見られる。
+    """
+    await _setup(session)
+    store = _GraphStore(deprecated=(_BASE + "p",))
+    response = await _run(session, store=store)
+    assert response.headers[DEPRECATED_TERMS_HEADER] == _BASE + "p"
+
+
+@pytest.mark.integration
+async def test_複数の廃止はカンマで並ぶ(session: AsyncSession) -> None:
+    """`SELECT` の経路と**同じ形**である(ADR-0038 決定1)。"""
+    await _setup(session)
+    store = _GraphStore(deprecated=(_BASE + "S1", _BASE + "O0"))
+    response = await _run(session, store=store)
+    assert response.headers[DEPRECATED_TERMS_HEADER] == f"{_BASE}O0, {_BASE}S1"
+
+
+@pytest.mark.integration
+async def test_結果に現れない廃止は警告しない(session: AsyncSession) -> None:
+    """**返していないものを警告しない。** 受け取った側に対応するトリプルが無い。"""
+    await _setup(session)
+    store = _GraphStore(deprecated=(_BASE + "NotInResult",))
+    response = await _run(session, store=store)
+    assert DEPRECATED_TERMS_HEADER not in response.headers
+
+
+@pytest.mark.integration
+async def test_413_のときは廃止を引きもしない(session: AsyncSession) -> None:
+    """**上限を通った結果に対してだけ検査する**(ADR-0038 決定7)。
+
+    413 で断った場合、返す本文はグラフではない(エラーの detail である)。
+    ADR-0025 決定3 の「廃止の検査は切り詰めた後の結果に対して行う」と
+    同じ理屈である。**無駄なクエリも投げない。**
+    """
+    await _setup(session)
+    store = _GraphStore(5, deprecated=(_BASE + "S1",))
+    with pytest.raises(HTTPException) as exc:
+        await _run(session, store=store, settings=_settings(triples=3))
+    assert exc.value.status_code == 413
+    assert store.deprecated_calls == 0
+
+
+@pytest.mark.integration
+async def test_廃止済み用語の取得が失敗しても応答は返る(session: AsyncSession) -> None:
+    """**警告のために本来の応答を壊さない**(ADR-0017)。
+
+    廃止の警告が出ないのは劣化だが、クエリそのものが失敗するのは回帰である。
+    """
+
+    class _FailingDeprecated(_GraphStore):
+        async def query(self, sparql: str, *, dataset: str) -> dict[str, Any]:
+            if "deprecated" in sparql.lower():
+                raise SparqlStoreError("廃止済み用語を引けません(テスト)")
+            raise AssertionError("CONSTRUCT / DESCRIBE が query を通っている")
+
+    await _setup(session)
+    response = await _run(session, store=_FailingDeprecated())
+    assert response.media_type is not None
+    assert response.media_type.startswith("text/turtle")
+    assert DEPRECATED_TERMS_HEADER not in response.headers
+
+
+def test_注入された_Response_のヘッダは返した_Response_に合流しない() -> None:
+    """**この振る舞いに依存している**(ADR-0038 決定1 の実装上の判断)。
+
+    FastAPI はハンドラが `Response` を返したとき、注入された `Response` を
+    捨てる(`routing.py` が `raw_response` をそのまま使う)。**注入側に
+    ヘッダを載せると黙って消える** — 実際に一度そう書きかけた。
+
+    ここで固定しておけば、将来 FastAPI がこの振る舞いを変えたときに気づける
+    (気づいたうえで、返すオブジェクトに載せる実装はそのままで正しい)。
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+
+    @app.get("/both", response_model=None)
+    def both(response: Response) -> Response:  # pragma: no cover - TestClient が呼ぶ
+        response.headers["X-Injected"] = "yes"
+        out = Response(content="body", media_type="text/plain")
+        out.headers["X-Returned"] = "yes"
+        return out
+
+    result = TestClient(app).get("/both")
+    assert result.headers.get("X-Returned") == "yes"
+    assert result.headers.get("X-Injected") is None, (
+        "注入された Response のヘッダが届くようになった。ADR-0038 の判断を読み直すこと"
+    )

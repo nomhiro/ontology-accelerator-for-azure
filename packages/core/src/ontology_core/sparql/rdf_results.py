@@ -42,8 +42,9 @@ __all__ = [
     "RdfResult",
     "TripleLimitExceededError",
     "count_triples",
+    "deprecated_iris_in_graph",
     "load_construct_result",
-    "terms_in_graph",
+    "terms_with_prefix",
 ]
 
 
@@ -88,10 +89,17 @@ class RdfResult:
             この API の応答は変わらない)。空白ノードのラベルは保たれないが、
             `CONSTRUCT` の空白ノードのラベルはそもそも安定していない。
         triple_count: トリプル数。アクセスログに記録する(決定7)。
+        iris: グラフに現れた IRI(主語・述語・目的語のすべて)。
+            **ここで持つのは解析を 1 回に留めるためである**
+            ([ADR-0038](../../../../../docs/adr/0038-rdf-deprecation-warning.md)
+            決定3)。この経路は上限の検査とアクセスログの用語で既に 2 回
+            解析していた。廃止の検査を足すと 3 回になる — rdflib の解析は
+            CPU バウンドで、そのために別スレッドへ逃がしている。
     """
 
     turtle: str
     triple_count: int
+    iris: frozenset[str]
 
 
 def load_construct_result(body: str, *, limit: int) -> RdfResult:
@@ -119,6 +127,12 @@ def load_construct_result(body: str, *, limit: int) -> RdfResult:
     return RdfResult(
         turtle=serialized if isinstance(serialized, str) else serialized.decode("utf-8"),
         triple_count=count,
+        # **主語・述語・目的語のすべてを見る**(ADR-0038 決定4)。
+        # **リテラルは IRI として扱わない**(決定5) — 文字列が偶然一致しても
+        # 警告しない。
+        iris=frozenset(
+            str(node) for triple in graph for node in triple if isinstance(node, URIRef)
+        ),
     )
 
 
@@ -140,28 +154,31 @@ def count_triples(turtle: str) -> int | None:
     return len(graph)
 
 
-def terms_in_graph(turtle: str, *, base_iri: str) -> tuple[str, ...]:
-    """グラフに現れたその名前空間の用語 IRI を返す(ADR-0034 決定7)。
+def terms_with_prefix(iris: frozenset[str], *, base_iri: str) -> tuple[str, ...]:
+    """IRI の集合からその名前空間の用語だけを返す(ADR-0034 決定7)。
 
-    **主語・述語・目的語のすべてを見る。** `SELECT` の束縛から数えるより
-    **むしろ正確**である — 束縛に現れない IRI も拾える。
+    **解析しない。** `RdfResult.iris` を受け取るだけの純粋な絞り込みである
+    (ADR-0038 決定3) — 同じ本文を 2 回解析しないため。
 
     **`base_iri` が空なら何も返さない。** 空の接頭辞で全 IRI を数えて
     しまわないようにする(`ontology_core.access.returned_terms` と同じ判断)。
-
-    **記録のために本来の応答を壊さない。** 解析できない本文でも例外にせず
-    空を返す(この関数はアクセスログのためだけに呼ばれる)。
+    **この規則がこの関数の存在理由である** — 呼び出し側で
+    `startswith(base_iri)` と書くと、空文字のときに全件一致する。
     """
     if not base_iri:
         return ()
-    graph = Graph()
-    try:
-        graph.parse(data=turtle, format="turtle")
-    except Exception:
-        return ()
-    found: set[str] = set()
-    for triple in graph:
-        for node in triple:
-            if isinstance(node, URIRef) and str(node).startswith(base_iri):
-                found.add(str(node))
-    return tuple(sorted(found))
+    return tuple(sorted(iri for iri in iris if iri.startswith(base_iri)))
+
+
+def deprecated_iris_in_graph(iris: frozenset[str], deprecated: frozenset[str]) -> tuple[str, ...]:
+    """グラフに現れた廃止済み IRI を列挙する(ADR-0038 決定1)。
+
+    **`base_iri` で絞らない**(決定6)。`deprecated` はそのデータセットに
+    対する SPARQL で求めているので、そこに入るのは呼び出し元が既に読める
+    用語だけである。絞ると**取り込んだ外部語彙の廃止を警告できなくなる**。
+
+    `SELECT` 側(`ontology_core.deprecation.deprecated_iris_in_results`)とは
+    入力の形が違うので別の関数にしてある(決定の「検討した代替案」)。
+    **こちらは述語も見るので網羅的である**(決定4)。
+    """
+    return tuple(sorted(iris & deprecated))
