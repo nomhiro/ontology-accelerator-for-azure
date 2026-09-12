@@ -90,6 +90,12 @@ param supersededRetain string = '0'
 @description('正本 TTL を置く Blob のプレフィックス。containers/fuseki/load-snapshot.sh の BLOB_PREFIX と揃える。ADR-0010 決定8で `approved/` から改名した。')
 param blobPrefix string = 'versions/'
 
+@description('スキャンで接続を許可するホスト (カンマ区切り)。**既定は空で、そのときスキャンは使えない** (ADR-0041 決定5、不変条件11)。')
+param scanAllowedHosts string = ''
+
+@description('ソース DB のパスワードを置く Key Vault の URL。値はここにもカタログにも入らない (ADR-0041 決定4)。')
+param scanVaultUrl string = ''
+
 @description('Application Insights の接続文字列。')
 param applicationInsightsConnectionString string
 
@@ -295,6 +301,18 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'SPARQL_MAX_TRIPLES'
               value: sparqlMaxTriples
+            }
+            {
+              // ソース DB のスキャン(ADR-0041 決定5)。**既定は空で、
+              // そのときスキャンは使えない。** 「設定が無ければどこへでも」
+              // にしない(不変条件11)。
+              name: 'SCAN_ALLOWED_HOSTS'
+              value: scanAllowedHosts
+            }
+            {
+              // 秘密の**在り処**。値はここにもカタログにも入らない(決定4)。
+              name: 'SCAN_VAULT_URL'
+              value: scanVaultUrl
             }
           ], postgresPasswordEnv)
           // /healthz は認証不要でプロセスの生存だけを返す (依存先の到達性は含めない)。

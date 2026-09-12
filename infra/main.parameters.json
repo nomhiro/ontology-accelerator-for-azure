@@ -59,6 +59,15 @@
     "supersededRetain": {
       "value": "${SUPERSEDED_RETAIN=0}"
     },
+    "scanAllowedHosts": {
+      "value": "${SCAN_ALLOWED_HOSTS}"
+    },
+    "scanVaultUrl": {
+      "value": "${SCAN_VAULT_URL}"
+    },
+    "scanJobCron": {
+      "value": "${SCAN_JOB_CRON}"
+    },
     "apiImageName": {
       "value": "${SERVICE_API_IMAGE_NAME}"
     },

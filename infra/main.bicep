@@ -108,6 +108,18 @@ param fusekiMemory string = '1Gi'
 param fusekiJavaOptions string = '-Xmx768m -XX:+UseSerialGC'
 
 // ---------------------------------------------------------------------------
+// ソース DB のスキャン (ADR-0041 / ADR-0042)
+// ---------------------------------------------------------------------------
+@description('スキャンで接続を許可するホスト (カンマ区切り)。**既定は空で、そのときスキャンは使えない** (ADR-0041 決定5、不変条件11)。「設定が無ければどこへでも」にしない。')
+param scanAllowedHosts string = ''
+
+@description('ソース DB のパスワードを置く Key Vault の URL。空ならこのプロジェクトの Key Vault を使う (ADR-0042 決定7)。**別の Vault を指す場合は、その Vault に対して Key Vault Secrets User をマネージド ID へ手で付与する必要がある** (Bicep は自分が作っていないリソースにロールを付けない)。')
+param scanVaultUrl string = ''
+
+@description('スキャンの定期実行の cron 式 (UTC、5 フィールド)。**空なら ACA Job は Manual トリガになり、自動では走らない** (ADR-0042 決定1)。例: 毎日 03:00 JST なら `0 18 * * *`。')
+param scanJobCron string = ''
+
+// ---------------------------------------------------------------------------
 // azd deploy が設定するコンテナイメージ (初回 provision 時は空)
 // ---------------------------------------------------------------------------
 @description('Core API のコンテナイメージ。azd deploy が SERVICE_API_IMAGE_NAME として設定する。')
@@ -140,6 +152,11 @@ var ontologyBlobPrefix = 'versions/'
 // modelLocation は Phase 2 で Microsoft Foundry を追加する際に使う。
 // いま参照先がないため、値の解決だけ済ませて output で環境へ渡す。
 var resolvedModelLocation = empty(modelLocation) ? location : modelLocation
+
+// ソース DB の秘密を置く Key Vault。**既定はこのプロジェクトの Key Vault**
+// (ADR-0042 決定7)。マネージド ID は既に `Key Vault Secrets User` を持って
+// いるので、運用者は追加のロール付与なしに秘密を置ける。
+var resolvedScanVaultUrl = empty(scanVaultUrl) ? shared.outputs.keyVaultUri : scanVaultUrl
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
   name: '${abbrs.resourcesResourceGroups}${environmentName}'
@@ -273,6 +290,11 @@ module api './modules/api.bicep' = {
     // 保持ポリシー(ADR-0019 決定1)。**API にだけ渡す** — マニフェストを
     // 作るのは API で、ローダは判断済みの結果を解釈するだけである。
     supersededRetain: supersededRetain
+    // ソース DB のスキャン(ADR-0041)。**既定は空で、そのときスキャンは
+    // 使えない**(決定5)。`P2A-01` の時点ではローカルでしか設定できて
+    // いなかった(ADR-0042 でこの配線に気づいた)。
+    scanAllowedHosts: scanAllowedHosts
+    scanVaultUrl: resolvedScanVaultUrl
   }
 }
 
@@ -300,6 +322,41 @@ module mcp './modules/mcp-server.bicep' = {
     sparqlGspEndpoint: fuseki.outputs.gspEndpoint
     fusekiAdminEndpoint: fuseki.outputs.adminEndpoint
     coreApiUrl: api.outputs.uri
+    applicationInsightsConnectionString: shared.outputs.applicationInsightsConnectionString
+    logLevel: logLevel
+  }
+}
+
+// ---------------------------------------------------------------------------
+// scan-job (Container Apps Job / 既定は Manual トリガ)
+// ---------------------------------------------------------------------------
+// **既定では自動実行されない**(ADR-0042 決定1)。`SCAN_JOB_CRON` を設定した
+// ときだけ `Schedule` トリガになる。他人の DB へ繰り返し接続を試みる処理を、
+// 運用者の明示なしに始めない。
+//
+// **イメージは Core API と同じ**(決定5)。provision の時点では
+// `apiImageName` が空なので、`scripts/postdeploy.sh` が差し替えて
+// **副作用で確認する**。
+module scanJob './modules/scan-job.bicep' = {
+  name: 'scan-job'
+  scope: resourceGroup
+  params: {
+    name: '${abbrs.appContainerAppsJobs}scan-${resourceToken}'
+    location: location
+    tags: tags
+    containerAppsEnvironmentId: containerAppsEnvironment.outputs.id
+    containerRegistryLoginServer: shared.outputs.containerRegistryLoginServer
+    identityId: shared.outputs.identityId
+    identityClientId: shared.outputs.identityClientId
+    imageName: apiImageName
+    scanJobCron: scanJobCron
+    authMode: authMode
+    postgresHost: postgres.outputs.host
+    postgresDatabase: postgres.outputs.databaseName
+    postgresUser: postgres.outputs.connectionUser
+    postgresPasswordSecretUri: shared.outputs.postgresPasswordSecretUri
+    scanAllowedHosts: scanAllowedHosts
+    scanVaultUrl: resolvedScanVaultUrl
     applicationInsightsConnectionString: shared.outputs.applicationInsightsConnectionString
     logLevel: logLevel
   }
@@ -350,6 +407,14 @@ output SERVICE_MCP_URI string = mcp.outputs.uri
 output SERVICE_MCP_NAME string = mcp.outputs.name
 output SERVICE_WEB_URI string = web.outputs.uri
 output SERVICE_WEB_NAME string = web.outputs.name
+output SERVICE_SCAN_JOB_NAME string = scanJob.outputs.name
+// **Manual なら自動では走らない**(ADR-0042 決定1)。`az containerapp job start` で
+// 起動する。`postdeploy` がイメージを差し替えるので、その前に走らせても
+// プレースホルダが動くだけである(決定5)。
+output SCAN_JOB_TRIGGER_TYPE string = scanJob.outputs.triggerType
+output SCAN_ALLOWED_HOSTS string = scanAllowedHosts
+output SCAN_VAULT_URL string = resolvedScanVaultUrl
+
 output SERVICE_FUSEKI_NAME string = fuseki.outputs.name
 output SERVICE_FUSEKI_INTERNAL_FQDN string = fuseki.outputs.internalFqdn
 

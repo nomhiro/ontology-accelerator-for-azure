@@ -418,7 +418,8 @@ curl -X POST "$API/namespaces/retail-core/sparql" \
 
 ```bash
 # 1. 接続先を allowlist に入れる(**既定は空で、設定するまでスキャンは使えません**)
-#    デプロイ環境では Bicep のパラメータ、ローカルでは .env で指定します
+#    デプロイ環境: azd env set SCAN_ALLOWED_HOSTS ... && azd provision
+#    ローカル:     .env の SCAN_ALLOWED_HOSTS
 export SCAN_ALLOWED_HOSTS=sales-db.example.internal,crm-db.example.internal
 
 # 2. ソースを登録する(owner が必要。**パスワードは渡しません**)
@@ -461,6 +462,21 @@ curl -X POST "$API/namespaces/retail-core/scan-sources/sales-db/remove" \
 
 リクエストで秘密を受け取ると、**ログ・監査・例外・再送の経路に一斉に載ります**。運用者が Key Vault に自分で入れ、名前だけを登録してください。**Key Vault の応答本文は例外にもログにも載せません**(秘密が入りうるため、状態コードと秘密の名前だけを報告します)。
 
+**`SCAN_VAULT_URL` の既定はこのデプロイの Key Vault です。** マネージド ID は既に `Key Vault Secrets User` を持っているので、追加のロール付与なしに秘密を置けます。
+
+```bash
+az keyvault secret set --vault-name "$AZURE_KEY_VAULT_NAME" \
+  --name sales-db-password --value '<ソース DB のパスワード>'
+```
+
+**別の Key Vault を指す場合は、その Vault に対してマネージド ID へ `Key Vault Secrets User` を手で付与してください**(Bicep は自分が作っていないリソースにロールを付けません)。
+
+```bash
+azd env set SCAN_VAULT_URL https://kv-your-own.vault.azure.net
+az role assignment create --assignee "$AZURE_CLIENT_ID" \
+  --role "Key Vault Secrets User" --scope <その Vault のリソース ID>
+```
+
 **接続先はホストの allowlist で絞り、既定は空です。** 任意のホストへ接続できる口は、認証済みの主体に**内部ネットワークの到達性を調べる手段**を与えます(接続の成否だけで十分な情報になります)。SPARQL の `SERVICE` を既定で禁止しているのと同じ判断です。**許可されていないホストは登録の時点で 403 になります** — 登録できてしまうと「後で接続できるはず」という誤解が残るためです。
 
 **統計の「無い」と「0」を区別します。**
@@ -482,7 +498,28 @@ curl -X POST "$API/namespaces/retail-core/scan-sources/sales-db/remove" \
 
 **カタログは MCP に出していません**(意図した判断です)。カタログは*観測*であって、レビューも承認も受けていません。エージェントに出すのは `approved` の版だけです — **審査を通っていない語彙がエージェントの文脈に入る経路を作らない**ためです(表と列の名前それ自体が機微であることも理由です)。カタログの読み手は `P2A-02` で、**人間が承認した結果**がエージェントに届きます。
 
-**定期実行(ACA Job)はまだありません**(`P2A-19`)。API から同期で 1 回走らせる形だけです。Bicep は `az bicep build` で構文までしか確かめられず、**課金なしに動作を検証できない**ため、「書いたが動かしていない IaC」を残さない判断をしました(ADR-0041 決定10)。
+**定期実行は既定で動きません**([ADR-0042](docs/adr/0042-scan-job.md)、`P2A-19`)。`scan-job`(Container Apps Job)はデプロイされますが、**`SCAN_JOB_CRON` を設定するまで `Manual` トリガのまま**で、自動では 1 度も走りません。
+
+```bash
+# 定期実行を有効にする(UTC の cron。毎日 03:00 JST = 18:00 UTC)
+azd env set SCAN_JOB_CRON "0 18 * * *"
+azd provision
+
+# 1 回だけ手で走らせる
+az containerapp job start --name "$SERVICE_SCAN_JOB_NAME" --resource-group "$AZURE_RESOURCE_GROUP"
+
+# 実行の結果を見る
+az containerapp job execution list --name "$SERVICE_SCAN_JOB_NAME" \
+  --resource-group "$AZURE_RESOURCE_GROUP" -o table
+```
+
+**既定で他人の DB へ手を伸ばし始めないためです。** 定期実行は繰り返し接続を試み、実行ごとに課金され、運用者が気づかないうちに始まります。頻度は「そのソースがどれだけ変わるか」と「そのソースにどれだけ負荷をかけてよいか」で決まる — **こちらが知らないこと**です。`SCAN_ALLOWED_HOSTS` を既定で空にしているのと同じ判断です。
+
+ジョブは**登録済みの全ソース**を掃引します(名前空間で絞りません)。トリガに引数が無いのは意図で、対象を選べる口を作ると「誰がどの DB をスキャンできるか」が名前空間の権限の外に出ます。オンデマンドが必要なら**上の同期エンドポイント**を使ってください(名前空間の `owner` が要ります)。
+
+**1 つのソースが落ちてもジョブは成功で終わります。** 終了コードが語るのは「掃引が走ったか」だけで、「全ソースに届いたか」ではありません — **読むべき場所は `scan_runs` です**(失敗は `status: failed` として残ります)。1 件でも失敗があればログに警告と件数が出ます。
+
+ジョブは **Core API と同じイメージ**を別のコマンド(`python -m ontology_api.scan_job`)で動かします。**Fuseki と Blob の資格情報は渡していません** — スキャンが触るのは PostgreSQL(カタログ)とソース DB だけで、イメージが同じである以上**渡せば使えてしまう**からです(テストで固定しています)。
 
 #### SHACL 検証は承認を止めます
 

@@ -98,7 +98,7 @@ flowchart LR
 | **Ontop VKG** (Phase 3) | R2RML マッピングに基づき、顧客 DB を仮想グラフとして連邦クエリ対象にする。実データは実体化しない | **internal ingress のみ** |
 | **PostgreSQL** | **正本**: 名前空間、RBAC、承認履歴と監査証跡、R2RML マッピング、メトリクス定義 | VNet(`production`)/ ファイアウォール(`minimal`) |
 | **Blob Storage** | **正本**: バージョン付き TTL(不変リビジョン)、取り込んだ文書 | Managed Identity 経由 |
-| **ACA Jobs** | `scan-job`(スキーマ・統計の抽出。**まだ無い** — `P2A-19`。現在は Core API から同期で実行する)、`reasoner-job`(OWL 推論、Phase 4) | 非公開 |
+| **ACA Jobs** | `scan-job`(スキーマ・統計の抽出。**既定は `Manual` トリガで自動では走らない** — `SCAN_JOB_CRON` を設定したときだけ定期実行になる。[ADR-0042](adr/0042-scan-job.md))、`reasoner-job`(OWL 推論、Phase 4) | 非公開 |
 
 Fuseki と Ontop が **internal ingress のみ**であることは、[認証・認可・セキュリティ](#認証認可セキュリティ)で述べる SPARQL 攻撃面対策の前提です。
 
@@ -149,7 +149,7 @@ flowchart TB
   B6 --> C1
 ```
 
-- **Scan** — ソース DB のスキーマ・コメント・統計を抽出し、PostgreSQL のカタログへ蓄積します(**実装済み**。`P2A-01`、[ADR-0041](adr/0041-source-schema-scan.md))。**実データを 1 行も読みません** — カタログは LLM のプロンプトへ流れるので、一度混ざったら消せません。発行する SQL は `information_schema` と `pg_catalog` に対する 5 本に固定され、テストがそれを機械的に検査します。現在は **Core API から同期で 1 回**走らせる形で、`scan-job`(ACA Job)としての定期実行は `P2A-19` です(Bicep を課金なしに検証できないため、意図的に範囲外にしました)。Blob の文書取り込みと LLM によるメタデータ強化は未実装です。任意で Microsoft Purview Data Map からの取り込みも行えます(依存はしません。[ADR-0007](adr/0007-no-purview-dependency.md))。
+- **Scan** — ソース DB のスキーマ・コメント・統計を抽出し、PostgreSQL のカタログへ蓄積します(**実装済み**。`P2A-01`、[ADR-0041](adr/0041-source-schema-scan.md))。**実データを 1 行も読みません** — カタログは LLM のプロンプトへ流れるので、一度混ざったら消せません。発行する SQL は `information_schema` と `pg_catalog` に対する 5 本に固定され、テストがそれを機械的に検査します。**Core API から同期で 1 回**走らせる口と、`scan-job`(ACA Job)による掃引の 2 つがあります。**ジョブは既定で `Manual` トリガで、`SCAN_JOB_CRON` を設定するまで自動では走りません**([ADR-0042](adr/0042-scan-job.md))。ジョブは登録済みの全ソースを掃引し、**Core API と同じイメージ**を別のコマンドで動かします(Fuseki と Blob の資格情報は渡していません)。Blob の文書取り込みと LLM によるメタデータ強化は未実装です。任意で Microsoft Purview Data Map からの取り込みも行えます(依存はしません。[ADR-0007](adr/0007-no-purview-dependency.md))。
 - **Model** — Core API がカタログからオントロジー候補(OWL/SHACL)を LLM 生成し、Web で専門家がレビュー・承認したうえで、**新バージョンとして Blob + PostgreSQL にコミット**し、Fuseki へ射影します。**LLM の出力が人間の承認を経ずに正本へ入ることはありません。**
 - **Serve** — MCP Server / Core API が SPARQL(Fuseki)・連邦クエリ(Ontop)・ベクトル検索(AI Search)を **Context Manager 層**でオーケストレーションし、エージェントに提供します。
 

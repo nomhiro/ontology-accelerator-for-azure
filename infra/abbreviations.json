@@ -1,5 +1,6 @@
 {
   "appContainerApps": "ca-",
+  "appContainerAppsJobs": "caj-",
   "appManagedEnvironments": "cae-",
   "containerRegistryRegistries": "acr",
   "dBforPostgreSQLServers": "psql-",

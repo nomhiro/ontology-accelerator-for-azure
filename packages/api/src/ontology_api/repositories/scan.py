@@ -132,6 +132,23 @@ class ScanRepository:
         )
         return [_to_source(row) for row in (await self._session.execute(stmt)).scalars()]
 
+    async def list_all_source_rows(self) -> list[ScanSourceRow]:
+        """**全名前空間の**ソースの行を返す(ADR-0042 決定2)。
+
+        **名前空間で絞らない唯一のメソッドである。** 使うのは
+        `scan-job`(定期実行の掃引)だけで、`reconcile` と同じ
+        **システムの保守処理**の位置にある。
+
+        不変条件5 に反しない — 境界が守るのは**外部入力が別の名前空間へ
+        届かないこと**である。このメソッドの呼び出し元は外部入力を
+        受け取らない(トリガに引数が無い)。
+
+        **API のハンドラから呼んではいけない。** 名前空間を絞る
+        `list_sources` を使う。
+        """
+        stmt = select(ScanSourceRow).order_by(ScanSourceRow.namespace, ScanSourceRow.name)
+        return list((await self._session.execute(stmt)).scalars())
+
     async def delete_source(self, *, namespace: str, name: str) -> bool:
         """ソースを消す。**run とカタログも CASCADE で消える。**
 

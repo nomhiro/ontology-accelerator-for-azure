@@ -119,6 +119,53 @@ POSTGRES_ADMIN_USER="${AZURE_PRINCIPAL_NAME}" POSTGRES_APP_ROLE="${POSTGRES_USER
 # ---- ファイアウォール規則を削除する（開けたままにしない） ----
 delete_firewall_rule
 
+# ---- scan-job のイメージを差し替える（ADR-0042 決定5） ----
+#
+# **azd はジョブのイメージを更新しない。** provision の時点では
+# SERVICE_API_IMAGE_NAME がまだ空なので、Bicep はプレースホルダを置いている。
+# azd がイメージを差し替えるのは azd-service-name タグの付いたコンテナアプリ
+# だけで、Microsoft.App/jobs は対象外である（azd 1.28.0 が
+# host: containerapp-job を扱えるかは確認できなかった。`azd show` は不正な
+# host 値も黙って受け付けるため、受け付けたことは対応の証拠にならない）。
+#
+# **終了コードを見るだけでは足りない**ので、読み戻して一致を確認する。
+#
+# **ここで止めない。** ジョブは既定で Manual トリガ（ADR-0042 決定1）なので、
+# 古いイメージのままでも自動では何も起こらない。サンプルの投入まで終わった
+# デプロイを、この 1 点で失敗にするのは不釣り合いである。**代わりに大きく
+# 警告する** — 差し替わっていないジョブを起動すると、プレースホルダは
+# 終了しないプロセスなので実行はタイムアウトで Failed になる（静かに成功した
+# ことにはならない）。
+if [ -n "${SERVICE_SCAN_JOB_NAME:-}" ]; then
+    if [ -n "${SERVICE_API_IMAGE_NAME:-}" ]; then
+        echo "postdeploy: scan-job のイメージを差し替えます (${SERVICE_SCAN_JOB_NAME})"
+        if az containerapp job update \
+            --name "${SERVICE_SCAN_JOB_NAME}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --image "${SERVICE_API_IMAGE_NAME}" >/dev/null; then
+            # **副作用で確認する。** 終了コードだけでは差し替わった保証にならない。
+            applied="$(az containerapp job show \
+                --name "${SERVICE_SCAN_JOB_NAME}" \
+                --resource-group "${AZURE_RESOURCE_GROUP}" \
+                --query "properties.template.containers[0].image" -o tsv 2>/dev/null || echo '')"
+            if [ "${applied}" = "${SERVICE_API_IMAGE_NAME}" ]; then
+                echo "postdeploy: scan-job のイメージを確認しました (${applied})"
+            else
+                echo "postdeploy: 警告 — scan-job のイメージが一致しません" >&2
+                echo "postdeploy:   期待: ${SERVICE_API_IMAGE_NAME}" >&2
+                echo "postdeploy:   実際: ${applied:-（読み取れません）}" >&2
+            fi
+        else
+            echo "postdeploy: 警告 — scan-job のイメージを差し替えられませんでした" >&2
+            echo "postdeploy:   定期実行（P2A-19）は動きません。手で実行してください:" >&2
+            echo "postdeploy:   az containerapp job update --name ${SERVICE_SCAN_JOB_NAME} --resource-group ${AZURE_RESOURCE_GROUP} --image ${SERVICE_API_IMAGE_NAME}" >&2
+        fi
+    else
+        echo "postdeploy: 警告 — SERVICE_API_IMAGE_NAME が無いため scan-job のイメージを差し替えられません" >&2
+        echo "postdeploy:   ジョブはプレースホルダのイメージを指したままです（既定は Manual トリガなので自動では走りません）" >&2
+    fi
+fi
+
 # ---- API が応答するまで待つ ----
 # deploy 直後はリビジョンが起動中で、マイグレーションも走っている。
 echo "postdeploy: API の起動を待ちます (${API})"

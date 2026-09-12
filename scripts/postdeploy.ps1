@@ -116,6 +116,41 @@ try {
     Remove-OperatorFirewallRule
 }
 
+# ---- scan-job のイメージを差し替える（ADR-0042 決定5） ----
+#
+# **azd はジョブのイメージを更新しない。** 理由と方針は scripts/postdeploy.sh の
+# 同じ節を参照（provision の時点では SERVICE_API_IMAGE_NAME が空で、azd が
+# 差し替えるのは azd-service-name タグの付いたコンテナアプリだけである）。
+#
+# **終了コードを見るだけでは足りない**ので読み戻して確認し、**失敗しても
+# デプロイは止めない**（ジョブは既定で Manual トリガなので自動では走らない）。
+$scanJobName = $env:SERVICE_SCAN_JOB_NAME
+$apiImage = $env:SERVICE_API_IMAGE_NAME
+if ($scanJobName) {
+    if ($apiImage) {
+        Write-Host "postdeploy: scan-job のイメージを差し替えます ($scanJobName)"
+        az containerapp job update --name $scanJobName `
+            --resource-group $env:AZURE_RESOURCE_GROUP --image $apiImage | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "postdeploy: scan-job のイメージを差し替えられませんでした。定期実行 (P2A-19) は動きません"
+            Write-Warning "postdeploy: az containerapp job update --name $scanJobName --resource-group $env:AZURE_RESOURCE_GROUP --image $apiImage"
+        } else {
+            # **副作用で確認する。**
+            $applied = az containerapp job show --name $scanJobName `
+                --resource-group $env:AZURE_RESOURCE_GROUP `
+                --query "properties.template.containers[0].image" -o tsv
+            if ($applied -eq $apiImage) {
+                Write-Host "postdeploy: scan-job のイメージを確認しました ($applied)"
+            } else {
+                Write-Warning "postdeploy: scan-job のイメージが一致しません (期待: $apiImage / 実際: $applied)"
+            }
+        }
+    } else {
+        Write-Warning "postdeploy: SERVICE_API_IMAGE_NAME が無いため scan-job のイメージを差し替えられません"
+        Write-Warning "postdeploy: ジョブはプレースホルダのイメージを指したままです (既定は Manual トリガなので自動では走りません)"
+    }
+}
+
 # ---- API が応答するまで待つ ----
 Write-Host "postdeploy: API の起動を待ちます ($api)"
 $ready = $false
