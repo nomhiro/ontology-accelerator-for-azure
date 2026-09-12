@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ontology_api.services.scan import SecretResolver, default_secret_resolver
 from ontology_core.auth.entra import Principal, TokenVerificationError, TokenVerifier
 from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import AuthMode, Settings, get_settings
@@ -161,3 +162,18 @@ async def db_session() -> AsyncIterator[AsyncSession]:
 
 
 SessionDep = Annotated[AsyncSession, Depends(db_session)]
+
+
+def scan_secret_resolver() -> SecretResolver:
+    """ソース DB の秘密を解決する関数を返す(ADR-0041 決定4)。
+
+    **依存として切り出しているのはテストのためである。** Key Vault と
+    マネージド ID はローカルで検証できないので、スキャン本体は
+    **実物の PostgreSQL に対して**確かめ、秘密の解決だけを差し替える。
+
+    **秘密の値はここを通るだけで、どこにも保存されない。**
+    """
+    return default_secret_resolver
+
+
+ScanSecretDep = Annotated[SecretResolver, Depends(scan_secret_resolver)]

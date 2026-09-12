@@ -12,6 +12,7 @@ from datetime import datetime
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -374,3 +375,147 @@ class TermMappingRow(Base):
     declared_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ScanSourceRow(Base):
+    """スキャン対象のソース DB(ADR-0041 決定4・8)。
+
+    **資格情報を持たない。** 持つのは接続の**行き先**と、秘密の**在り処**
+    (Key Vault の秘密名)だけである。パスワードをこの表に入れてはいけない
+    — 不変条件6(DSN にパスワードを埋めない)と同じ判断であり、
+    **API でも受け取らない**(リクエストで受け取ると、ログ・監査・例外・
+    再送の経路に一斉に載る)。
+
+    **名前空間に属する**(決定8)。「誰がどの顧客 DB へ接続できるか」を
+    名前空間の境界の外に出さない(不変条件5)。同じ DB を複数の名前空間から
+    使いたいなら、それぞれに登録する。
+    """
+
+    __tablename__ = "scan_sources"
+    __table_args__ = (
+        UniqueConstraint("namespace", "name", name="uq_scan_sources_ns_name"),
+        Index("ix_scan_sources_namespace", "namespace"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(
+        ForeignKey("namespaces.name", ondelete="CASCADE"), nullable=False
+    )
+    #: 運用者が付ける名前。名前空間の中で一意。
+    name: Mapped[str] = mapped_column(String(63), nullable=False)
+    #: `ontology_core.scan.ScanDriver` の値。**対応外は登録させない**(決定9)。
+    driver: Mapped[str] = mapped_column(String(32), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    database: Mapped[str] = mapped_column(String(255), nullable=False)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: `ontology_core.scan.ScanAuthMode` の値。
+    auth_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: Key Vault の秘密の**名前**。`entra` のときは `NULL`。
+    #: **値そのものは入らない。**
+    vault_secret_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class ScanRunRow(Base):
+    """1 回のスキャン(ADR-0041 決定6・7)。
+
+    **先に `running` で書き、最後に `succeeded` へ変える。** 途中で落ちた run は
+    `running` のまま残り、**「完了していない観測」として区別できる**
+    (`projected_at IS NULL` が未射影を表すのと同じ形。不変条件10)。
+
+    **読み手は `succeeded` の run だけを使う。** 半端なカタログを
+    「テーブルが少ない DB」として読ませない。
+    """
+
+    __tablename__ = "scan_runs"
+    __table_args__ = (Index("ix_scan_runs_source_started", "source_id", "started_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("scan_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    #: `ontology_core.scan.ScanRunStatus` の値。
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    #: 完了した時刻。**`running` のままなら `NULL`**。
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    #: 失敗の理由。**`failed` のときだけ入る。**
+    failure_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    #: 観測したテーブル数。**完了していない run では `NULL`** —
+    #: 「0 件だった」と「まだ分からない」を混ぜない。
+    table_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    started_by: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class ScanTableRow(Base):
+    """1 回のスキャンで観測した 1 テーブル(ADR-0041 決定6)。
+
+    **前回の行を書き換えない。** スキーマは変わるので、上書きすると
+    「列が消えたこと」が分からなくなる(不変条件8 と同じ動機)。
+    """
+
+    __tablename__ = "scan_tables"
+    __table_args__ = (
+        UniqueConstraint("run_id", "schema_name", "table_name", name="uq_scan_tables_run_table"),
+        Index("ix_scan_tables_run", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    schema_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    table_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: `table` / `view` など。**知らない `relkind` は生の 1 文字**が入る。
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: 行数の推定値。**`ANALYZE` が走っていなければ `NULL`**(決定2)。
+    #: `0` は「測った 0」である。
+    estimated_rows: Mapped[int | None] = mapped_column(Integer, default=None)
+    table_comment: Mapped[str | None] = mapped_column(Text, default=None)
+
+
+class ScanColumnRow(Base):
+    """1 回のスキャンで観測した 1 列(ADR-0041 決定2・6)。
+
+    **`estimated_distinct` と `distinct_ratio` は排他である。** PostgreSQL の
+    `n_distinct` は**負の値を「行数に対する比率」**として使うので、絶対数に
+    換算せずに形を分ける。換算には行数の推定が必要で、それが `NULL`
+    (未分析)のときに**存在しない数を作る**ことになる。
+    """
+
+    __tablename__ = "scan_columns"
+    __table_args__ = (
+        UniqueConstraint("table_id", "column_name", name="uq_scan_columns_table_column"),
+        Index("ix_scan_columns_run", "run_id"),
+        Index("ix_scan_columns_table", "table_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    #: **run も持つ。** 1 回のスキャンの全列を 1 クエリで引くため(非正規化)。
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    table_id: Mapped[int] = mapped_column(
+        ForeignKey("scan_tables.id", ondelete="CASCADE"), nullable=False
+    )
+    column_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    ordinal_position: Mapped[int] = mapped_column(Integer, nullable=False)
+    data_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_nullable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    column_default: Mapped[str | None] = mapped_column(Text, default=None)
+    character_maximum_length: Mapped[int | None] = mapped_column(Integer, default=None)
+    numeric_precision: Mapped[int | None] = mapped_column(Integer, default=None)
+    numeric_scale: Mapped[int | None] = mapped_column(Integer, default=None)
+    column_comment: Mapped[str | None] = mapped_column(Text, default=None)
+    #: 異なり数の推定値。**`n_distinct >= 0` のときだけ**入る(決定2)。
+    estimated_distinct: Mapped[int | None] = mapped_column(Integer, default=None)
+    #: 行数に対する異なり数の比率。**`n_distinct < 0` のときだけ**入る。
+    distinct_ratio: Mapped[float | None] = mapped_column(Float, default=None)
+    #: NULL の割合。`pg_stats` に行が無ければ `NULL`。
+    null_fraction: Mapped[float | None] = mapped_column(Float, default=None)
+    is_primary_key: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    referenced_schema: Mapped[str | None] = mapped_column(String(255), default=None)
+    referenced_table: Mapped[str | None] = mapped_column(String(255), default=None)
+    referenced_column: Mapped[str | None] = mapped_column(String(255), default=None)

@@ -79,6 +79,27 @@ class Settings(BaseSettings):
     # 注入するので、下の検証で書き換えの対象外になる。
     fuseki_port: int = Field(default=_DEFAULT_FUSEKI_PORT, alias="FUSEKI_PORT")
 
+    # ---- ソース DB のスキャン(ADR-0041、`P2A-01`) ----
+    #
+    # 接続を許すホスト(カンマ区切り)。**既定は空で、そのときスキャンは
+    # 使えない**(決定5)。任意のホストへ接続できる口は、認証済みの主体に
+    # **内部ネットワークの到達性を調べる手段**を与える(接続の成否だけで
+    # 十分な情報になる)。SPARQL の `SERVICE` を既定で禁止したのと同じ判断で
+    # ある。
+    #
+    # **「設定が無ければどこへでも」にしない**(不変条件11)。
+    scan_allowed_hosts: str = Field(default="", alias="SCAN_ALLOWED_HOSTS")
+
+    # ソース DB のパスワードを取り出す Key Vault の URL。
+    # `auth_mode=key-vault-secret` のときだけ使う。**秘密の値はここにも
+    # カタログにも入らない** — 名前で引いて、接続のたびに解決する(決定4)。
+    scan_vault_url: str = Field(default="", alias="SCAN_VAULT_URL")
+
+    @property
+    def scan_allowed_host_list(self) -> list[str]:
+        """`SCAN_ALLOWED_HOSTS` を分割して返す。"""
+        return [host.strip() for host in self.scan_allowed_hosts.split(",") if host.strip()]
+
     # ---- SPARQL のガードレール ----
     # SERVICE 句は任意の URL へ HTTP リクエストを飛ばせるため、既定で禁止する
     # (Azure IMDS 169.254.169.254 等への SSRF を防ぐ)。

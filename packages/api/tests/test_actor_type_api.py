@@ -35,6 +35,12 @@ from ontology_api.routers.namespaces import (
     unretire_namespace,
 )
 from ontology_api.routers.questions import QuestionSetRevise, revise_question_set
+from ontology_api.routers.scan import (
+    ScanSourceRegister,
+    ScanSourceRemove,
+    register_scan_source,
+    remove_scan_source,
+)
 from ontology_api.routers.versions import (
     PublishRequest,
     RejectRequest,
@@ -45,7 +51,7 @@ from ontology_api.routers.versions import (
 )
 from ontology_core.auth.entra import Principal
 from ontology_core.blob import OntologyBlobStore
-from ontology_core.config import Settings
+from ontology_core.config import AuthMode, Settings
 from ontology_core.db import AuditEventRow
 from ontology_core.models import ActorType, NamespaceRole, PlatformRole
 from ontology_core.prov import ACTIVITY_TYPES
@@ -317,6 +323,83 @@ async def test_アクセスログの削除が種別を運ぶ(session: AsyncSessi
     assert (await _types_by_action(session))["access-log-purged"] == "user"
 
 
+#: スキャンのソースの登録で使う設定。
+#:
+#: **`SCAN_ALLOWED_HOSTS` を明示する。** 既定は空で、空なら登録が 403 になる
+#: (ADR-0041 決定5)。ここでは接続しないので**到達できないホストでよい**。
+_SCAN_HOST = "db.example.internal"
+
+
+def _scan_settings() -> Settings:
+    return Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        AUTH_MODE=AuthMode.DISABLED,
+        SCAN_ALLOWED_HOSTS=_SCAN_HOST,
+    )
+
+
+def _scan_payload() -> ScanSourceRegister:
+    return ScanSourceRegister(
+        name="sales-db",
+        driver="postgresql",
+        host=_SCAN_HOST,
+        port=5432,
+        database="sales",
+        username="ontology_scanner",
+        auth_mode="entra",
+    )
+
+
+async def test_スキャンのソースの登録が種別を運ぶ(session: AsyncSession) -> None:
+    """**このシステムに顧客 DB への到達手段を与える行為である**(ADR-0041)。
+
+    だから誰が登録したかが監査に残る。**人間か機械かも残る** — 自動化が
+    ソースを足したのと運用者が足したのは、事後の説明が違う。
+    """
+    await _setup(session)
+    await register_scan_source(
+        namespace=_NS,
+        payload=_scan_payload(),
+        principal=_OWNER,
+        session=session,
+        settings=_scan_settings(),
+    )
+    assert (await _types_by_action(session))["scan-source-registered"] == "user"
+
+
+async def test_サービスプリンシパルの登録も種別を運ぶ(session: AsyncSession) -> None:
+    """**機械が登録したことを人間の登録として見せない**(ADR-0035 決定1)。"""
+    await _setup(session)
+    await register_scan_source(
+        namespace=_NS,
+        payload=_scan_payload(),
+        principal=_ROBOT,
+        session=session,
+        settings=_scan_settings(),
+    )
+    assert (await _types_by_action(session))["scan-source-registered"] == "service-principal"
+
+
+async def test_スキャンのソースの削除が種別を運ぶ(session: AsyncSession) -> None:
+    """**`scan_sources` の行は消えるが、消したという事実は消えない**(ADR-0041)。"""
+    await _setup(session)
+    await register_scan_source(
+        namespace=_NS,
+        payload=_scan_payload(),
+        principal=_OWNER,
+        session=session,
+        settings=_scan_settings(),
+    )
+    await remove_scan_source(
+        namespace=_NS,
+        name="sales-db",
+        payload=ScanSourceRemove(reason="このソースは使わなくなった"),
+        principal=_OWNER,
+        session=session,
+    )
+    assert (await _types_by_action(session))["scan-source-removed"] == "user"
+
+
 def test_監査に書く行為をすべて数え上げている() -> None:
     """**このファイルが網羅であることを固定する。**
 
@@ -338,6 +421,8 @@ def test_監査に書く行為をすべて数え上げている() -> None:
         "questions-revised",
         "rejected",
         "retired",
+        "scan-source-registered",
+        "scan-source-removed",
         "submitted",
         "superseded",
         "unretired",

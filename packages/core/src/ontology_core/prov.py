@@ -132,6 +132,8 @@ ACTIVITY_TYPES: Mapping[str, str] = {
     "published": "Publish",
     "questions-revised": "ReviseQuestions",
     "rejected": "Reject",
+    "scan-source-registered": "RegisterScanSource",
+    "scan-source-removed": "RemoveScanSource",
     "submitted": "Submit",
     "superseded": "Supersede",
 }

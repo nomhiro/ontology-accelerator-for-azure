@@ -480,3 +480,107 @@ class TermMapping(BaseModel):
         "外部語彙 / 権限が無い / 承認済みの版が無い / 正本を読めなかった / 上限。"
         "**理由の無い `unknown` は「問題なし」と読まれるので必ず入る**",
     )
+
+
+class ScanSource(BaseModel):
+    """スキャン対象のソース DB([ADR-0041](../../../../docs/adr/0041-source-schema-scan.md) 決定4)。
+
+    **資格情報を含まない。** 接続の行き先と、秘密の在り処(Key Vault の
+    秘密名)だけである。**パスワードはこのモデルにも API のリクエストにも
+    現れない** — リクエストで受け取ると、ログ・監査・例外・再送の経路に
+    一斉に載る。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    namespace: str
+    name: str = Field(description="運用者が付ける名前。名前空間の中で一意")
+    driver: str = Field(description="`postgresql`。**対応外は登録できない**(決定9)")
+    host: str
+    port: int
+    database: str
+    username: str
+    auth_mode: str = Field(description="`entra` / `key-vault-secret`")
+    vault_secret_name: str | None = Field(
+        default=None,
+        description="Key Vault の秘密の**名前**。`entra` では `null`。**値は持たない**",
+    )
+    created_at: datetime
+    created_by: str
+
+
+class ScanRun(BaseModel):
+    """1 回のスキャン(ADR-0041 決定7)。
+
+    **`status` を必ず見ること。** `running` のまま残った run は
+    「完了していない観測」である — 半端なカタログを「テーブルが少ない DB」と
+    して読まないために、読み手は `succeeded` で絞る。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    source_id: int
+    status: str = Field(description="`running` / `succeeded` / `failed`")
+    started_at: datetime
+    finished_at: datetime | None = None
+    failure_reason: str | None = None
+    table_count: int | None = Field(
+        default=None,
+        description="観測したテーブル数。**完了していない run では `null`** — "
+        "「0 件だった」と「まだ分からない」を混ぜない",
+    )
+    started_by: str
+
+
+class ScanColumn(BaseModel):
+    """観測した 1 列(ADR-0041 決定2)。
+
+    **`estimated_distinct` と `distinct_ratio` は排他である。** PostgreSQL の
+    `n_distinct` は**負の値を「行数に対する比率」**として使うので、絶対数に
+    換算せず形を分ける(換算には行数の推定が必要で、それが `null` のときに
+    存在しない数を作ることになる)。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    column_name: str
+    ordinal_position: int
+    data_type: str
+    is_nullable: bool
+    column_default: str | None = None
+    character_maximum_length: int | None = None
+    numeric_precision: int | None = None
+    numeric_scale: int | None = None
+    column_comment: str | None = None
+    estimated_distinct: int | None = Field(
+        default=None, description="異なり数の推定値。**`n_distinct >= 0` のときだけ**入る"
+    )
+    distinct_ratio: float | None = Field(
+        default=None,
+        description="行数に対する異なり数の比率。**`n_distinct < 0` のときだけ**入る。"
+        "`1.0` なら全行が異なる",
+    )
+    null_fraction: float | None = None
+    is_primary_key: bool = False
+    referenced_schema: str | None = None
+    referenced_table: str | None = None
+    referenced_column: str | None = None
+
+
+class ScanTable(BaseModel):
+    """観測した 1 テーブル(ADR-0041 決定2・6)。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_name: str
+    table_name: str
+    kind: str = Field(description="`table` / `view` など。**知らない種別は生の 1 文字**")
+    estimated_rows: int | None = Field(
+        default=None,
+        description="行数の推定値。**`ANALYZE` が走っていなければ `null`**。"
+        "`0` は「測った 0」である",
+    )
+    table_comment: str | None = None
+    columns: tuple[ScanColumn, ...] = ()

@@ -30,6 +30,14 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - 名前空間 CRUD が PostgreSQL に永続化して動作する(作成時に Fuseki データセットも同時に作る)。削除(`DELETE /namespaces/{namespace}`)は、公開済みバージョンが Blob に1件でも残っていれば 409 Conflict で拒否する(オントロジーは不変リビジョンであり、レプリカ再作成後に削除済みのはずのデータが Blob から復活することを防ぐため)。**使わなくなった名前空間は削除ではなく退役させる**(`POST /namespaces/{namespace}/retire`。[ADR-0032](docs/adr/0032-namespace-retirement.md))。
   **この判定と行の削除の間に同時 publish が割り込む競合は閉じました**([ADR-0024](docs/adr/0024-namespace-delete-locking.md)、`P2B-12`)。削除と publish が**同じ行ロック**(`SELECT ... FOR UPDATE`)を取ります。削除は **Blob の検査より前**に、publish は **Blob への書き込みより前**に取るので、どちらが先でも「Blob に TTL があって PostgreSQL には何も無い」状態(= レプリカ再作成で名前空間が復活する状態)になりません。**`DELETE` 文が暗黙に取る行ロックでは遅すぎます** — その時点では既に Blob に TTL が書かれています。「後から Blob を再検査する」でも窓は閉じません(publish が Blob を書く前に削除が commit してしまう順序が残ります)。
   なお**公開済みオントロジーを含む名前空間の退役**(409 を返している側)は未決のままです(`P2B-19`)。不変条件「公開済みの版は削除しない」との関係を決める必要があります
+- **ソース DB のスキーマを読めます**([ADR-0041](docs/adr/0041-source-schema-scan.md)、`P2A-01`)。
+  PostgreSQL のスキーマ・コメント・統計をカタログへ取り込みます。**実データを 1 行も
+  読みません** — 発行する SQL は `information_schema` と `pg_catalog` に対する 5 本に
+  固定されています(下記「ソース DB のスキーマを読む」)。
+  **テストの中心は「自分自身の DB を実際にスキャンする」です** — フェイクでは
+  `reltuples = -1` も `pg_stats` の中身も再現できないためで、実際にそこでしか
+  見つからない不具合を 2 件踏みました(`pg_class.relkind` が asyncpg から `bytes` で
+  返ること、`poolclass=None` がプールを無効にしないこと)
 - **最小の承認フローが動作します(ADR-0010)。** `POST /namespaces/{ns}/versions` は版を
   `draft` として記録するだけで、Fuseki には一切射影しません。承認は別の操作です。
   ```
@@ -89,7 +97,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
 ### 未実装・未検証
 
-- **Scan / Model の機能は存在しません** — オントロジーの自動生成、スキーマ発見は Phase 2 です
+- **スキーマ発見は実装済み、オントロジーの自動生成は未実装です。** ソース DB(PostgreSQL)のスキーマ・コメント・統計をカタログへ取り込めます(下記「ソース DB のスキーマを読む」)。そこから OWL/SHACL の候補を LLM に生成させる部分(`P2A-02`)は**Microsoft Foundry のモデル配備(課金)が要るため未実装**です — プロンプトと検証ループが価値の中心なので、フェイクのモデルに対してテストを緑にしても何も確かめられません
 - **ロールの付与は API のみです。** Web の管理画面はまだありません(`PUT /namespaces/{ns}/roles`)。
   また、責任者(オーナーシップとエスカレーション、`P2B-04`)は RBAC とは別のレイヤで未実装です
 - MCP サーバーはツール定義まで。Ontop 連邦クエリとベクトル検索は Phase 3 です(**OWL 推論は CI に入っています** — 下記「OWL 推論器で論理的矛盾を検出する」)
@@ -403,6 +411,76 @@ curl -X POST "$API/namespaces/retail-core/sparql" \
 `Accept` に関わらず Turtle を返します**。原因は `response.json()` を呼んでいた
 ことでした。`Accept: text/turtle` を送るのは**プロトコルとしての正しさ**であり、
 持ち込みストアが `Accept` を尊重するかもしれないので続けています。
+
+#### ソース DB のスキーマを読む(実データは 1 行も読みません)
+
+**PostgreSQL のスキーマ・コメント・統計をカタログへ取り込めます**([ADR-0041](docs/adr/0041-source-schema-scan.md)、`P2A-01`)。Scan → Model → Serve の入口で、このカタログが `P2A-02`(LLM によるオントロジー候補生成)の入力になります。
+
+```bash
+# 1. 接続先を allowlist に入れる(**既定は空で、設定するまでスキャンは使えません**)
+#    デプロイ環境では Bicep のパラメータ、ローカルでは .env で指定します
+export SCAN_ALLOWED_HOSTS=sales-db.example.internal,crm-db.example.internal
+
+# 2. ソースを登録する(owner が必要。**パスワードは渡しません**)
+curl -X POST "$API/namespaces/retail-core/scan-sources" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "sales-db", "driver": "postgresql",
+       "host": "sales-db.example.internal", "port": 5432,
+       "database": "sales", "username": "ontology_scanner",
+       "auth_mode": "key-vault-secret", "vault_secret_name": "sales-db-password"}'
+
+# 3. スキャンする(owner が必要)
+curl -X POST "$API/namespaces/retail-core/scan-sources/sales-db/scan" \
+  -H "Authorization: Bearer $TOKEN"
+# → {"run_id": 1, "table_count": 42}
+
+# 4. カタログを読む(data-analyst で読める。既定は**最後に完了した** run)
+curl "$API/namespaces/retail-core/scan-sources/sales-db/catalog" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 履歴。**status を必ず見てください**(running のまま残った run は未完了です)
+curl "$API/namespaces/retail-core/scan-sources/sales-db/runs" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 使わなくなったソースを消す(owner が必要。理由は必須で、監査に残ります)
+curl -X POST "$API/namespaces/retail-core/scan-sources/sales-db/remove" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason": "この DB は退役した"}'
+```
+
+**実データを 1 行も読みません。** 発行する SQL は `information_schema` と `pg_catalog` に対する 5 本に固定されており、ユーザーテーブルに `SELECT` を発行しません。理由は、**このカタログが LLM のプロンプトへ流れる**ことです — 一度渡れば、後から消してもモデルの提供者へ渡った事実は消えません。
+
+この方針は**検査できる形に置いてあります**。テストが `ontology_core.scan.CATALOG_QUERIES` に対して「`pg_catalog` / `information_schema` 以外の関係を参照していないこと」と「`most_common` / `histogram` が現れないこと」を機械的に確かめます。さらに API のテストが、**実データを入れて `ANALYZE` したテーブルの値がカタログに現れないことを実物の PostgreSQL に対して**確かめます(`pg_stats.most_common_vals` には列の値そのものが入るため、「統計だからメタデータ」とは言えません)。
+
+**資格情報を API で受け取りません。** 登録の本文に秘密の欄がなく、カタログに値を持つ列もありません。`auth_mode` は 2 つです。
+
+| `auth_mode` | 秘密の在り処 | 備考 |
+|---|---|---|
+| `entra` | 無し(マネージド ID) | 推奨。ソース DB が Entra 認証に対応している場合 |
+| `key-vault-secret` | Key Vault(`SCAN_VAULT_URL` + `vault_secret_name`) | **名前だけを登録し、値は接続のたびに解決します** |
+
+リクエストで秘密を受け取ると、**ログ・監査・例外・再送の経路に一斉に載ります**。運用者が Key Vault に自分で入れ、名前だけを登録してください。**Key Vault の応答本文は例外にもログにも載せません**(秘密が入りうるため、状態コードと秘密の名前だけを報告します)。
+
+**接続先はホストの allowlist で絞り、既定は空です。** 任意のホストへ接続できる口は、認証済みの主体に**内部ネットワークの到達性を調べる手段**を与えます(接続の成否だけで十分な情報になります)。SPARQL の `SERVICE` を既定で禁止しているのと同じ判断です。**許可されていないホストは登録の時点で 403 になります** — 登録できてしまうと「後で接続できるはず」という誤解が残るためです。
+
+**統計の「無い」と「0」を区別します。**
+
+| 観測 | カタログ |
+|---|---|
+| `ANALYZE` が走っていない | `estimated_rows: null`(**分析されていない**) |
+| `ANALYZE` 済みで 0 行 | `estimated_rows: 0`(**測った 0**) |
+| `n_distinct` が 0 以上 | `estimated_distinct` に絶対数 |
+| `n_distinct` が負(= 行数に対する比率) | **`distinct_ratio` に比率**(`1.0` なら全行が異なる) |
+
+**負の `n_distinct` を件数に換算しません。** 換算には行数の推定が必要で、それが `null`(未分析)のときに**存在しない数を作る**ことになります。
+
+**途中で落ちたスキャンを、完了した観測と混ぜません。** `scan_runs` は `running` / `succeeded` / `failed` を持ち、カタログの既定は**最後に `succeeded` した run** です。失敗した run の `table_count` は `null` のままにします(「0 件だった」と「まだ分からない」を混ぜません)。`run_id` を明示すれば失敗した観測も読めます — どこまで読めたかは診断の材料です。
+
+**観測は積みます。上書きしません。** スキーマは変わるので、上書きすると「列が消えたこと」が分からなくなります。
+
+**カタログは名前空間に属します。** 登録と実行は `owner`、閲覧は `data-analyst` です。「誰がどの顧客 DB へ接続できるか」を名前空間の境界の外に出しません。
+
+**定期実行(ACA Job)はまだありません**(`P2A-19`)。API から同期で 1 回走らせる形だけです。Bicep は `az bicep build` で構文までしか確かめられず、**課金なしに動作を検証できない**ため、「書いたが動かしていない IaC」を残さない判断をしました(ADR-0041 決定10)。
 
 #### SHACL 検証は承認を止めます
 
@@ -1364,7 +1442,7 @@ AWS 版は Apache-2.0 で公開されており、フォークすることも法�
 - [`docs/architecture.md`](docs/architecture.md) — アーキテクチャ、グラフ永続化設計、Azure サービスマッピング、認証・認可・セキュリティ
 - [`docs/cost-estimate.md`](docs/cost-estimate.md) — 月額費用試算と単価の出典・計算式
 - [`docs/third-party-licenses.md`](docs/third-party-licenses.md) — 第三者コンポーネントのライセンス
-- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0025)。**却下した代替案とその理由**を残しています
+- [`docs/adr/`](docs/adr/) — アーキテクチャ決定記録(ADR-0001〜0041)。**却下した代替案とその理由**を残しています
 
 ## コントリビューション
 

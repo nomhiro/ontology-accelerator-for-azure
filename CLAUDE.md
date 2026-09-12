@@ -94,7 +94,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1042 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1128 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -148,6 +148,20 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 ```
 
 **ルータのハンドラ名が、同じモジュールで import している関数を上書きすることがある。** エンドポイント関数を `validate_version` と命名したところ、入口検証に使っている `ontology_core.graphs.validate_version` を隠してしまい、**他のハンドラの検証が黙って効かなくなった**。ハンドラ名は `validate_version_shacl` のように用途を付けて衝突を避ける（回帰テストあり）。
+
+**PostgreSQL の `"char"` 型は asyncpg から `bytes` で返る。** `pg_class.relkind` と
+`pg_constraint.contype` がこれである（1 バイトの内部型で、テキストではない）。
+`str(b"r")` は `"b'r'"` になるため、**対応表から静かに外れる**。`P2A-01` では
+テーブルの種別が `b'r'` になり、**主キーと外部キーが「1 件も無い」ことになった**
+（後者が悪い。「読めなかった」が「無かった」として通る）。SQL 側で `::text` に
+寄せ、読み手でも `bytes` を受けられるようにする。**フェイクの `dict` では
+再現しない** — 実物の DB に対して回して初めて分かる。
+
+**`create_async_engine(..., poolclass=None)` はプールを無効にしない。** `None` は
+「既定のプールを使う」の意味で、`AsyncAdaptedQueuePool` になる（実測。
+SQLAlchemy 2.0.52）。無効にしたいときは `poolclass=NullPool` を明示する。
+`poolclass=None` と書いて「プールしない」とコメントしていると、**接続が
+プロセスに残り続けていることに気づけない**。
 
 **SQLAlchemy の `session.execute()` の戻り値に `rowcount` は無い（mypy strict）。** `rowcount` は `CursorResult` にしか無く、`execute()` の宣言型はそれより広い `Result[Any]` である。DELETE の件数が欲しいときは `cast` で型を潰すのではなく、**存在確認してから削除する**（1 クエリ増えるが意図が読める。`RoleRepository.revoke` がこの形）。
 
@@ -213,7 +227,8 @@ docker run --rm -v "$(pwd):/w" -w /w alpine:3.20 sh -c \
 **Python の `pathlib.Path.write_text` は Windows で LF を CRLF に変える。** 読み込み側
 (`read_text`)が CRLF を LF に正規化するので、LF のファイルを読んで書き戻すと**静かに
 CRLF になる**。シェルスクリプトでこれをやると Alpine の `sh` が
-`set: line 24: illegal option -` で落ちる(実測。`` が引数に混ざる)。Python で
+`set: line 24: illegal option -` で落ちる(実測。`
+` が引数に混ざる)。Python で
 シェルスクリプトを書き換えるときは **`read_bytes` / `write_bytes` を使う**か
 `newline=""` を指定する。`.gitattributes` が `eol=lf` を宣言していても、
 **作業コピーの内容はそれとは別に壊れる**。
