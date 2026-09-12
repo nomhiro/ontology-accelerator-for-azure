@@ -94,9 +94,11 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1230 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1236 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
+just gen-api                                   # openapi.json と TS 型を生成(**Web の型検査の前に必要**)
+pnpm --filter @ontology-accelerator/web build   # 型検査 + Web のテスト 58 件 + ビルド
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
 sh containers/fuseki/load-snapshot.test.sh     # ローダの制御フロー
 sh scripts/lint-shell.sh                       # シェルの移植性(素の python 等)
@@ -312,6 +314,22 @@ CRLF になる**。シェルスクリプトでこれをやると Alpine の `sh`
 `drop_all` をしたテストではなく、その隣で「publish した版が見つかりません」と言うテストである
 (実測で 5 failed + 2 errors。単独で走らせると全件通った)。背景プロセスでスイートを走らせた
 まま前景でもう一度走らせると踏む。
+
+**Web の型は生成物で、gitignore されている。** `apps/web/src/api/schema.ts` と
+`openapi.json` は `just gen-api` が作る。**Web の型検査の前に生成が必要**で、
+CI も web ジョブの中で生成している(ADR-0004 が求めていた「生成漏れによる
+不整合を CI で検出する仕組み」)。**`web` の paths-filter は `packages/api/**` と
+`packages/core/**` にも反応する** — API を変えて Web の型が壊れたときに
+web ジョブが動かないと、検出の仕組みとして意味がない。
+
+**`GET .../diff` は `dict[str, Any]` を返すので生成された型が無い。** Web は
+`apps/web/src/review/diff.ts` に手書きの型を持つしかない(ADR-0004 の例外)。
+**代わりに `packages/api/tests/test_web_contract.py` が TS のファイルを実際に
+読んで鍵を突き合わせている** — 片方だけ変えると落ちる。
+
+**`session.rollback()` と同じ形の罠が Fluent UI にもある。** `Option` は子が
+単一の文字列でないとき `text` プロパティを要求する(`{a} ({b})` のように
+書くと `string[]` になって型検査が落ちる)。
 
 ## 新しいテストを書くときの規律
 

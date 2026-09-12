@@ -49,6 +49,13 @@ typecheck:
 typecheck-web:
     pnpm --filter @ontology-accelerator/web typecheck
 
+# Web のテスト(判断を担う純粋関数。ADR-0044 決定6)
+#
+# **`schema.ts` は生成物である。** 型検査の前に `just gen-api` が必要
+# (CI も web ジョブで生成している)。
+test-web:
+    pnpm --filter @ontology-accelerator/web test
+
 # 単体テスト(DB不要)
 test:
     uv run pytest -m "not integration"

@@ -53,9 +53,18 @@ jobs:
               # python はテスト実行のため、containers はイメージビルドのために
               # それぞれ別の理由で反応する。
               - 'containers/**'
+            # Web の型は **API から生成される**(ADR-0004、ADR-0044 決定2)。
+            # **`packages/api/**` を含めるのが要点である。** 含めないと、
+            # API を変えて Web の型が壊れても web ジョブが動かず、
+            # 「生成漏れによる不整合を CI で検出する」が成り立たない。
+            # `packages/core/**` も含めるのは、モデル(Pydantic)が core に
+            # あり、応答の形がそこで決まるためである。
             web:
               - 'apps/web/**'
               - 'pnpm-workspace.yaml'
+              - 'pnpm-lock.yaml'
+              - 'packages/api/**'
+              - 'packages/core/**'
               - '.github/workflows/ci.yml'
             infra:
               - 'infra/**'
@@ -177,7 +186,25 @@ jobs:
       - name: 依存関係を入れる
         run: pnpm install --frozen-lockfile
 
-      - name: 型検査とビルド
+      # **TS 型は生成物である**(ADR-0004)。`openapi.json` と
+      # `apps/web/src/api/schema.ts` は gitignore してあり、コミットしない —
+      # コミットすると「手で直す」誘惑が生まれ、再生成が破壊的な操作になる。
+      #
+      # **ここで生成することが検出の仕組みそのものである**(ADR-0044 決定2)。
+      # API を変えて Web が追従していなければ、次の `build`(`tsc`)が落ちる。
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: API から TS 型を生成する
+        run: |
+          uv sync --all-packages
+          uv run python -c "import json, pathlib; from ontology_api.main import app; pathlib.Path('openapi.json').write_text(json.dumps(app.openapi(), ensure_ascii=False, indent=2), encoding='utf-8')"
+          pnpm --filter @ontology-accelerator/web gen:api
+
+      # `build` は `tsc --noEmit && vitest run && vite build` である。
+      # **テストをここに含めているので、web ジョブが動けばテストも走る。**
+      - name: 型検査・テスト・ビルド
         run: pnpm --filter @ontology-accelerator/web build
 
   infra:
