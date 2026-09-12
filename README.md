@@ -672,7 +672,7 @@ curl -G "$API/namespaces/retail-core/versions/2.0.0/diff" \
 
 #### 健全性を測る
 
-**`GET /namespaces/{ns}/health` が 6 項目を返します**（[ADR-0020](docs/adr/0020-health-metrics.md)、[ADR-0009](docs/adr/0009-ontology-operations.md) 決定5）。同 ADR の言葉で言えば「**測っていないものは、致命的になるまで見えない**」。
+**`GET /namespaces/{ns}/health` が健全性の項目を返します**（[ADR-0020](docs/adr/0020-health-metrics.md)、[ADR-0009](docs/adr/0009-ontology-operations.md) 決定5）。同 ADR の言葉で言えば「**測っていないものは、致命的になるまで見えない**」。
 
 ```bash
 curl "$API/namespaces/retail-core/health" -H "Authorization: Bearer $TOKEN"
@@ -691,6 +691,7 @@ curl -G "$API/namespaces/retail-core/health" \
   "unprojected_version_count": 0,
   "competency_question_count": 11,
   "disputed_mapping_count": 0,
+  "deprecated_target_mapping_count": 2, "unknown_target_mapping_count": 5,
   "unavailable": [], "truncated": false }
 ```
 
@@ -704,6 +705,8 @@ curl -G "$API/namespaces/retail-core/health" \
 | `unprojected_version_count` | 射影が済んでいない版 | `projected_at` |
 | `competency_question_count` | 受け入れ基準の質問の件数 | 想定質問の集合（上記） |
 | `disputed_mapping_count` | 相手側と述語が食い違っているマッピングの数 | 領域間マッピング（上記） |
+| `deprecated_target_mapping_count` | **廃止された用語**を指している自分のマッピングの数 | マッピングの先の生死（上記） |
+| `unknown_target_mapping_count` | 先の生死を**調べられなかった**マッピングの数 | 同上 |
 
 **`null` は「測れなかった」で、`0` ではありません。** どの項目がなぜ測れなかったかは `unavailable` に並びます。**健全性指標が障害時に「健全」と言うのは、目的に正面から反します。**
 
@@ -716,6 +719,14 @@ curl -G "$API/namespaces/retail-core/health" \
 **`approval_age_days` は版単位です。** このシステムの承認は版単位なので、用語単位の「再承認の古さ」は計算できません。**存在しない粒度をあるように見せないため**、測れる粒度で報告しています。
 
 **`shacl_violation_count` は構造上ほぼ常に 0 です。** `approve` が違反をブロックするためです（上記「SHACL 検証は承認を止めます」）。SHACL 検証を入れる前に承認された版と、shape 自身の問題を拾うために項目として残しています。
+
+**廃止された先を指すマッピングの 2 項目は 1 組です**（[ADR-0037](docs/adr/0037-deprecated-target-metric.md)、`P2B-21`）。`deprecated_target_mapping_count` だけを見ると**「残りのマッピングは健全」と読めます** — 実際には`unknown_target_mapping_count` 件が調べられていません（外部語彙・相手の名前空間を読む権限が無い・相手にまだ承認済み版が無い・対象の名前空間の数の上限・相手の正本が読めなかった、の 5 種）。
+
+**この 2 項目は `null` になりません。** 他の項目と違って「全部か無か」にせず、調べられなかった分を `unknown` として数えます。一覧（`GET /namespaces/{ns}/mappings`）が既にこの形なので、**同じ事実の 2 つの報告が食い違わないようにしています。**
+
+**この 2 項目は呼び出し元の権限に依存します。** 相手の名前空間を読めない主体には `unknown` として数えられます（[ADR-0030](docs/adr/0030-mapping-target-lifecycle.md) 決定1）。**指標のために権限ゲートは外しません** — 外すと、マッピングを 1 件ずつ張って数の増減を見ることで相手の語彙を探れる（存在の oracle）ためです。
+
+**`incoming`（他の名前空間が自分の用語を指しているもの）は数えません。**自分では直せないので、行動に結びつかない数字を健全性の欄に置かないためです。自分の用語を廃止したときに困る相手は、廃止する側の `approve` が報告します（上記「廃止は承認で止まります」）。
 
 **総合スコアは出しません。** 点数が下がった理由が行動に結びつかないためです（[ADR-0009](docs/adr/0009-ontology-operations.md) が却下しています）。項目ごとの生の値を返します。
 

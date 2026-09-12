@@ -126,14 +126,6 @@ class MappingRepository:
         rows = list((await self._session.execute(stmt)).scalars().all())
         return await self._decorate(rows)
 
-    async def disputed_count(self, namespace: str) -> int:
-        """述語が食い違っているマッピングの数(健全性指標。ADR-0023 決定4)。
-
-        その名前空間が**張った**マッピングのうち、相手側が逆向きに宣言して
-        いて述語が食い違っているものを数える。
-        """
-        return sum(1 for mapping in await self.outgoing(namespace) if mapping.disputed)
-
     async def _decorate(self, rows: list[TermMappingRow]) -> list[TermMapping]:
         """相手側の宣言と突き合わせて `reciprocal` / `disputed` を付ける。"""
         counterparts = await self._counterparts(rows)

@@ -17,6 +17,20 @@
 測れる項目(承認の古さ、未射影の版)はそのまま返す。Blob の一時的な不調で
 未射影の版の数まで見えなくなってはいけない。
 
+## 「調べられなかった」は件数として数える
+
+マッピングの先の生死(ADR-0030)は**呼び出し元の権限に依存する**。相手の
+名前空間を読めなければ `unknown` であり、`active` とは言わない。
+
+そこで指標は **2 つで 1 組**にする(ADR-0037 決定1)。
+`deprecated_target_mapping_count` だけを見せると「残りのマッピングは健全」と
+読めるので、`unknown_target_mapping_count` を必ず並べる。
+
+**この 2 項目は `None` にならない**(決定2)。他の項目と違って「全部か無か」に
+せず、調べられなかった分を `unknown` として数えるからである。一覧
+(`GET /namespaces/{ns}/mappings`)が既にこの形なので、**指標だけ別の形に
+しない** — 同じ事実の 2 つの報告が食い違う。
+
 ## 用語の一覧は正本から取る
 
 このモジュールは `terms` を受け取るだけだが、**呼び出し元はストアではなく
@@ -65,6 +79,14 @@ class HealthInputs:
             「基準を満たしていない」ではない。`None` は測れなかったとき。
         disputed_mapping_count: 相手側と述語が食い違っている領域間マッピングの
             数(ADR-0023 決定4)。**自動で片方に寄せないので、ここに出る**。
+        deprecated_target_mapping_count: 廃止された用語を指している、自分が
+            張ったマッピングの数([ADR-0037](../../../../docs/adr/0037-deprecated-target-metric.md))。
+            **`None` にならない** — 調べられなかった分は次の項目に入る。
+        unknown_target_mapping_count: 先の生死を**調べられなかった**マッピングの
+            数(ADR-0037 決定1)。**この項目が無いと、廃止の件数が
+            「残りは健全」と読める。** 理由は 5 種類ある(外部語彙・権限が無い・
+            相手に承認済み版が無い・名前空間の数の上限・相手の正本が読めない)。
+            **呼び出し元の権限に依存する**(ADR-0030 決定1)。
         unavailable: 測れなかった項目の理由。
         now: 「今」。テストのために外から渡す。
     """
@@ -78,6 +100,11 @@ class HealthInputs:
     unprojected_version_count: int
     competency_question_count: int | None
     disputed_mapping_count: int | None
+    # **`int | None` にしない**(ADR-0037 決定2)。調べられなかった分は
+    # `unknown_target_mapping_count` に入るので `None` になりえない。
+    # `None` を許すと到達しない分岐を作ることになる。
+    deprecated_target_mapping_count: int
+    unknown_target_mapping_count: int
     unavailable: tuple[str, ...]
     now: datetime
 
@@ -104,6 +131,8 @@ class HealthReport:
     unprojected_version_count: int
     competency_question_count: int | None
     disputed_mapping_count: int | None
+    deprecated_target_mapping_count: int
+    unknown_target_mapping_count: int
     unavailable: tuple[str, ...]
     unreferenced_window_days: int = UNREFERENCED_WINDOW_DAYS
 
@@ -153,6 +182,10 @@ class HealthReport:
             "unprojected_version_count": self.unprojected_version_count,
             "competency_question_count": self.competency_question_count,
             "disputed_mapping_count": self.disputed_mapping_count,
+            # **2 つで 1 組である**(ADR-0037 決定1)。廃止の件数だけを見せると
+            # 「残りのマッピングは健全」と読める。
+            "deprecated_target_mapping_count": self.deprecated_target_mapping_count,
+            "unknown_target_mapping_count": self.unknown_target_mapping_count,
             "unavailable": list(self.unavailable),
         }
         lists = (self.unreferenced_terms, self.without_owner_terms)
@@ -210,5 +243,7 @@ def compute_health(inputs: HealthInputs, *, namespace: str = "") -> HealthReport
         unprojected_version_count=inputs.unprojected_version_count,
         competency_question_count=inputs.competency_question_count,
         disputed_mapping_count=inputs.disputed_mapping_count,
+        deprecated_target_mapping_count=inputs.deprecated_target_mapping_count,
+        unknown_target_mapping_count=inputs.unknown_target_mapping_count,
         unavailable=inputs.unavailable,
     )

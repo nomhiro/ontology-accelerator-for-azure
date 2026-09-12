@@ -10,6 +10,10 @@ ADR-0017 決定3 が `sparql_query` に対して塞いだのと同じ穴であ�
 2. **読む権限が無ければ `unknown`**(決定1)。`active` とは言わない
 3. **廃止する側にも見せる**(決定5)。ただし**ブロックしない**(決定6)
 4. **宣言のときには検査しない**(決定3)
+5. **健全性指標に出る**([ADR-0037](../../../docs/adr/0037-deprecated-target-metric.md)、
+   `P2B-21`)。**廃止の件数と「調べられなかった」件数は 2 つで 1 組**であり、
+   **呼び出し元の権限で数える**(指標のために権限ゲートを外すと存在の
+   oracle が開く)
 
 営業(`mt-sales`)と経理(`mt-finance`)の「優良顧客」を題材にする。
 """
@@ -33,7 +37,7 @@ from ontology_api.routers.mappings import (
 from ontology_api.services import mapping_targets
 from ontology_api.services.projection import ProjectionService
 from ontology_core.auth.entra import Principal
-from ontology_core.blob import OntologyBlobStore
+from ontology_core.blob import BlobStoreError, OntologyBlobStore
 from ontology_core.deprecation import ProblemKind, TargetStatus
 from ontology_core.models import NamespaceRole, PlatformRole, TermMapping
 from ontology_core.sparql.client import SparqlStore
@@ -750,3 +754,224 @@ async def test_マッピングの書き出しも既定は_Turtle(
         )
         assert response.media_type is not None
         assert response.media_type.startswith("text/turtle"), accept
+
+
+# ------------------ 健全性指標に出る(ADR-0037、`P2B-21`)
+
+
+async def _health(
+    session: AsyncSession,
+    blob_store: OntologyBlobStore,
+    *,
+    principal: Principal,
+    namespace: str = _SALES,
+) -> dict[str, Any]:
+    from ontology_api.routers.health import measure_health
+
+    return await measure_health(
+        namespace=namespace, principal=principal, session=session, blob=blob_store
+    )
+
+
+@pytest.mark.integration
+async def test_廃止された先を指すマッピングが指標に出る(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """ADR-0030 が受け入れたコスト「気づくのは一覧を見たときだけ」を埋める
+    (ADR-0037)。
+
+    **相手の名前空間を読める主体で数える。** `_BOTH` は経理も読めるので、
+    廃止を「調べられた」うえで廃止だと分かる。
+    """
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V1, version="1.0.0")
+    await _declare(session, target=_GONE)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="2.0.0")
+
+    report = await _health(session, blob_store, principal=_BOTH)
+    assert report["deprecated_target_mapping_count"] == 1
+    assert report["unknown_target_mapping_count"] == 0
+    # **`unavailable` に積まない**(ADR-0037 決定2)。項目は測れている。
+    assert report["unavailable"] == []
+
+
+@pytest.mark.integration
+async def test_権限が無ければ調べられなかった件数に入る(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**指標は呼び出し元に依存する**(ADR-0037 決定4)。
+
+    `_SALES_ANALYST` は経理を読めないので、同じマッピングが `unknown` に
+    数えられる。**`active` にも `deprecated` にもしない** — 権限ゲートを
+    指標のために外すと存在の oracle が開く(ADR-0030 決定1)。
+
+    **これがこのファイルで最も重要なテストである** — 権限で切っていることを
+    指標の経路でも固定する。
+    """
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V1, version="1.0.0")
+    await _declare(session, target=_GONE)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="2.0.0")
+
+    report = await _health(session, blob_store, principal=_SALES_ANALYST)
+    assert report["deprecated_target_mapping_count"] == 0, (
+        "読めない名前空間の廃止を指標に出してはならない(存在の oracle になる)"
+    )
+    assert report["unknown_target_mapping_count"] == 1, (
+        "調べられなかったことが消えると、0 件が「健全」と読める"
+    )
+
+
+@pytest.mark.integration
+async def test_外部語彙は調べられなかった件数に入る(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """SKOS などこのシステムの管理外の用語(ADR-0030 の `unknown` の 5 種)。
+
+    **`active` にしない** — 生きているかどうかを追う手段が無い。
+    """
+    await _setup(session)
+    await _declare(session, target=_EXTERNAL)
+
+    report = await _health(session, blob_store, principal=_BOTH)
+    assert report["deprecated_target_mapping_count"] == 0
+    assert report["unknown_target_mapping_count"] == 1
+
+
+@pytest.mark.integration
+async def test_生きている先は_どちらにも数えない(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="1.0.0")
+    await _declare(session, target=_LIVE)
+
+    report = await _health(session, blob_store, principal=_BOTH)
+    assert report["deprecated_target_mapping_count"] == 0
+    assert report["unknown_target_mapping_count"] == 0
+
+
+@pytest.mark.integration
+async def test_マッピングが無ければ両方_0(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**`null` にしない**(ADR-0037 決定2)。「マッピングが無い」は事実である。"""
+    await _setup(session)
+    report = await _health(session, blob_store, principal=_BOTH)
+    assert report["deprecated_target_mapping_count"] == 0
+    assert report["unknown_target_mapping_count"] == 0
+
+
+@pytest.mark.integration
+async def test_相手の正本が読めなくても項目は_null_にならない(
+    session: AsyncSession, blob_store: OntologyBlobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**これが `P2B-21` を保留させていた理由そのものである。**
+
+    ADR-0030 は「指標が他の名前空間の Blob の可用性に依存する」ことを理由に
+    却下していた。ADR-0037 決定2 の答えは「**項目を `null` にせず、その分を
+    `unknown` として数える**」である。
+
+    自分の名前空間の TTL は読めるので `term_count` は測れたままになる —
+    **「全部か無か」にしない**(ADR-0020 決定3)。
+    """
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="1.0.0")
+    await _declare(session, target=_GONE)
+
+    original = blob_store.get_version
+
+    async def _fail_finance(path: str) -> str:
+        if _FINANCE in path:
+            raise BlobStoreError("経理の Blob を読めません(テスト)")
+        return await original(path)
+
+    monkeypatch.setattr(blob_store, "get_version", _fail_finance)
+    report = await _health(session, blob_store, principal=_BOTH)
+
+    assert report["deprecated_target_mapping_count"] == 0
+    assert report["unknown_target_mapping_count"] == 1, (
+        "相手の Blob が読めないことを「廃止ではない」に丸めてはならない"
+    )
+    assert report["deprecated_target_mapping_count"] is not None
+    # 自分の TTL は読めているので、用語に関する項目は測れたまま。
+    assert report["term_count"] is not None
+
+
+@pytest.mark.integration
+async def test_指されている側の指標には出ない(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**`outgoing` だけを数える**(ADR-0037 決定3)。
+
+    営業が経理の廃止済み用語を指している。**経理の指標には出ない** —
+    経理は 1 件もマッピングを張っていない。
+
+    **自分では直せないものを自分の健全性の数字にしない。** 相手のマッピングを
+    取り消すのは ADR-0023 決定3 の裏返しであり、廃止する側への報告は
+    ADR-0030 決定7(`MAPPED_BY_OTHERS`)が別に持っている。
+    """
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V1, version="1.0.0")
+    await _declare(session, target=_GONE)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="2.0.0")
+
+    # 張った側には出る。
+    sales = await _health(session, blob_store, principal=_BOTH)
+    assert sales["deprecated_target_mapping_count"] == 1
+
+    # 指されている側には出ない。
+    finance = await _health(session, blob_store, principal=_FINANCE_OWNER, namespace=_FINANCE)
+    assert finance["deprecated_target_mapping_count"] == 0, (
+        "incoming を数えると、自分では直せないものが自分の数字を悪くする"
+    )
+    assert finance["unknown_target_mapping_count"] == 0
+
+
+@pytest.mark.integration
+async def test_消えている先は廃止として数えない(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """`absent` は**廃止ではない**(ADR-0030 決定2 の 4 状態)。
+
+    相手の現行版から消えているのは別の問題であり、一覧では `absent` として
+    区別して出る。**指標では廃止だけを数える** — 混ぜると「廃止された先を
+    指している」という項目の意味が変わる。
+    """
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="1.0.0")
+    await _declare(session, target=_MISSING)
+
+    report = await _health(session, blob_store, principal=_BOTH)
+    assert report["deprecated_target_mapping_count"] == 0, (
+        "absent を廃止に混ぜると項目の意味が変わる"
+    )
+    # **調べられてはいる**ので `unknown` でもない。
+    assert report["unknown_target_mapping_count"] == 0
+
+
+@pytest.mark.integration
+async def test_生死の辞書に欠落があれば落ちる(
+    session: AsyncSession, blob_store: OntologyBlobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**契約違反は黙って数え落とさない**(ADR-0037 の実装上の判断)。
+
+    `resolve_target_lifecycles` は「返る辞書には対象の全 IRI が入る」という
+    契約を持つ(ADR-0030)。指標側が `.get()` で受けると、契約が破れたときに
+    **黙って件数が減る** — しかもその分岐は正常時に到達しないので、
+    振る舞いを検証できない(変異テストで生き残る)。
+
+    **添字で引いて `KeyError` で落ちる**ようにしてある。それをここで固定する。
+    """
+    from ontology_api.services import health as health_service
+
+    await _setup(session)
+    await _approve_finance(session, blob_store, turtle=_FINANCE_V2, version="1.0.0")
+    await _declare(session, target=_GONE)
+
+    async def _incomplete(*args: object, **kwargs: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(health_service, "resolve_target_lifecycles", _incomplete)
+    with pytest.raises(KeyError):
+        await _health(session, blob_store, principal=_BOTH)

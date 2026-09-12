@@ -64,6 +64,14 @@ async def measure_health(
       shape 自身の問題を拾うために残している
     - `unprojected_version_count`: `projected_at IS NULL` の版。`draft` は
       射影しないことが正常なので数えない
+    - `deprecated_target_mapping_count` / `unknown_target_mapping_count`:
+      **2 つで 1 組である**([ADR-0037](../../../../../docs/adr/0037-deprecated-target-metric.md)、
+      `P2B-21`)。廃止された用語を指している自分のマッピングの数と、
+      **先の生死を調べられなかった**数。前者だけを見ると「残りは健全」と
+      読めるので必ず並べる。**この 2 つは `null` にならない** —
+      調べられなかった分は後者に入る(決定2)。
+      **呼び出し元の権限に依存する**(相手の名前空間を読めなければ `unknown`。
+      ADR-0030 決定1)。`incoming` は数えない — 自分では直せない(決定3)
     """
     try:
         validate_namespace_name(namespace)
@@ -81,7 +89,9 @@ async def measure_health(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     try:
-        report = await HealthService(session=session, blob=blob).measure(namespace)
+        report = await HealthService(session=session, blob=blob).measure(
+            namespace, principal=principal
+        )
     except UnknownNamespaceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

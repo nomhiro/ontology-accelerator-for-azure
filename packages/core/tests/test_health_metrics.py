@@ -34,6 +34,8 @@ def _inputs(
     unprojected: int = 0,
     competency_questions: int | None = 0,
     disputed_mappings: int | None = 0,
+    deprecated_targets: int = 0,
+    unknown_targets: int = 0,
     unavailable: tuple[str, ...] = (),
 ) -> HealthInputs:
     return HealthInputs(
@@ -46,6 +48,8 @@ def _inputs(
         unprojected_version_count=unprojected,
         competency_question_count=competency_questions,
         disputed_mapping_count=disputed_mappings,
+        deprecated_target_mapping_count=deprecated_targets,
+        unknown_target_mapping_count=unknown_targets,
         unavailable=unavailable,
         now=_NOW,
     )
@@ -279,3 +283,38 @@ def test_測れなかったときは一覧を返さない() -> None:
 
 def test_型は_HealthReport() -> None:
     assert isinstance(compute_health(_inputs()), HealthReport)
+
+
+# ------------------ 廃止された先を指すマッピング(ADR-0037、`P2B-21`)
+
+
+def test_廃止された先を指すマッピングの数を出す() -> None:
+    report = compute_health(_inputs(deprecated_targets=2, unknown_targets=5))
+    summary = report.summary()
+    assert summary["deprecated_target_mapping_count"] == 2
+    assert summary["unknown_target_mapping_count"] == 5
+
+
+def test_調べられなかった件数を必ず並べる() -> None:
+    """**2 つで 1 組である**(ADR-0037 決定1)。
+
+    廃止の件数だけを見せると「残りのマッピングは健全」と読める。
+    **片方だけ出せる形にしない。**
+    """
+    summary = compute_health(_inputs(deprecated_targets=0, unknown_targets=3)).summary()
+    assert summary["deprecated_target_mapping_count"] == 0
+    assert summary["unknown_target_mapping_count"] == 3, (
+        "調べられなかった件数が消えると、0 件が「健全」と読める"
+    )
+
+
+def test_この_2_項目は_null_にならない() -> None:
+    """**到達しない分岐を作らない**(ADR-0037 決定2)。
+
+    他の項目と違って「全部か無か」にせず、調べられなかった分を `unknown` として
+    数える。`int | None` で宣言すると、動かない `None` の経路を説明する
+    コメントを書くことになる。
+    """
+    fields = HealthReport.__dataclass_fields__
+    for name in ("deprecated_target_mapping_count", "unknown_target_mapping_count"):
+        assert fields[name].type == "int", f"{name} が None を取れてはいけない"

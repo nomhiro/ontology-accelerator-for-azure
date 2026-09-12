@@ -57,6 +57,12 @@ just dev-api             # Core API 起動
   **`SPARQL_QUERY_ENDPOINT` 等を明示した場合はそちらが勝つ**（デプロイ環境では Bicep が内部 ingress の FQDN を注入するため。`P2A-13`）
 - **`just up` は Azurite に Blob コンテナを作る。** これを飛ばすと publish と削除が `ContainerNotFound` で失敗する。名前空間の作成と SPARQL 参照は Blob を触らないため動いてしまい、原因が分かりにくい
 - **`just clean` は PostgreSQL のボリュームごと消す。** 消した後は `just migrate` をやり直す必要がある。さらに `alembic` を素で叩くときは `.env` を読まないので、`POSTGRES_*` を環境変数で明示する（`just migrate` は `--env-file` を使っている）。読み込まれないと既定値で接続を試み、`InvalidPasswordError` になる
+- **Docker Desktop が落ちていると、integration テストが**全件セットアップ段階で**
+  `ConnectionRefusedError` になる。** 例外は `asyncio/windows_events.py` から出るので
+  **メッセージが原因を指さない**(「docker が動いていない」とは書かれない)。
+  変更と無関係なテストが一斉に ERROR になったら、まず `docker ps` を見る。
+  復帰には `docker compose up -d` に加えて **`scripts/init-local-storage.py`**
+  (Azurite の Blob コンテナ作成)も必要である
 - **integration テストがトランザクションを開いたまま失敗すると、スイート全体が固まる。**
   次のテストの `drop_all` の `DROP TABLE` が**無期限に待つ**(実測。行ロックの変異
   テストで踏んだ)。`packages/api/tests/conftest.py` は `SET lock_timeout = '15s'` を
@@ -88,7 +94,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 990 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1002 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
