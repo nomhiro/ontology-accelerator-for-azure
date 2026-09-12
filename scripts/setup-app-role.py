@@ -52,14 +52,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 from ontology_core.auth.app_roles import merge_app_role
 from ontology_core.auth.optional_claims import merge_optional_claim
-from ontology_core.console import say, warn
+from ontology_core.console import decode_output, say, warn
 from ontology_core.models import PlatformRole
 
 _GRAPH = "https://graph.microsoft.com/v1.0"
@@ -98,17 +100,22 @@ def _az(*args: str) -> str:
 
     **stderr を捨てない。** Graph の失敗は「権限が無い」「オブジェクトが無い」
     のどちらかで、対処が違う。理由を落とすと運用者が判断できない。
+
+    **`text=True` を使わない**(実測で踏んだ)。`encoding="utf-8"` を指定すると、
+    日本語 Windows で `az` が cp932 の警告を返したときに**読み取りスレッドが
+    `UnicodeDecodeError` で死に、`proc.stdout` が `None` になる** — 呼び出し側
+    には `AttributeError: 'NoneType' object has no attribute 'strip'` という
+    **原因を指さない例外**が届く。バイト列で受けて `decode_output` に任せる。
     """
     proc = subprocess.run(  # noqa: S603 -- フルパス解決済み、固定の引数リストのみ
         [_az_path(), *args],
         capture_output=True,
-        text=True,
         check=False,
-        encoding="utf-8",
     )
     if proc.returncode != 0:
-        raise AzError(f"az {' '.join(args)} が失敗しました:\n{proc.stderr.strip()}")
-    return proc.stdout.strip()
+        detail = decode_output(proc.stderr).strip()
+        raise AzError(f"az {' '.join(args)} が失敗しました:\n{detail}")
+    return decode_output(proc.stdout).strip()
 
 
 def _az_json(*args: str) -> Any:
@@ -126,18 +133,41 @@ def _graph_get(url: str) -> Any:
 
 
 def _graph_send(method: str, url: str, body: dict[str, Any]) -> Any:
-    # 本文はコマンドラインに載る。**秘密は含まれない**(ロール定義と ID のみ)。
-    return _az_json(
-        "rest",
-        "--method",
-        method,
-        "--url",
-        url,
-        "--headers",
-        "Content-Type=application/json",
-        "--body",
-        json.dumps(body),
-    )
+    """Graph へ JSON を送る。**本文はファイル経由で渡す。**
+
+    **JSON をコマンドラインに載せてはいけない**(実測で踏んだ)。Windows の
+    `az` は `az.cmd`(バッチ)で、`{"appRoles": [{"id": ...}]}` のような
+    引数を**cmd が再解析して壊す** — 返ってくるのは
+    `"..." の使い方が誤っています。` という**az でも Graph でもないエラー**で、
+    原因が分からない。
+
+    `az` は多くのパラメータで `@<ファイル>` による読み込みに対応しているので、
+    一時ファイルに書いて渡す。**シェルの引用規則を一切通らない。**
+
+    ファイルは必ず消す。**本文に秘密は含まれない**(ロール定義と ID のみ)が、
+    一時ファイルを残す理由が無い。
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", encoding="utf-8", delete=False
+    ) as handle:
+        # **`encoding="utf-8"` を明示する。** 既定は cp932 になり、
+        # ロールの説明(日本語)が壊れる。
+        json.dump(body, handle, ensure_ascii=False)
+        body_path = handle.name
+    try:
+        return _az_json(
+            "rest",
+            "--method",
+            method,
+            "--url",
+            url,
+            "--headers",
+            "Content-Type=application/json",
+            "--body",
+            f"@{body_path}",
+        )
+    finally:
+        pathlib.Path(body_path).unlink(missing_ok=True)
 
 
 def _resolve_app_id(explicit: str | None) -> str:
@@ -170,11 +200,16 @@ def _caller_principal() -> tuple[str, str]:
     return oid, "ServicePrincipal"
 
 
-def _ensure_service_principal(app_id: str) -> str:
+def _ensure_service_principal(app_id: str, *, dry_run: bool) -> str:
     """アプリ登録に対応するサービスプリンシパルのオブジェクト ID を返す。
 
     **無ければ作る。** 割り当ての `resourceId` はサービスプリンシパル側の
     オブジェクト ID であり、アプリ登録だけでは割り当てられない。
+
+    **`--dry-run` では作らない**(実測で踏んだ)。以前はここだけ `dry_run` を
+    受けておらず、**`--dry-run` が `az ad sp create` を実行していた** —
+    書き込む dry-run は dry-run ではない。作らないので後続の割り当ては
+    確かめられないが、**「作る」と言って終わるほうが正しい**。
     """
     try:
         oid = _az("ad", "sp", "show", "--id", app_id, "--query", "id", "-o", "tsv")
@@ -182,6 +217,9 @@ def _ensure_service_principal(app_id: str) -> str:
             return oid
     except AzError:
         say("setup-app-role: サービスプリンシパルが無いため作成します")
+    if dry_run:
+        say("setup-app-role: --dry-run のため作成しません(割り当ての確認はここで止まります)")
+        return ""
     _az("ad", "sp", "create", "--id", app_id)
     return _az("ad", "sp", "show", "--id", app_id, "--query", "id", "-o", "tsv")
 
@@ -323,18 +361,27 @@ def main() -> int:
             )
         else:
             _ensure_optional_claim(app_id, dry_run=args.dry_run)
-        sp_object_id = _ensure_service_principal(app_id)
+        sp_object_id = _ensure_service_principal(app_id, dry_run=args.dry_run)
         if args.principal_id:
             principal_id, principal_type = args.principal_id, "指定された主体"
         else:
             principal_id, principal_type = _caller_principal()
-        _assign(
-            sp_object_id=sp_object_id,
-            role_id=role_id,
-            principal_id=principal_id,
-            principal_type=principal_type,
-            dry_run=args.dry_run,
-        )
+        if not sp_object_id:
+            # `--dry-run` でサービスプリンシパルを作らなかった場合だけここに来る。
+            # **「確かめられなかった」と言う。** 割り当て済みかどうかは
+            # サービスプリンシパルが無いと問い合わせられない。
+            say(
+                f"setup-app-role: {principal_type} {principal_id} への割り当ては、"
+                "サービスプリンシパルを作ってからでないと確かめられません"
+            )
+        else:
+            _assign(
+                sp_object_id=sp_object_id,
+                role_id=role_id,
+                principal_id=principal_id,
+                principal_type=principal_type,
+                dry_run=args.dry_run,
+            )
     except AzError as exc:
         warn(f"setup-app-role: {exc}")
         return 1

@@ -94,7 +94,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1213 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1224 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
@@ -205,6 +205,40 @@ SQLAlchemy 2.0.52）。無効にしたいときは `poolclass=NullPool` を明�
 **コメント行を静的解析ツールの名前だけで始めてはいけない。** `#` の直後にツール名が来ると、ツール自身がディレクティブ指定として解釈して SC1072 / SC1073 で失敗する。説明したいときは「静的解析ツール」と書くか、行頭に別の語を置く（2 回踏んだ）。
 
 **Windows では拡張子の無いスタブが `shutil.which` に拾われない。** `az` をスタブに差し替えてテストするとき、`PATH` の先頭に拡張子なしの `az` を置いても Python 側は `PATHEXT`（`.cmd` / `.exe`）しか見ないため**本物の `az` が呼ばれる**（実際に一度、意図せず実テナントへ読み取りを飛ばした）。sh から呼ぶスクリプトのテストでは拾われるが、Python から呼ぶ場合は `subprocess.run` 自体を差し替えるか `az.cmd` を置く。
+
+**`subprocess` で `az` を `text=True, encoding="utf-8"` で呼んではいけない。** 日本語
+Windows の `az` は**警告を cp932 で返す**ため、出力を読むスレッドが
+`UnicodeDecodeError` で死に、**`proc.stdout` が `None` になって戻る**。
+`subprocess` 自身は例外を投げないので、呼び出し側に届くのは
+`AttributeError: 'NoneType' object has no attribute 'strip'` という**原因を
+指さない例外**である(実測。`scripts/setup-app-role.py` を実テナントに対して
+走らせて踏んだ)。**バイト列で受けて `ontology_core.console.decode_output` に
+渡す**(UTF-8 を試し、失敗したらロケールのコードページで読み直す)。
+
+**`az` に JSON をコマンドライン引数で渡してはいけない(Windows)。** `az` は
+`az.cmd`(バッチ)なので、`--body '{"appRoles": [{"id": "..."}]}'` のような
+引数は**cmd が再解析して壊す**。返ってくるのは
+`"..." の使い方が誤っています。` という **az でも Graph でもないエラー**で、
+原因が分からない(実測)。**`--body @<ファイル>` で渡す** — `az` は多くの
+パラメータで `@` によるファイル読み込みに対応しており、**シェルの引用規則を
+一切通らない**。一時ファイルは `encoding="utf-8"` を明示して書くこと(既定は
+cp932 で、日本語が壊れる)。
+
+**`--dry-run` を足すときは、書き込む経路を 1 つも残していないか外から確かめる。**
+`setup-app-role.py` は `_ensure_service_principal` だけが `dry_run` を受けて
+おらず、**`--dry-run` が `az ad sp create` を実行していた**(実測で踏み、実際に
+サービスプリンシパルが作られた)。**書き込む dry-run は dry-run ではない** —
+確認する手段そのものが副作用を持つ。テストは「各分岐に `if dry_run` があるか」
+ではなく **「変更を伴う呼び出しが 1 つも無いか」**で固定する
+(`packages/core/tests/test_setup_app_role_cli.py`)。
+
+**アプリロールを割り当てても、既存のアクセストークンには乗らない。** `az` の
+トークンキャッシュは**最長 1 時間**その古いトークンを返し続ける(実測:
+割り当て直後の `az account get-access-token` は `roles` が空で、キャッシュの
+期限は 63 分後だった)。`--resource` 形式に変えても**同じキャッシュ項目**を
+引く。**`az login` をやり直すしかない。** `azd up` の `preprovision` は
+`platform-admin` が無いと **provision を中止する**(終了コード 2)ので、
+割り当ての直後に `azd up` すると止まる。
 
 **Windows の Azure CLI のトークンキャッシュは Linux から使えない。** `~/.azure/msal_token_cache.bin` は DPAPI 暗号化（先頭が `01 00 00 00 D0 8C 9D DF`）で、Windows ユーザーに紐づく。`~/.azure` をコンテナへ複製すると `az account show`（ローカルのメタデータだけ）は通るのに、**トークンを要求するコマンドはすべて失敗する**ので「az は動いている」と誤解しやすい。Linux 側で az を使うには、そちら側で `az login`（対話的）が別途必要。
 
