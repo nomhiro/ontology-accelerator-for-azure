@@ -16,6 +16,7 @@ from ontology_core.db.tables import (
     TermAccessRow,
     TermMappingRow,
     TermOwnerRow,
+    VkgMappingRow,
 )
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "TermAccessRow",
     "TermMappingRow",
     "TermOwnerRow",
+    "VkgMappingRow",
     "create_engine_and_factory",
     "session_scope",
 ]

@@ -133,6 +133,24 @@ class Settings(BaseSettings):
         default=16000, ge=1000, le=128000, alias="PROPOSAL_MAX_OUTPUT_TOKENS"
     )
 
+    # ---- 仮想グラフ(Ontop VKG。ADR-0046、`P3-01`) ----
+    #
+    # ソースごとの SPARQL エンドポイントのテンプレート。`{namespace}` と
+    # `{source}` を差し替える。**Ontop の 1 インスタンスは 1 つの DB しか
+    # 見ない**(`--db-url` が 1 つ)ため、宛先はソースごとに変わる。
+    #
+    # **空なら仮想グラフの照会は使えない**(不変条件11 と同じ向き)。
+    # 空のまま照会すると **503 で「設定されていません」と言う** —
+    # 空の結果を返すと「該当する行が無い」と見分けがつかず、運用者が
+    # 設定漏れに気づけない(ADR-0046 決定11)。
+    vkg_endpoint_template: str = Field(default="", alias="VKG_ENDPOINT_TEMPLATE")
+
+    # 仮想グラフへの照会のタイムアウト(秒)。**Fuseki より長くしてある** —
+    # 問い合わせの先は顧客の DB であり、結合の重さはこちらで決められない。
+    vkg_query_timeout_seconds: int = Field(
+        default=60, ge=1, le=600, alias="VKG_QUERY_TIMEOUT_SECONDS"
+    )
+
     # ---- SPARQL のガードレール ----
     # SERVICE 句は任意の URL へ HTTP リクエストを飛ばせるため、既定で禁止する
     # (Azure IMDS 169.254.169.254 等への SSRF を防ぐ)。

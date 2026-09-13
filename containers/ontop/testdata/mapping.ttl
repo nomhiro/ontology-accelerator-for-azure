@@ -1,0 +1,41 @@
+## `ontop-check.test.sh` が Ontop に渡す R2RML マッピング (P3-01、ADR-0046)。
+##
+## **このファイルは `ontology_core.r2rml.parse_mapping` を通る形で書いてある**
+## (`test_ontop_mapping_contract.py` が実際に通して確かめる)。つまり
+## `rr:sqlQuery` も `rr:graph` も `rr:parentTriplesMap` も使わない。
+##
+## 主語は `https://e.example/vkg/data/...`(= `data_iri_prefix` が
+## `base_iri` から導く接頭辞)の下に閉じてある。
+
+@prefix rr: <http://www.w3.org/ns/r2rml#> .
+@prefix ex: <https://e.example/vkg#> .
+
+<#CustomerMap> a rr:TriplesMap ;
+  rr:logicalTable [ rr:tableName "\"vkg\".\"customer\"" ] ;
+  rr:subjectMap [
+    rr:template "https://e.example/vkg/data/customer/{id}" ;
+    rr:class ex:Customer
+  ] ;
+  rr:predicateObjectMap [
+    rr:predicate ex:fullName ;
+    rr:objectMap [ rr:column "full_name" ]
+  ] ;
+  rr:predicateObjectMap [
+    rr:predicate ex:tier ;
+    rr:objectMap [ rr:column "tier" ]
+  ] .
+
+<#OrderMap> a rr:TriplesMap ;
+  rr:logicalTable [ rr:tableName "\"vkg\".\"order\"" ] ;
+  rr:subjectMap [
+    rr:template "https://e.example/vkg/data/order/{id}" ;
+    rr:class ex:Order
+  ] ;
+  rr:predicateObjectMap [
+    rr:predicate ex:totalJpy ;
+    rr:objectMap [ rr:column "total_jpy" ]
+  ] ;
+  rr:predicateObjectMap [
+    rr:predicate ex:placedBy ;
+    rr:objectMap [ rr:template "https://e.example/vkg/data/customer/{customer_id}" ]
+  ] .

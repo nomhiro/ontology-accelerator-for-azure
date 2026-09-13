@@ -1,0 +1,19 @@
+## 存在しない関係を参照するマッピング (P3-01、ADR-0046 決定10)。
+##
+## **Ontop のエラー本文が接続ユーザから見える全関係を列挙すること**を
+## 確かめるために使う。列挙をやめたら `ontop-check.test.sh` が落ちて、
+## 決定10 の根拠が変わったことに気づける。
+
+@prefix rr: <http://www.w3.org/ns/r2rml#> .
+@prefix ex: <https://e.example/vkg#> .
+
+<#NopeMap> a rr:TriplesMap ;
+  rr:logicalTable [ rr:tableName "\"vkg\".\"nope\"" ] ;
+  rr:subjectMap [
+    rr:template "https://e.example/vkg/data/nope/{id}" ;
+    rr:class ex:Customer
+  ] ;
+  rr:predicateObjectMap [
+    rr:predicate ex:fullName ;
+    rr:objectMap [ rr:column "nm" ]
+  ] .

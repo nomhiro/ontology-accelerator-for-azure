@@ -34,6 +34,7 @@ jobs:
       containers: ${{ steps.filter.outputs.containers }}
       shell: ${{ steps.filter.outputs.shell }}
       reasoner: ${{ steps.filter.outputs.reasoner }}
+      vkg: ${{ steps.filter.outputs.vkg }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -91,6 +92,16 @@ jobs:
               - 'containers/reasoner/**'
               - 'scripts/check-reasoning.sh'
               - 'samples/**'
+              - '.github/workflows/ci.yml'
+            # 仮想グラフ(Ontop VKG)の実機確認（`P3-01`、ADR-0046）。
+            #
+            # **`packages/core/**` を含める。** 同梱の題材が
+            # `ontology_core.r2rml` の検査を通ることを
+            # `test_ontop_contract.py` が固定しているので、検査を厳しくした
+            # ときに題材が通らなくなったことをここで捕まえる。
+            vkg:
+              - 'containers/ontop/**'
+              - 'packages/core/**'
               - '.github/workflows/ci.yml'
 
   python:
@@ -234,6 +245,9 @@ jobs:
           - name: mcp
             context: .
             dockerfile: packages/mcp-server/Dockerfile
+          - name: ontop
+            context: containers/ontop
+            dockerfile: containers/ontop/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
@@ -282,6 +296,35 @@ jobs:
       - name: 同梱サンプルを検査する
         run: sh scripts/check-reasoning.sh samples
 
+  # 仮想グラフ (Ontop VKG) の実機確認（`P3-01`、ADR-0046）。
+  #
+  # **Python 側のテストでは確かめられないことを確かめている。**
+  # SPARQL の結合が SQL に書き換わって実データが返ること、TBox の推論が
+  # 効くこと、**TBox のトリプルはデータとして返らないこと**(= 宛先を
+  # 間違えると 0 件が返る。決定11 の根拠)、SPARQL Update を受け付けない
+  # こと、そして**不正なマッピングのエラー本文が全関係を列挙すること**
+  # (決定10 の根拠)。
+  #
+  # スクリプトが PostgreSQL を使い捨てで立てるので、`services:` は使わない
+  # （`jobs.*.services` ではスキーマを流すタイミングを制御できない）。
+  #
+  # `containers` ジョブのマトリクスに入れていないのは、あちらがビルドだけを
+  # 見るのに対し、こちらは起動して問い合わせるためである。
+  vkg:
+    needs: changes
+    if: needs.changes.outputs.vkg == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 応答の JSON の判定に uv（ontology_core.console）を使う。
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: 依存関係を入れる
+        run: uv sync --all-packages
+      - name: 仮想グラフを実物の PostgreSQL に対して検査する
+        run: sh containers/ontop/ontop-check.test.sh
+
   shell:
     needs: changes
     if: needs.changes.outputs.shell == 'true'
@@ -298,7 +341,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
             scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh \
-            containers/reasoner/*.sh
+            containers/reasoner/*.sh containers/ontop/*.sh
       # 静的解析では拾えない移植性の検査（素の `python` 呼び出しなど）。
       # 詳細は scripts/lint-shell.sh の冒頭コメント。
       - name: シェルスクリプトの移植性を検査する

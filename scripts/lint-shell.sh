@@ -21,12 +21,20 @@ report() {
     failures=$((failures + 1))
 }
 
-# 検査対象。CI の検査と同じ範囲に揃える。
+# 検査対象。CI の shellcheck と同じ範囲に揃える。
+#
+# **`containers/reasoner/*.sh` と `containers/ontop/*.sh` も含める。**
+# 以前は `scripts/` と `containers/fuseki/` だけで、**CI の shellcheck が
+# 見ている範囲より狭かった**。狭いと、素の `python` 呼び出し（`python` を
+# PATH に置かない Linux で command not found になる）がこの検査を
+# すり抜ける — `P1-14` で実際に踏んだ形である（あのときは
+# `shell` ジョブのパスフィルタが狭かった）。**検査の範囲は、それが守る
+# 対象の範囲と同じにする。**
 #
 # **このスクリプト自身は除く。** 探索するパターン（`python` や bash 専用構文）を
 # 文字列リテラルとして含んでいるため、自分自身を検査すると必ず誤検出する。
 targets=""
-for candidate in scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh; do
+for candidate in scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh     containers/reasoner/*.sh containers/ontop/*.sh; do
     [ -f "${candidate}" ] || continue
     case "${candidate}" in
         scripts/lint-shell.sh) continue ;;
@@ -39,8 +47,15 @@ done
 # `uv run python` / `uv run --directory X python` は可（uv がインタプリタを
 # 用意するため、uv が動く環境なら必ず動く）。`python3` も可。
 # 弾くのは、行の中で `uv run` を経由しない `python` の直接起動。
+#
+# **行頭と行末を `^` / `$` で明示する。** 以前のパターンは
+# `[^-a-zA-Z_]python[^0-9a-zA-Z_]` で、**`python` の前後に 1 文字を
+# 要求していた**。そのため**行の先頭に書いた `python ...` を検出しなかった**
+# （実測。`containers/ontop/*.sh` を対象に加えたときに、行頭の
+# `python -c ...` がすり抜けることに気づいた）。素の `python` を書くとき
+# いちばん自然な形が、いちばん検出されない形だった。
 for f in ${targets}; do
-    hits="$(grep -n '[^-a-zA-Z_]python[^0-9a-zA-Z_]' "${f}" 2>/dev/null |
+    hits="$(grep -nE '(^|[^-a-zA-Z_])python([^0-9a-zA-Z_]|$)' "${f}" 2>/dev/null |
         grep -v 'uv run' |
         grep -v '^[0-9]*: *#' || true)"
     if [ -n "${hits}" ]; then

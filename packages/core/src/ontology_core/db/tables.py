@@ -519,3 +519,60 @@ class ScanColumnRow(Base):
     referenced_schema: Mapped[str | None] = mapped_column(String(255), default=None)
     referenced_table: Mapped[str | None] = mapped_column(String(255), default=None)
     referenced_column: Mapped[str | None] = mapped_column(String(255), default=None)
+
+
+class VkgMappingRow(Base):
+    """1 ソースの R2RML マッピングの 1 改訂(ADR-0046 決定2、`P3-01`)。
+
+    **1 行 = 1 改訂。ソースごとに 1 系列で、有効なのは最大の改訂である。**
+    `competency_question_sets` と同じ形にしてある(ADR-0022 決定1)。
+
+    **改訂は書き換えない**(不変条件7 と同じ形)。`reason` は必須である —
+    **マッピングは実データへの入口の定義**なので、入口が変わった理由が
+    残らないのは監査として成立しない。
+
+    **Blob には置かない**(決定2)。マッピングは Fuseki へ射影されないので
+    Blob → PostgreSQL の順序(不変条件2)を挟む理由が無く、挟むと孤児
+    Blob という故障モードを新しく作る(`P2B-12` / `P2B-20` と同じ形)。
+    PostgreSQL だけなら改訂と監査記録を同一トランザクションで書ける。
+
+    **オントロジーの版に紐づけない**(決定12)。版が上がるたびに
+    マッピングを書き直す設計にすると、**承認のたびに実データへの入口が
+    止まる**。代わりに登録時点で「そのとき承認済みだった版」を
+    `validated_against_version` に記録し、**後から版が上がったことは
+    分かるようにする**(`NULL` は「承認済み版が無い状態で登録した」)。
+    """
+
+    __tablename__ = "vkg_mappings"
+    __table_args__ = (
+        UniqueConstraint("source_id", "revision", name="uq_vkg_mappings_source_revision"),
+        Index("ix_vkg_mappings_source", "source_id"),
+        Index("ix_vkg_mappings_namespace", "namespace"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    #: **ソースと名前空間の両方を持つ。** ソース経由で辿れるが、
+    #: 名前空間で絞る問い合わせ(退役の確認、一覧)が 1 クエリで済む。
+    #: `scan_columns` が `run_id` を併せ持つのと同じ非正規化である。
+    namespace: Mapped[str] = mapped_column(
+        ForeignKey("namespaces.name", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("scan_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    #: ソースごとに 1 から増える連番。**`id` の順序に頼らない**。
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: R2RML マッピングの Turtle。
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: `rr:TriplesMap` の個数。0 では登録できない(入口が無いマッピング)。
+    triples_map_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 参照している関係名を `,` で連結したもの。**検索用の要約であって
+    #: 正本ではない** — 正本は `content` である。
+    tables: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 登録時点で承認済みだった版。**`NULL` は「承認済み版が無かった」**
+    #: (決定12)。「検証していない」ではなく「照合先が無かった」である。
+    validated_against_version: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    reason: Mapped[str] = mapped_column(Text, nullable=False)

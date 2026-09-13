@@ -26,6 +26,7 @@ from ontology_api.routers import (
     sparql,
     term_owners,
     versions,
+    vkg,
 )
 from ontology_core.config import AuthMode, get_settings
 
@@ -62,6 +63,7 @@ app.include_router(scan.router)
 app.include_router(sparql.router)
 app.include_router(term_owners.router)
 app.include_router(versions.router)
+app.include_router(vkg.router)
 
 if _settings.auth_mode is AuthMode.DISABLED:
     logger.warning(

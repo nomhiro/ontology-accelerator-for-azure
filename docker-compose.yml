@@ -61,6 +61,47 @@ services:
       # 別のプロジェクトで 10000 を使っている場合は AZURITE_PORT で変更できる。
       - "${AZURITE_PORT:-10000}:10000"
 
+  # 仮想グラフ (Ontop VKG)。**既定では起動しない**(`P3-01`、ADR-0046)。
+  #
+  #   docker compose --profile vkg up -d ontop
+  #
+  # **プロファイルに入れてある理由。** Ontop は JVM を 1 つ増やすので、
+  # 仮想グラフを触らない日の `just up` を重くしたくない。加えて
+  # **マッピングは名前空間ごとに違う**ので、ローカルの既定として
+  # 1 つのマッピングを置くと「これが標準」と読まれてしまう。
+  #
+  # ここで渡しているのは `containers/ontop/testdata/` の題材である。
+  # 自分のマッピングを試すときは `ONTOP_INPUT_DIR` を差し替える。
+  # **スキーマは自分で作る必要がある**(`testdata/schema.sql`)。
+  #
+  # **`ONTOP_LAZY_INIT=true`(イメージの既定)なので、表が無くても起動する。**
+  # 最初のクエリで 500 を返し、表が現れれば次のクエリで通る(実測)。
+  ontop:
+    profiles: ["vkg"]
+    build:
+      context: ./containers/ontop
+    ports:
+      - "${ONTOP_PORT:-8099}:8080"
+    environment:
+      ONTOP_MAPPING_FILE: /opt/ontop/input/mapping.ttl
+      ONTOP_ONTOLOGY_FILE: /opt/ontop/input/ontology.ttl
+      ONTOP_PROPERTIES_FILE: /opt/ontop/input/db.properties
+      ONTOP_DB_URL: jdbc:postgresql://postgres:5432/ontology
+      ONTOP_DB_USER: ontology
+      # ローカル専用の値。**ここだけ環境変数で渡している。**
+      #
+      # デプロイ環境と `ontop-check.test.sh` は `ONTOP_DB_PASSWORD_FILE`
+      # (ファイルで渡す)を使う — **プロパティファイルにも argv にも
+      # 載らない**形である(不変条件6 と同じ向き)。ここでファイルを
+      # 使わないのは、`localdev` と 1 行書いたファイルをリポジトリに
+      # 置くことになり、**秘密を置かない約束と見分けがつかなくなる**ため。
+      ONTOP_DB_PASSWORD: localdev
+    volumes:
+      - ${ONTOP_INPUT_DIR:-./containers/ontop/testdata}:/opt/ontop/input:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   fuseki-data:
   postgres-data:

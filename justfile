@@ -92,6 +92,21 @@ check-reasoning *paths:
 test-reasoner:
     sh containers/reasoner/reasoner-check.test.sh
 
+# ADR-0046(`P3-01`)。**これが `P3-01` の実機確認である。** PostgreSQL を
+# 使い捨てで立て、R2RML マッピングを食わせ、**SPARQL の結合が SQL に
+# 書き換わって実データが返ること**を確かめる。Python 側のテストでは
+# 確かめられない部分である。
+# 仮想グラフ(Ontop VKG)を実物の PostgreSQL に対して検査する(要: docker、uv、curl)
+test-vkg:
+    sh containers/ontop/ontop-check.test.sh
+
+# **題材のスキーマも作る。** `containers/ontop/testdata/schema.sql` を
+# ローカルの PostgreSQL に流してから Ontop を起動する。
+# 仮想グラフ(Ontop VKG)をローカルで起動する(`just up` では起動しない)
+up-vkg:
+    docker compose exec -T postgres psql -q -U ontology -d ontology < containers/ontop/testdata/schema.sql
+    docker compose --profile vkg up -d --build ontop
+
 # ADR-0014 決定2・3(P2A-09)。**割り当てが無いと azd up の postdeploy が
 # 名前空間の作成で 403 になって止まる。** `--dry-run` を渡すと Entra を
 # 変更せず、何をするかだけ表示する。

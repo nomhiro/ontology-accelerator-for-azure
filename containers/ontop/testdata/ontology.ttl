@@ -1,0 +1,23 @@
+## `ontop-check.test.sh` が Ontop に渡す TBox (P3-01、ADR-0046)。
+##
+## **`Customer ⊑ Party` を入れてある。** Ontop が TBox を使って推論する
+## ことを確かめるため — 上位クラスで問い合わせてインスタンスが返れば、
+## 「語彙の意味は仮想グラフ側でも効く」が成立している(決定1)。
+##
+## **`rdfs:label` も入れてある。** 逆に、**TBox のトリプル自体は
+## データとして返らない**ことを確かめるため(決定11 の根拠)。
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex:   <https://e.example/vkg#> .
+
+<https://e.example/vkg> a owl:Ontology .
+
+ex:Party    a owl:Class ; rdfs:label "関係者" .
+ex:Customer a owl:Class ; rdfs:label "顧客" ; rdfs:subClassOf ex:Party .
+ex:Order    a owl:Class ; rdfs:label "注文" .
+
+ex:fullName a owl:DatatypeProperty .
+ex:tier     a owl:DatatypeProperty .
+ex:totalJpy a owl:DatatypeProperty .
+ex:placedBy a owl:ObjectProperty .

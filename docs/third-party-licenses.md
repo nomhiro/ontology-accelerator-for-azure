@@ -11,7 +11,7 @@
 | ライブラリ | ライセンス | 取得元 | 扱い |
 |---|---|---|---|
 | Apache Jena / Fuseki | Apache-2.0(確認済) | https://jena.apache.org/ | ✓ 既定のトリプルストア |
-| Ontop | Apache-2.0(確認済) | https://ontop-vkg.org/ | ✓ **公式イメージに JDBC ドライバは同梱されていない**(確認済。下記 R6)。自前イメージに追加するドライバは許諾的なものだけに限る |
+| Ontop | Apache-2.0(確認済) | https://ontop-vkg.org/ | ✓ **公式イメージに JDBC ドライバは同梱されていない**(確認済。下記 R6)。**2026-09-13 に 5.3.0 で再確認**(`P3-01`、[ADR-0046](adr/0046-virtual-knowledge-graph.md))。同梱物のライセンスはイメージ内の `/opt/ontop/copyright/` にあり、**GPL 単独のものは無い**(Apache-2.0 / MPL-2.0(H2)/ BSD(Protege)/ EPL-1.0+LGPL 二重(Logback)) |
 | Oxigraph | MIT / Apache-2.0 | https://github.com/oxigraph/oxigraph | ✓ 代替ストア候補 |
 | rdflib | BSD-3-Clause | https://github.com/RDFLib/rdflib | ✓ Python 側の RDF 処理 |
 | pyshacl | Apache-2.0 | https://github.com/RDFLib/pySHACL | ✓ SHACL 検証(Phase 2) |
@@ -19,8 +19,8 @@
 | OWL API | **Apache-2.0 / LGPL-3.0 のデュアル**(確認済) | `net.sourceforge.owlapi:owlapi-apibinding:5.1.20` / https://github.com/owlcs/owlapi | ✓ **Apache-2.0 の方を選択する。** ELK が推移的に引く(api / impl / parsers / rio / tools / oboformat)。**版は ELK に揃える** — `owlapi-distribution:5.5.1` を足すと同じクラスが二重に載って Turtle が読めなくなった(ADR-0021 決定4) |
 | SLF4J (slf4j-api / slf4j-simple) | MIT(確認済) | https://github.com/qos-ch/slf4j | ✓ 推論器コンテナのログ。**2.0.13 の pom には `<licenses>` ブロックが無い**ので、jar 内の `META-INF/LICENSE.txt`(MIT の本文)と `Bundle-License` ヘッダで確認した。**Logback は使わない**(EPL-1.0 / LGPL-2.1 のデュアルで、選択の説明が要る割に得るものが無い) |
 | HermiT | **LGPL-3.0** | https://www.hermit-reasoner.com/ | △ 同梱せず、任意有効化のコンテナビルド時取得。ACA Job の**別プロセス**として動かす構成が LGPL 上最も安全。NOTICE に明記 |
-| PostgreSQL JDBC (pgjdbc) | BSD-2-Clause(確認済) | https://github.com/pgjdbc/pgjdbc | ✓ Ontop 用。自前イメージに**同梱してよい**(Phase 3) |
-| Microsoft JDBC Driver for SQL Server | MIT(確認済) | https://github.com/microsoft/mssql-jdbc | ✓ Ontop 用。自前イメージに**同梱してよい**(Phase 3) |
+| PostgreSQL JDBC (pgjdbc) | BSD-2-Clause(確認済) | https://github.com/pgjdbc/pgjdbc | ✓ Ontop 用。**2026-09-13 に 42.7.7 を同梱した**(`P3-01`)。jar 内の `META-INF/LICENSE` と POM の両方で確認。SHA-256 を `containers/ontop/Dockerfile` に固定 |
+| Microsoft JDBC Driver for SQL Server | MIT(確認済) | https://github.com/microsoft/mssql-jdbc | ✓ Ontop 用。**2026-09-13 に 12.10.0.jre11 を同梱した**(`P3-01`)。POM で確認(jar 内に LICENSE は無い)。SHA-256 を `containers/ontop/Dockerfile` に固定 |
 | MySQL Connector/J | **GPL-2.0 with FOSS exception**(確認済) | https://github.com/mysql/mysql-connector-j | ✗ **同梱しない。** 利用者が実行時に `jdbc/` へ置く(下記 R6) |
 | Oracle JDBC (ojdbc) | **Oracle 独自条項**(OSS ではない) | https://www.oracle.com/database/technologies/appdev/jdbc.html | ✗ **同梱しない。** 再配布が許諾されていない。利用者が実行時に置く |
 | FastAPI | MIT | https://github.com/fastapi/fastapi | ✓ 利用中 |
@@ -103,6 +103,33 @@ docker run --rm -v "$PWD/containers/reasoner:/build:ro" -w /tmp/proj   maven:3.9
 ---
 
 ## Ontop 配布イメージの JDBC ドライバ(R6) — 調査済み・結論
+
+### 2026-09-13: 実装して確かめたこと(`P3-01`、[ADR-0046](adr/0046-virtual-knowledge-graph.md))
+
+`containers/ontop/Dockerfile` を書いたときに `ontop/ontop:5.3.0` を実測しました。
+
+| 確かめたこと | 結果 |
+|---|---|
+| `/opt/ontop/jdbc` の有無 | **ディレクトリ自体が無い**(ドライバも当然無い) |
+| クラスパス | 起動スクリプトが `-cp "$ONTOP_HOME/lib/*:$ONTOP_HOME/jdbc/*"` を渡す。**利用者が置く前提の設計である** |
+| 同梱物のライセンス | `/opt/ontop/copyright/` に 27 件。**GPL 単独は無い** |
+
+**同梱したのは pgjdbc(BSD-2-Clause)と mssql-jdbc(MIT)の 2 つだけです。**
+MySQL Connector/J(GPL-2.0 with FOSS exception)と Oracle JDBC(独自条項)は
+同梱しません。**`/opt/ontop/jdbc` はマウント可能なまま残してあるので、
+同梱しないドライバも利用者が実行時に置けます** — 「私たちが再配布しないこと」と
+「利用者が使えないこと」は別です。
+
+足した 2 つのライセンス全文は、イメージの `/opt/ontop/copyright/` に
+`PGJDBC-LICENSE.txt` / `MSSQL-JDBC-LICENSE.txt` として置いてあります
+(リポジトリでは `containers/ontop/jdbc-licenses/`)。
+
+**ドライバは TLS を検証できる段で落としています。** `ontop/ontop:5.3.0` には
+**CA 証書が 1 枚も入っていない**ため(実測。`/etc/ssl/certs` が空)、イメージの
+中からは TLS の検証ができません。`--no-check-certificate` は使わず、
+別のビルド段(`alpine`)で落として SHA-256 を検証し、成果物だけを持ち込みます。
+
+
 
 **当初懸念していたリスクは存在しませんでした。** 公式の Ontop イメージ(`ontop/ontop`)には **JDBC ドライバが一切同梱されていません**。公式チュートリアルは利用者側で `jdbc/` ディレクトリを用意してドライバを入れ、`-v $PWD/jdbc:/opt/ontop/jdbc` でマウントすることを求めています(公式ドキュメントの記述: 「Make sure to have the `jdbc/` directory and the JDBC driver inside.」。例として挙げられている H2 のドライバも利用者が自分で取得します)。Ontop 本体は Apache-2.0 です。
 

@@ -94,7 +94,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1261 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1343 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 just gen-api                                   # openapi.json と TS 型を生成(**Web の型検査の前に必要**)
@@ -104,6 +104,7 @@ sh containers/fuseki/load-snapshot.test.sh     # ローダの制御フロー
 sh scripts/lint-shell.sh                       # シェルの移植性(素の python 等)
 sh scripts/preprovision.test.sh                # provision を止めるゲート(要: uv)
 sh containers/reasoner/reasoner-check.test.sh  # OWL 推論器の検査(要: docker、uv。約 2 分)
+sh containers/ontop/ontop-check.test.sh        # 仮想グラフの実機確認(要: docker、uv、curl。約 2 分)
 sh scripts/check-reasoning.sh samples          # 同梱サンプルの論理的整合性(要: docker、uv)
 # **Git Bash では docker の前に変換抑止が必要。** 無いと `-w /mnt` が
 # `C:/Program Files/Git/mnt` に変換されて docker が拒否する(実測)。
@@ -111,7 +112,7 @@ sh scripts/check-reasoning.sh samples          # 同梱サンプルの論理的�
 # shellcheck は CI と同じバージョンを使う(apt 版 0.9.0 と指摘が違うため固定)
 MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
 docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
-  scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh containers/reasoner/*.sh
+  scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh containers/reasoner/*.sh containers/ontop/*.sh
 az bicep build --file infra/main.bicep --stdout > /dev/null
 ```
 
@@ -268,6 +269,28 @@ docker の `-w /work`)。Blob の名前のような `/` を含むが先頭が `/
 `There was an error parsing the body` を返した)。**`--data-binary @<ファイル>`
 で渡す** — 生成側の言語で `encoding="utf-8"` を明示して書いた一時ファイルなら、
 シェルの引用規則も文字コードも通らない。
+
+**`MSYS_NO_PATHCONV=1` の下では `curl` にも POSIX パスを渡せない。**
+`--data-binary @/tmp/x` は `error encountered when reading a file` になり、
+**`-o /dev/null` は「リクエストは成功して `%{http_code}` も出るのに終了
+コードが 23(書き込みエラー)」になる**(実測)。後者が厄介で、`set -e` の下では
+**成功した直後にスクリプトが死ぬ** — 失敗の場所が原因を指さない。
+`cygpath -m` で Windows のパスに直すか、捨て先を実ファイルにする
+(`containers/ontop/ontop-check.test.sh` の `DISCARD` がその形)。
+
+**`ontop/ontop` の公式イメージには CA 証書が 1 枚も無い**(実測。
+`/etc/ssl/certs` が空)。イメージの中から `wget`/`curl` で HTTPS を取ると
+`Unable to verify the issuer's authority` で終了コード 5 になる。
+`--no-check-certificate` で逃げてはいけない — **SHA-256 で固定していても、
+「検証を切った」という設定がイメージに残ると次に触る人が別の
+ダウンロードに流用する**。**TLS を検証できる段で落として COPY する**
+(`containers/ontop/Dockerfile` の `drivers` 段)。なお `curl` も入っていない
+(`wget` はある)。
+
+**postgres の公式イメージは `pg_isready` が早すぎる。** initdb のために
+**一時的なサーバを起動して落とす**ので、そこで `pg_isready` が通る。実測で、
+直後の `psql` が `FATAL: the database system is shutting down` で落ちた。
+**実際にクエリ(`SELECT 1`)が通ることを起動の条件にする。**
 
 **`azd up` は docker が動いていないと即座に失敗する。** Docker Desktop が落ちていると `error checking for external tool Docker` で終わる（**課金は始まらない**）。azd 自身が `remoteBuild: true` を提案してくる（ACR 側でビルドする。ローカル docker が不要になる）。
 

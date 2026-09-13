@@ -584,3 +584,58 @@ class ScanTable(BaseModel):
     )
     table_comment: str | None = None
     columns: tuple[ScanColumn, ...] = ()
+
+
+class VkgMappingSummary(BaseModel):
+    """R2RML マッピングの 1 改訂(本文を含まない。ADR-0046 決定2)。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    source: str
+    revision: int
+    content_hash: str
+    triples_map_count: int
+    tables: tuple[str, ...] = Field(
+        default=(), description="このマッピングが読む関係名(`schema.table`)"
+    )
+    validated_against_version: str | None = Field(
+        default=None,
+        description="登録時点で承認済みだった版。**`null` は「承認済み版が無かった」**"
+        "(検証していない、ではない)",
+    )
+    created_at: datetime
+    created_by: str
+    reason: str
+
+
+class VkgMapping(BaseModel):
+    """R2RML マッピングの 1 改訂(本文を含む)。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    source: str
+    revision: int
+    content: str = Field(description="R2RML マッピングの Turtle")
+    content_hash: str
+    triples_map_count: int
+    tables: tuple[str, ...] = ()
+    validated_against_version: str | None = None
+    created_at: datetime
+    created_by: str
+    reason: str
+
+    def summary(self) -> VkgMappingSummary:
+        return VkgMappingSummary(
+            namespace=self.namespace,
+            source=self.source,
+            revision=self.revision,
+            content_hash=self.content_hash,
+            triples_map_count=self.triples_map_count,
+            tables=self.tables,
+            validated_against_version=self.validated_against_version,
+            created_at=self.created_at,
+            created_by=self.created_by,
+            reason=self.reason,
+        )
