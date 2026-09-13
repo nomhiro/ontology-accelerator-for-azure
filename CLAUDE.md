@@ -103,7 +103,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1403 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1441 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 just gen-api                                   # openapi.json と TS 型を生成(**Web の型検査の前に必要**)
@@ -111,6 +111,7 @@ pnpm --filter @ontology-accelerator/web build   # 型検査 + Web のテスト 8
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
 sh containers/fuseki/load-snapshot.test.sh     # ローダの制御フロー
 sh scripts/lint-shell.sh                       # シェルの移植性(素の python 等)
+uv run python scripts/check-licenses.py        # 依存のライセンス(要: pnpm。ADR-0049)
 sh scripts/preprovision.test.sh                # provision を止めるゲート(要: uv)
 sh containers/reasoner/reasoner-check.test.sh  # OWL 推論器の検査(要: docker、uv。約 2 分)
 sh containers/ontop/ontop-check.test.sh        # 仮想グラフの実機確認(要: docker、uv、curl。約 2 分)

@@ -46,6 +46,12 @@ jobs:
               - 'pyproject.toml'
               - 'uv.lock'
               - '.github/workflows/ci.yml'
+              # ライセンス検査は python ジョブで回す(`P4-03`、ADR-0049)。
+              # **`pnpm-lock.yaml` も含める** — Node の依存が増えたときに
+              # ライセンスを検査しないと、この仕組みの意味が無い。
+              - 'scripts/check-licenses.py'
+              - 'pnpm-lock.yaml'
+              - 'apps/web/package.json'
               # packages/api/tests/test_isolation.py が実物の Fuseki に対して
               # containers/fuseki/config.ttl の SERVICE 無効化(arq:httpServiceAllowed)
               # を検証している。containers/ 側だけの変更(config.ttl から誤って
@@ -177,6 +183,24 @@ jobs:
           POSTGRES_PASSWORD: localdev
           FUSEKI_ADMIN_PASSWORD: localdev
         run: uv run pytest
+
+      # 依存関係のライセンスを許諾リストと突き合わせる(`P4-03`、ADR-0049)。
+      #
+      # **`docs/third-party-licenses.md` が「CI では捕まえられない」と
+      # 書いていた穴である** — 新しいコピーレフト依存が別の名前で入ってきても
+      # 気づけなかった。
+      #
+      # **pnpm を入れてから回す。** Node 側を検査できなかったときこの検査は
+      # 終了コード 2 を返す(「Node は問題なし」として通さない)。
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Node の依存を入れる
+        run: pnpm install --frozen-lockfile
+      - name: 依存関係のライセンスを検査する
+        run: uv run python scripts/check-licenses.py
 
   web:
     needs: changes

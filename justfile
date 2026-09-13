@@ -114,6 +114,14 @@ up-vkg:
 setup-app-role *args:
     uv run python scripts/setup-app-role.py {{args}}
 
+# ADR-0049(`P4-03`)。Python(uv)と Node(pnpm)の全依存のライセンスを
+# 許諾リストと突き合わせる。**「判定できなかった」は「問題なし」ではない** —
+# 綴りを寄せる表に無いものは検査を落とす。許諾リストを広げるのは人の判断で、
+# 理由は docs/third-party-licenses.md に書く。
+# 依存関係のライセンスを検査する(要: pnpm)
+check-licenses *args:
+    uv run python scripts/check-licenses.py {{args}}
+
 # Bicep をビルドして構文を検証する
 lint-infra:
     az bicep build --file infra/main.bicep --stdout

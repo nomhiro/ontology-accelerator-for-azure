@@ -4,7 +4,8 @@
 
 > **この表の範囲**: 設計判断を伴う主要コンポーネント(トリプルストア、推論器、RDF 処理系など)を対象としています。推移的依存を含む全依存関係の網羅的な棚卸しではありません。個々のバージョンは `uv.lock` と `pnpm-lock.yaml` が正本です。
 >
-> **ライセンス自動スキャンの CI 化は Phase 4** で対応します。それまでは本ドキュメントを手動で維持するため、主要な依存関係を追加する際はこの表への追記を Pull Request に含めてください。
+> **ライセンスの自動スキャンは CI に入りました**(2026-09-13、`P4-03`、[ADR-0049](adr/0049-license-scanning-in-ci.md))。`scripts/check-licenses.py` が **Python(uv)と Node(pnpm)の全依存 288 件**を許諾リストと突き合わせ、**判定できないものがあれば CI を落とします**。
+> **ただしこの表は引き続き手で維持します。** 自動スキャンが見るのはライセンスの識別子だけで、**「なぜそれを採ったか / 却下したか」は書けません**。範囲も違います(下記)。
 
 ## 採用するコンポーネント
 
@@ -42,6 +43,41 @@
 | **ROBOT** | BSD-3-Clause(**ただし配布物が LGPL-3.0 を同梱**) | https://github.com/ontodev/robot | ✗ **採用しない**。ROBOT 自身は許諾的だが、**配布 jar (82 MB) の中身を列挙したところ `org/semanticweb/HermiT/...` と `jfact` が入っていた**(実測)。ADR-0005 決定4(HermiT を同梱しない)に反する。依存を自分で選べる形(`elk-owlapi` に直接依存)で代替する |
 | Logback | EPL-1.0 / LGPL-2.1 のデュアル | https://github.com/qos-ch/logback | ✗ 採用しない。推論器のログは slf4j-simple(MIT)で足りる。デュアルライセンスの選択を説明する負担を負う理由が無い |
 | Virtuoso Open Source | GPL | https://github.com/openlink/virtuoso-opensource | ✗ 検討対象外 |
+
+---
+
+## 自動スキャンが見るもの・見ないもの(`P4-03`、[ADR-0049](adr/0049-license-scanning-in-ci.md))
+
+```bash
+just check-licenses          # Python + Node
+just check-licenses --list   # 判定した 288 件を全部並べる
+```
+
+**見るもの**: Python(uv)と Node(pnpm)の**全依存**(推移的依存を含む。
+2026-09-13 時点で Python 83 件 + Node 205 件)。
+
+**見ないもの**(意図的。決定6):
+
+| 見ていないもの | 今どう扱っているか |
+|---|---|
+| `containers/reasoner` の shade jar(67 依存) | `reasoner-check.test.sh` が **HermiT / JFact の不在**を検査。依存全体のライセンスは上の手作業 |
+| Ontop の基盤イメージ(27 の同梱ライセンス) | 2026-09-13 に目視で確認(**GPL 単独は無い**)。[ADR-0046](adr/0046-virtual-knowledge-graph.md) に記録 |
+| JDBC ドライバ | `containers/ontop/Dockerfile` が SHA-256 で固定し、全文を `containers/ontop/jdbc-licenses/` に置く |
+| Fuseki / postgres の基盤イメージ | **未検査** |
+
+**「CI が通ったからライセンスは全部確認済み」ではありません。** この表の
+右側が、今どこまで確かめているかです。
+
+### 判定できないものは通しません
+
+ライセンスの綴りは揺れます(実測で同じ Apache-2.0 が 4 通り。
+**`pyshacl` は `License` 欄に全文 11,491 文字**を書いていました)。
+綴りを寄せる表に無いものは **`unknown` として CI を落とします**。
+
+**「知らない綴りだから通す」を 1 度でも許すと、この検査は
+「緑なのに何も検証していない」状態になります。** 落ちたときは
+`scripts/check-licenses.py` の `_ALIASES` に**実測した綴りを**足すか、
+`ALLOWED` を広げて**理由をこの文書に書いてください**。
 
 ---
 
@@ -98,7 +134,9 @@ unzip -l reasoner-check.jar | grep -iE 'hermit|jfact' || echo "同梱なし"
 docker run --rm -v "$PWD/containers/reasoner:/build:ro" -w /tmp/proj   maven:3.9-eclipse-temurin-21 sh -c   'mkdir -p /tmp/proj && cp /build/pom.xml /tmp/proj/ && cp -r /build/src /tmp/proj/    && cd /tmp/proj    && mvn -B -q org.codehaus.mojo:license-maven-plugin:2.4.0:add-third-party    && cat target/generated-sources/license/THIRD-PARTY.txt'
 ```
 
-> **この棚卸しを CI で自動化するのは Phase 4** のままです。今 CI が機械的に守っているのは「HermiT / JFact が入っていないこと」だけで、**新しいコピーレフト依存が別の名前で入ってきた場合は捕まえられません。** 依存を追加する Pull Request では上のコマンドを回してください。
+> **Java 側の棚卸しは引き続き手作業です**(`P4-02` 以降)。CI が機械的に守っているのは「HermiT / JFact が入っていないこと」だけで、**`containers/reasoner` の 67 依存のライセンス全体は見ていません**([ADR-0049](adr/0049-license-scanning-in-ci.md) 決定6)。依存を追加する Pull Request では上のコマンドを回してください。
+>
+> **Python と Node 側は CI が見ます**(`P4-03`)。`uv run python scripts/check-licenses.py` / `just check-licenses`。
 
 ---
 
