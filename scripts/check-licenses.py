@@ -160,6 +160,9 @@ MAX_LICENSE_FIELD = 60
 #: `pnpm licenses list` を実行する場所。**`package.json` があるディレクトリで
 #: ないと `ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND` になる**(実測。リポジトリの
 #: ルートには `package.json` が無い)。
+#:
+#: **出力の形は pnpm 9 と 10 で同じ**ことを実測した(dict: ライセンス →
+#: パッケージの配列)。ローカルは 10、CI は 9 である。
 NODE_PACKAGE_DIR = "apps/web"
 
 

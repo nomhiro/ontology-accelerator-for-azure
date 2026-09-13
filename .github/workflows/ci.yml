@@ -192,7 +192,18 @@ jobs:
       #
       # **pnpm を入れてから回す。** Node 側を検査できなかったときこの検査は
       # 終了コード 2 を返す(「Node は問題なし」として通さない)。
+      #
+      # **`version` を明示する。** 省略すると
+      # `Error: No pnpm version is specified.` で落ちる(実測。root に
+      # `package.json` が無いので `packageManager` から拾えない)。
+      # **`web` ジョブと同じ 9 に揃える** — CI の中で 2 つの pnpm が動くと、
+      # ロックファイルの解釈が食い違いうる。
+      #
+      # **`licenses list --json` の出力の形は 9 と 10 で同じ**ことを実測した
+      # (dict: ライセンス → パッケージの配列)。ローカルは 10 である。
       - uses: pnpm/action-setup@v4
+        with:
+          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 22
