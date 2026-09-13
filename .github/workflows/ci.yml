@@ -19,7 +19,7 @@ permissions:
 # |---|---|---|
 # | `actions/checkout` | v7 | v7 の「fork PR の checkout を止める」は `pull_request_target` / `workflow_run` 限定。このワークフローは `push` / `pull_request` / `workflow_dispatch` のみ |
 # | `actions/setup-node` | v7 | v5 で `packageManager` による自動キャッシュが入り v6 で **npm 限定**になった。ここは `cache: pnpm` を明示しているので影響しない |
-# | `astral-sh/setup-uv` | v10 | v6 で `pyproject-file` / `uv-file` が削除されたが**どちらも使っていない**。v10 の「`enable-cache: auto` ならキャッシュを切る」は `auto` のときだけで、ここは `true` を明示している |
+# | `astral-sh/setup-uv` | **v10.1.0**(正確なタグ) | v6 で `pyproject-file` / `uv-file` が削除されたが**どちらも使っていない**。v10 の「`enable-cache: auto` ならキャッシュを切る」は `auto` のときだけで、ここは `true` を明示している。**このアクションだけ浮動メジャータグが無い** — 実測で `v1`〜`v7` しか無く、`v8` 以降はブランチにも無い(`@v10` と書くと `Unable to resolve action ... unable to find version` で全ジョブが 1 秒で落ちる)。**`@v10` に「直す」ことをしないこと** |
 # | `docker/build-push-action` | v7 | v7 で `DOCKER_BUILD_NO_SUMMARY` 等の env が削除されたが**使っていない**。入力(`context` / `file` / `cache-from` / `cache-to`)は変わっていない |
 # | `docker/setup-buildx-action` | v4 | Node 24 化のみ |
 # | `dorny/paths-filter` | v4 | Node 24 化のみ |
@@ -155,7 +155,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
 
@@ -264,7 +264,7 @@ jobs:
       #
       # **ここで生成することが検出の仕組みそのものである**(ADR-0044 決定2)。
       # API を変えて Web が追従していなければ、次の `build`(`tsc`)が落ちる。
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
 
@@ -342,7 +342,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # 検査結果の JSON の判定に uv（ontology_core.console）を使う。
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
       - name: 依存関係を入れる
@@ -378,7 +378,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # 応答の JSON の判定に uv（ontology_core.console）を使う。
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
       - name: 依存関係を入れる
@@ -424,7 +424,7 @@ jobs:
       # check-platform-admin.py（ontology_core を import する）を本物として
       # 実行する。トークンの解釈こそが検証したい対象なので、そこはスタブに
       # しない（P2A-09）。
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
       - name: 依存関係を入れる

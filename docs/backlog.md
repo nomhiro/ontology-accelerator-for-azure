@@ -2965,7 +2965,7 @@ being forced to run on Node.js 24」と警告していた（実測。2026-09-13 
 |---|---|---|---|
 | `actions/checkout` | v4 | **v7** | v7 の「fork PR の checkout を止める」は `pull_request_target` / `workflow_run` 限定。このワークフローは使っていない |
 | `actions/setup-node` | v4 | **v7** | v5 で `packageManager` による自動キャッシュが入り v6 で **npm 限定**になった。ここは `cache: pnpm` を明示しているので影響しない |
-| `astral-sh/setup-uv` | v5 | **v10** | v6 で `pyproject-file` / `uv-file` が削除されたが**どちらも使っていない**。v10 の「`enable-cache: auto` ならキャッシュを切る」は `auto` のときだけで、ここは `true` を明示 |
+| `astral-sh/setup-uv` | v5 | **v10.1.0** | v6 で `pyproject-file` / `uv-file` が削除されたが**どちらも使っていない**。v10 の「`enable-cache: auto` ならキャッシュを切る」は `auto` のときだけで、ここは `true` を明示。**このアクションだけ浮動メジャータグが無い**(下記) |
 | `docker/build-push-action` | v6 | **v7** | v7 で `DOCKER_BUILD_NO_SUMMARY` 等の env が削除されたが**使っていない**。入力は変わっていない |
 | `docker/setup-buildx-action` | v3 | **v4** | Node 24 化のみ |
 | `dorny/paths-filter` | v3 | **v4** | Node 24 化のみ |
@@ -2974,6 +2974,13 @@ being forced to run on Node.js 24」と警告していた（実測。2026-09-13 
 **各メジャーのリリースノートを読んでから上げた。** 「最新にする」だけの
 更新だと、入力が消えたときに**CI が落ちて初めて気づく**。確認した内容は
 `ci.yml` の先頭にも表で残した（次に上げる人が同じ調査を繰り返さないため）。
+
+**1 度落とした。** `astral-sh/setup-uv@v10` と書いたところ
+`Unable to resolve action ... unable to find version` で**全ジョブが
+1〜3 秒で落ちた**。実測で**このアクションは `v1`〜`v7` しか浮動メジャータグを
+持たず**、最新リリースが `v10.1.0` でも `v10` は存在しない（ブランチにも無い）。
+正確なタグ `@v10.1.0` に固定した。**「最新リリースがあるなら浮動タグもある」は
+成り立たない** — CLAUDE.md に罠として追記した。
 
 **SHA では固定していない。** タグ固定のままなのは意図した状態ではなく、
 供給網の固定は `P4-07` の範囲で扱う（下記に追記した）。
