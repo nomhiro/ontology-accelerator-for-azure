@@ -43,7 +43,7 @@ Phase 3 で完了したもの: `P3-01`（Ontop VKG。**宛先を間違えると 
 | ~~`P2A-22`~~ | ~~ロックファイルが 2 つある（npm と pnpm）~~ | **完了（2026-09-13）。由来を確認して消した** — **MCP の修正コミットに紛れ込んだ副産物**だった |
 | ~~`P3-01`~~ | ~~Ontop VKG（R2RML 管理 + 仮想グラフの照会）~~ | **完了（2026-09-13、[ADR-0046](adr/0046-virtual-knowledge-graph.md)）。ローカルの docker で実機確認した** |
 | `P3-07` | Ontop を Container Apps へ載せる | **デプロイ窓（課金）。** **1 ソース = 1 インスタンス**を Bicep でどう表現するかの設計が要る |
-| `P3-02` | ~~用語のベクトル検索~~ → **実装は完了。実モデルでの確認だけが残る** | **デプロイ窓（課金）。** 埋め込みの生成には Azure OpenAI のデプロイが必要（Bicep は書いた）。**`azure.extensions` が動的な設定か静的かも同じ窓で確かめる** — 静的ならサーバ再起動が要り、`bootstrap-db.py` の前提が変わる |
+| `P3-02` | ~~用語のベクトル検索~~ → **実装は完了。実モデルでの確認だけが残る** | **デプロイ窓（課金）。2026-09-13 に 1 回開けたが `Microsoft.CognitiveServices` の preflight が Azure 側の異常アクティビティ検知で拒否され、検証できなかった**（下記 `P3-13`）。`azure.extensions` が動的か静的かも同じ窓で確かめる必要がある |
 | ~~`P3-08`~~ | ~~仮想グラフの照会をアクセスログに残す~~ | **完了（2026-09-13、[ADR-0048](adr/0048-vkg-access-log.md)）。`NULL` = オントロジーへの照会にして既存の行の意味を変えなかった** |
 | ~~`P3-05`~~ | ~~定義と実データの乖離検出~~ | **完了（2026-09-13、[ADR-0047](adr/0047-definition-data-divergence.md)）。探りを実物の Ontop で確認した** |
 
@@ -2421,6 +2421,7 @@ CLAUDE.md は「ポート 3030 が別プロジェクトと衝突する場合は 
 | `P3-10` | 用語検索の規模と索引の実測 | 低 | 未着手 |
 | `P3-11` | 埋め込みの作り直し漏れを検出する | 中 | 未着手 |
 | `P3-12` | 識別子の並び順が照合順序に依存していた | 高 | **完了**（2026-09-13） |
+| `P3-13` | Cognitive Services の作成が異常アクティビティ検知で拒否される | 高 | 未着手（**外部要因**） |
 
 `P3-02` の補足（**完了時に書き換えた**）: **標題を変えた**（「Azure AI Search 統合」→「用語のベクトル検索」）。**ID は変えていない。** 実装の前に一次情報で測り直し、AI Search を採らない判断をした（[ADR-0050](adr/0050-vector-search-in-postgres.md)）。詳細は下の節。
 
@@ -2875,6 +2876,78 @@ C    : a-b , a-c , aa , ab
 本番と違う照合順序で通っていたことがこの見落としの原因**である。
 `test_identifier_ordering.py` は**照合順序そのものを先に固定している** —
 `C` に戻ると下のテストが「実装が壊れていても通る」状態になるためである。
+
+---
+
+### `P3-13` Cognitive Services の作成が異常アクティビティ検知で拒否される
+
+- **状態**: 未着手（**外部要因。コードでは直せない**）
+- **優先**: 高（**デプロイ窓が成立しない**）
+- **出典**: 2026-09-13 のデプロイ窓（`P3-02` の実機検証のために開けた）
+
+`azd up` が `provision` で失敗した（azd 自身の終了コード 1）。
+
+```
+InvalidTemplateDeployment: The template deployment 'model' is not valid ...
+  'Microsoft.CognitiveServices/accounts (2024-10-01)' reported preflight
+  validation errors.
+715-123420: Our system has detected this request as unusual activity for
+  your account. If you are confident this is in error, please contact support.
+```
+
+**テンプレートの誤りではない。** `preflight validation` の中身は Azure 側の
+**異常アクティビティ検知**である。このサブスクリプションでは同日に
+Cognitive Services アカウントの作成と削除を繰り返していた（`P2A-02` /
+`P2A-09` / `P2A-19` の検証）。
+
+**何が検証できなかったか**（**「検証した」と書いてはいけない**）:
+
+| 検証したかったこと | 結果 |
+|---|---|
+| `P3-02` の実モデルでの埋め込みの生成と検索 | **未検証**（モデルのアカウントが作れない） |
+| `azure.extensions` が動的な設定か静的か | **未検証** |
+| `P2A-21` デプロイ済みオリジンでの Web のサインイン | **未検証**（Static Web Apps は作られたが API が無い） |
+
+**作られてしまったリソース**（10 件。`azd down --purge` で全部消した）:
+Static Web Apps / マネージド ID / Log Analytics / ストレージ / ACR /
+Key Vault / Application Insights / **PostgreSQL Flexible Server** /
+Container Apps 環境 / Fuseki のコンテナアプリ。
+
+**片付けは確認済み**（終了コードだけを見ていない。CLAUDE.md の手順）:
+
+```
+az group exists -g rg-oaa-p302          → false
+az keyvault list-deleted                → kv-vdagu5xtn6hlc は無い
+az cognitiveservices account list-deleted → 空
+az resource list（接尾辞で検索）        → 空
+```
+
+`azd down --purge` は **25 分 52 秒**で `SUCCESS`（中断していない）。
+
+**もう 1 つ出たエラー**:
+
+```
+AadAuthOperationCannotBePerformedWhenServerIsNotAccessible:
+  Server 'psql-vdagu5xtn6hlc' is not in an accessible state to perform a
+  Microsoft Entra authentication principal operation.
+```
+
+**これが独立した不具合かは確かめていない。** `model` の失敗と同時に出たので、
+デプロイ全体が中断された副作用である可能性が高い。**「PostgreSQL の Entra
+管理者登録に競合がある」と結論してはいけない** — 同じ構成は
+`P2A-09`（同日）で成功している。
+
+- **次に何をすべきか**:
+  - **時間をおいて再試行する。** この種の検知は一定期間で解除されるのが通例
+    だが、**解除の条件も期間も公開されていない**（推測で書かない）
+  - 解除されない場合は Azure サポートへの照会が必要（エラーの本文が
+    `please contact support` と言っている）
+  - **回避策を先に作らない。** 「モデルを別サブスクリプションに置く」
+    「`modelLocation` を変える」は検知の対象が何かを確かめずに当てる対処で、
+    **効いたかどうかも分からない**
+- **この窓で分かった良いこと**: `azd up` は**失敗しても課金の大部分は
+  避けられる**。provision が途中で止まったので、常時課金する Fuseki と
+  PostgreSQL が動いていた時間は約 14 分だった
 
 ---
 

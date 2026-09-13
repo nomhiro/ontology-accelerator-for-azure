@@ -355,6 +355,16 @@ docker の `-w /work`)。Blob の名前のような `/` を含むが先頭が `/
 直後の `psql` が `FATAL: the database system is shutting down` で落ちた。
 **実際にクエリ(`SELECT 1`)が通ることを起動の条件にする。**
 
+**`azd up` は Azure 側の異常アクティビティ検知で落ちることがある。**
+`Microsoft.CognitiveServices/accounts` の preflight が
+`715-123420: Our system has detected this request as unusual activity for
+your account.` を返した(実測。2026-09-13。同日に同種アカウントの作成と削除を
+繰り返した後)。**テンプレートの誤りではない**ので `azd provision --preview`
+でも見つからない。**解除の条件も期間も公開されていない** — 推測で回避策
+(別サブスクリプション、別リージョン)を当てても、効いたかどうか分からない。
+**provision が途中で止まるので常時課金のリソースは短時間で済む**が、
+作られた分は `azd down --purge` で必ず消すこと(`P3-13`)。
+
 **`azd up` は docker が動いていないと即座に失敗する。** Docker Desktop が落ちていると `error checking for external tool Docker` で終わる（**課金は始まらない**）。azd 自身が `remoteBuild: true` を提案してくる（ACR 側でビルドする。ローカル docker が不要になる）。
 
 **`azd up` を `> log 2>&1` で包んで終了コードを見るときは、azd 自身の `$?` を取ること。** `azd up ... > log; echo $?` のように後続コマンドを挟むと、報告される終了コードは複合コマンド全体のものになり、**azd の失敗が成功に見える**（実際に一度誤読した）。
