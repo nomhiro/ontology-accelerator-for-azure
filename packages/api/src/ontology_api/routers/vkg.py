@@ -37,16 +37,24 @@ TBox を使って推論する(`rdfs:subClassOf` の上位クラスで問い合�
 `VirtualGraphClient` がログにだけ出し、応答にはステータスまでしか
 載せない(ADR-0046 決定10)。
 
-## アクセスログには残らない(`P3-08`)
+## アクセスログに残る(`P3-08`、ADR-0048)
 
-**この経路が返すのは顧客の実データである。** それにもかかわらず、
-`access_events`(`P2B-05`、ADR-0018)には記録していない。`access_events` の
-行は「どの**版**の何を返したか」を持つ形で、仮想グラフには版が無い。
-`default_graph_version` を `NULL` で埋めると「承認済み版が無かった」と
-混ざる(ADR-0046 決定13)。
+**この経路が返すのは顧客の実データである。** `access_events`
+(`P2B-05`、ADR-0018)に `vkg_source` と `vkg_mapping_revision` を付けて
+記録する。
 
-**アプリのログには出す。** 監査証跡ではないが、無記録でもない。
-埋めるのは `P3-08` である。
+ADR-0046 決定13 は「`access_events` の行は『どの**版**の何を返したか』を
+持つ形で、仮想グラフには版が無い」として記録を見送っていた。**`P3-08` で
+列を足して解いた** — `vkg_source` があるので `default_graph_version` の
+`NULL` が曖昧でなくなり、`vkg_mapping_revision` が版の代わりになる。
+
+**`term_access` は更新しない**(ADR-0048 決定3)。仮想グラフが返すのは
+インスタンスの IRI なので、入れると**エージェントの稼働に比例して行が
+増える**(あの表は用語数で上限されることが設計の一部である)。
+`build_vkg_access_record` が `terms` を受け取らないことで構造的に固定してある。
+
+**記録に失敗してもクエリは失敗させない**(ADR-0018 決定3)。
+アクセスログは読み取りの副産物であって前提条件ではない。
 """
 
 from __future__ import annotations
@@ -57,7 +65,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from ontology_api.dependencies import BlobDep, CurrentPrincipal, SessionDep, SettingsDep
+from ontology_api.dependencies import (
+    BlobDep,
+    CurrentPrincipal,
+    SessionDep,
+    SettingsDep,
+    VkgClientDep,
+)
+from ontology_api.repositories.access import AccessRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.scan import ScanRepository
 from ontology_api.repositories.versions import AuditRepository
@@ -75,6 +90,7 @@ from ontology_api.services.divergence import (
     measure_divergence,
 )
 from ontology_api.services.vkg import MappingRejectedError, validate_mapping
+from ontology_core.access import build_vkg_access_record
 from ontology_core.divergence import MAX_PROBES
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
 from ontology_core.models import (
@@ -88,9 +104,9 @@ from ontology_core.models import (
 from ontology_core.r2rml import MAX_MAPPING_LENGTH, R2rmlError
 from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query, query_form
 from ontology_core.sparql.limits import cap_bindings
+from ontology_core.sparql.rdf_results import count_triples
 from ontology_core.turtle import TURTLE_MEDIA_TYPE
 from ontology_core.vkg import (
-    VirtualGraphClient,
     VirtualGraphError,
     VirtualGraphNotConfiguredError,
     resolve_endpoint,
@@ -172,6 +188,45 @@ async def _resolve_source_id(session: SessionDep, *, namespace: str, source: str
             detail=f"名前空間 '{namespace}' にソース '{source}' がありません",
         )
     return row.id
+
+
+async def _record_vkg_access(
+    session: SessionDep,
+    *,
+    namespace: str,
+    source: str,
+    actor: str,
+    query: str,
+    mapping_revision: int,
+    results: dict[str, Any] | None = None,
+    triple_count: int | None = None,
+) -> None:
+    """仮想グラフへの照会をアクセスログに記録する(ADR-0048、`P3-08`)。
+
+    **失敗してもクエリを失敗させない**(ADR-0018 決定3)。アクセスログは
+    読み取りの副産物であって、読み取りの前提条件ではない。
+
+    **「記録できなかった」を黙って無かったことにはしない。** 警告として
+    ログに残す(`sparql.py` の `_record_access` と同じ形)。
+    """
+    try:
+        record = build_vkg_access_record(
+            namespace=namespace,
+            actor=actor,
+            query=query,
+            source=source,
+            mapping_revision=mapping_revision,
+            results=results,
+            triple_count=triple_count,
+        )
+        await AccessRepository(session).record(record)
+        await session.commit()
+    except Exception:
+        logger.exception(
+            "仮想グラフ %s/%s のアクセスログを記録できませんでした。応答はそのまま返します",
+            namespace,
+            source,
+        )
 
 
 @router.post(
@@ -370,6 +425,7 @@ async def query_virtual_graph(
     principal: CurrentPrincipal,
     session: SessionDep,
     settings: SettingsDep,
+    client: VkgClientDep,
     response: Response,
 ) -> dict[str, Any] | Response:
     """仮想グラフへクエリを渡し、結果を返す。**実データは実体化しない。**
@@ -417,14 +473,13 @@ async def query_virtual_graph(
         ) from exc
 
     returns_rdf = query_form(payload.query).returns_rdf
-    async with VirtualGraphClient(timeout_seconds=settings.vkg_query_timeout_seconds) as client:
-        try:
-            if returns_rdf:
-                turtle = await client.construct(payload.query, endpoint=endpoint)
-            else:
-                results = await client.query(payload.query, endpoint=endpoint)
-        except VirtualGraphError as exc:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    try:
+        if returns_rdf:
+            turtle = await client.construct(payload.query, endpoint=endpoint)
+        else:
+            results = await client.query(payload.query, endpoint=endpoint)
+    except VirtualGraphError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     actor = principal_id_of(principal)
     if returns_rdf:
@@ -433,12 +488,25 @@ async def query_virtual_graph(
         # `CONSTRUCT` は顧客 DB の行数だけ膨らむので、**上限を当てるために
         # 全部を解析する**のが一番重い経路になる。エージェント向けの経路は
         # `SELECT` であり、そこには行数の上限が効いている。
+        # **トリプル数は数える。** 上限は当てないが(決定14)、
+        # **何を返したかの記録は残す** — 記録しないことと上限を当てない
+        # ことは別の判断である。
+        triples = count_triples(turtle)
+        await _record_vkg_access(
+            session,
+            namespace=namespace,
+            source=source,
+            actor=actor,
+            query=payload.query,
+            mapping_revision=mapping.revision,
+            triple_count=triples,
+        )
         logger.info(
-            "仮想グラフ %s/%s へ RDF のクエリ(actor=%s, 文字数=%d)",
+            "仮想グラフ %s/%s へ RDF のクエリ(actor=%s, トリプル=%s)",
             namespace,
             source,
             actor,
-            len(turtle),
+            triples,
         )
         return Response(content=turtle, media_type=TURTLE_MEDIA_TYPE)
 
@@ -449,8 +517,20 @@ async def query_virtual_graph(
         if capped.total_rows is not None:
             response.headers[RESULT_TOTAL_ROWS_HEADER] = str(capped.total_rows)
 
-    # **アクセスログには残らない**(`P3-08`)。ここはアプリのログである —
-    # 監査証跡ではないが、無記録でもない。
+    # **コンテキストを渡した記録を残す**(`P3-08`、ADR-0048)。
+    #
+    # **切り詰める前の行数を記録する**(ADR-0025 決定6 と同じ)。
+    # 「エージェントに何行渡したか」ではなく「**何行返ろうとしたか**」で
+    # なければ、上限に張り付いているクエリを見つけられない。
+    await _record_vkg_access(
+        session,
+        namespace=namespace,
+        source=source,
+        actor=actor,
+        query=payload.query,
+        mapping_revision=mapping.revision,
+        results=results,
+    )
     logger.info(
         "仮想グラフ %s/%s へクエリ(actor=%s, 改訂=%d, 行数=%s, 切り詰め=%s)",
         namespace,
@@ -481,6 +561,7 @@ async def measure_source_divergence(
     session: SessionDep,
     settings: SettingsDep,
     blob: BlobDep,
+    client: VkgClientDep,
 ) -> DivergenceReportView:
     """承認したオントロジーが実データと食い違っていないかを測る(`P3-05`)。
 
@@ -521,20 +602,19 @@ async def measure_source_divergence(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
-    async with VirtualGraphClient(timeout_seconds=settings.vkg_query_timeout_seconds) as client:
-        try:
-            report = await measure_divergence(
-                session,
-                blob=blob,
-                client=client,
-                endpoint=endpoint,
-                namespace=namespace,
-                source=source,
-                source_id=source_id,
-                limit=MAX_PROBES,
-            )
-        except DivergenceUnavailableError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    try:
+        report = await measure_divergence(
+            session,
+            blob=blob,
+            client=client,
+            endpoint=endpoint,
+            namespace=namespace,
+            source=source,
+            source_id=source_id,
+            limit=MAX_PROBES,
+        )
+    except DivergenceUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     logger.info(
         "乖離を測りました %s/%s (actor=%s, 探り=%d 本, 乖離=%d 件, 不明=%d 件, 調べきれた=%s)",

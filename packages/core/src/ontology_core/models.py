@@ -179,6 +179,19 @@ class AccessEvent(BaseModel):
     returned_term_count: int = Field(
         description="返した用語のうち、その名前空間が発行した IRI の数"
     )
+    vkg_source: str | None = Field(
+        default=None,
+        description="仮想グラフへの照会のとき、そのソース名(ADR-0048、`P3-08`)。"
+        "**`null` はオントロジーへの照会である**(既存の全行と同じ意味)。"
+        "**この欄があるから `default_graph_version` の `null` が曖昧でなくなる** — "
+        "`null` なら「承認済み版が無かった」、非 `null` なら「版の概念が無い」",
+    )
+    vkg_mapping_revision: int | None = Field(
+        default=None,
+        description="そのとき有効だった R2RML マッピングの改訂。**版の代わりである** — "
+        "「どの定義の入口を通して実データを返したか」が監査の問いである。"
+        "`vkg_source` が `null` なら必ず `null`",
+    )
 
 
 class AccessPage(BaseModel):

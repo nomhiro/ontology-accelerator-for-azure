@@ -94,7 +94,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1395 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1403 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 just gen-api                                   # openapi.json と TS 型を生成(**Web の型検査の前に必要**)

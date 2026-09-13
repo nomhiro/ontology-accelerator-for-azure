@@ -39,6 +39,7 @@ __all__ = [
     "QueryFingerprint",
     "build_access_record",
     "build_rdf_access_record",
+    "build_vkg_access_record",
     "query_fingerprint",
     "returned_terms",
     "uses_graph_clause",
@@ -88,6 +89,11 @@ class AccessRecord:
     # `CONSTRUCT` / `DESCRIBE` が返したトリプル数。`SELECT` / `ASK` では `None`。
     returned_triple_count: int | None = None
     terms: tuple[str, ...] = ()
+    # 仮想グラフへの照会のとき、そのソース名(ADR-0048 決定1)。
+    # **`None` はオントロジーへの照会**(既存の全行と同じ意味)。
+    vkg_source: str | None = None
+    # そのとき有効だった R2RML マッピングの改訂(決定2)。版の代わりである。
+    vkg_mapping_revision: int | None = None
 
     @property
     def returned_term_count(self) -> int:
@@ -206,6 +212,58 @@ def build_access_record(
         used_graph_clause=uses_graph_clause(query),
         returned_row_count=_row_count(results),
         terms=returned_terms(results, base_iri=base_iri),
+    )
+
+
+def build_vkg_access_record(
+    *,
+    namespace: str,
+    actor: str,
+    query: str,
+    source: str,
+    mapping_revision: int,
+    results: Any = None,
+    triple_count: int | None = None,
+) -> AccessRecord:
+    """仮想グラフへの照会を記録する内容を組み立てる(ADR-0048、`P3-08`)。
+
+    **`terms` を受け取らない。** これは構造で固定してある(決定3)。
+
+    `term_access` は「**自分のオントロジーのどの用語が使われていないか**」に
+    答えるための表で、**行数がその名前空間の用語数で上限される**ことが
+    設計の一部である(`TermAccessRow` の docstring)。仮想グラフが返すのは
+    インスタンスの IRI なので、入れると**エージェントの稼働に比例して
+    行が増える**。
+
+    しかも `returned_terms` は `base_iri` で前方一致するだけなので、
+    **`base_iri` がスラッシュ区切りの名前空間ではデータ IRI が用語として
+    数えられてしまう**(`https://e.example/vkg/` と
+    `https://e.example/vkg/data/customer/1`)。引数を持たないことで、
+    その経路を作れないようにしている。
+
+    **版は記録しない。** 仮想グラフに版の概念が無い(決定2)。代わりに
+    マッピングの改訂を記録する — 「どの定義の入口を通したか」が監査の問いである。
+
+    Args:
+        results: `SELECT` / `ASK` の応答。行数を数えるのに使う。
+        triple_count: `CONSTRUCT` / `DESCRIBE` が返したトリプル数。
+
+    **`results` と `triple_count` は片方だけ渡す**(`build_access_record` と
+    `build_rdf_access_record` を分けているのと同じ理由 — 行とトリプルを
+    混ぜない。ADR-0034 決定7)。
+    """
+    return AccessRecord(
+        namespace=namespace,
+        actor=actor,
+        query=query_fingerprint(query),
+        # **`GRAPH` 句の欄は仮想グラフでは意味を持たない。**
+        # 既定グラフしか無い(ADR-0046 決定8 が `rr:graph` を禁じている)。
+        default_graph_version=None,
+        used_graph_clause=False,
+        returned_row_count=None if results is None else _row_count(results),
+        returned_triple_count=triple_count,
+        vkg_source=source,
+        vkg_mapping_revision=mapping_revision,
     )
 
 

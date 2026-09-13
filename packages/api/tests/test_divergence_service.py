@@ -531,6 +531,7 @@ async def test_エンドポイントが未設定なら_503(
             session=session,
             settings=_settings(),
             blob=blob_store,
+            client=_Recorder().client(),
         )
     assert caught.value.status_code == 503
 
@@ -549,6 +550,7 @@ async def test_測れないときは_404(session: AsyncSession, blob_store: Onto
             session=session,
             settings=_settings(VKG_ENDPOINT_TEMPLATE=_ENDPOINT),
             blob=blob_store,
+            client=_Recorder().client(),
         )
     assert caught.value.status_code == 404
 
@@ -568,5 +570,6 @@ async def test_権限の無い主体は測れない(
             session=session,
             settings=_settings(VKG_ENDPOINT_TEMPLATE=_ENDPOINT),
             blob=blob_store,
+            client=_Recorder().client(),
         )
     assert caught.value.status_code == 403

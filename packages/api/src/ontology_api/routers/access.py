@@ -101,6 +101,20 @@ async def query_access_log(
     until: Annotated[
         datetime | None, Query(description="この時刻より前(**含まない**)。タイムゾーン必須")
     ] = None,
+    vkg_source: Annotated[
+        str | None,
+        Query(
+            description="このソースの**仮想グラフへの照会だけ**に絞る"
+            "(ADR-0048、`P3-08`)。「この顧客 DB に誰が何を聞いたか」を引く"
+        ),
+    ] = None,
+    ontology_only: Annotated[
+        bool,
+        Query(
+            description="**オントロジーへの照会だけ**に絞る(`vkg_source` が `null` の行)。"
+            "**`vkg_source` を省略することとは違う** — 省略は「絞らない」である"
+        ),
+    ] = False,
     limit: Annotated[int, Query(description="1 ページの件数")] = AccessRepository.DEFAULT_LIMIT,
     cursor: Annotated[
         int | None, Query(description="前のページの `next_cursor` をそのまま渡す")
@@ -115,6 +129,12 @@ async def query_access_log(
     全体ではない**(ADR-0018 決定7)。`GRAPH` 句を明示したクエリは他の版を
     読みうる。
 
+    **`vkg_source` が非 `null` の行は仮想グラフへの照会である**
+    (ADR-0048、`P3-08`)。返したのは**顧客の実データ**であり、
+    `default_graph_version` の `null` は「版の概念が無い」を意味する
+    (「承認済み版が無かった」ではない)。代わりに
+    `vkg_mapping_revision` に「どの定義の入口を通したか」が入る。
+
     ページングの鍵は `id` である(`occurred_at` はトランザクション開始時刻な
     ので同時刻が並ぶ)。`next_cursor` が `null` なら最後のページである。
     """
@@ -125,6 +145,8 @@ async def query_access_log(
             actor=actor,
             since=since,
             until=until,
+            vkg_source=vkg_source,
+            ontology_only=ontology_only,
             limit=limit,
             cursor=cursor,
         )

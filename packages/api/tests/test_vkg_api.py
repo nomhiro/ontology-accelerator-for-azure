@@ -9,7 +9,7 @@
 実物の Ontop に対する検証は `containers/ontop/ontop-check.test.sh` が
 行う(docker が必要)。
 
-ここで固定するのは 6 つである。
+ここで固定するのは 7 つである。
 
 1. **観測していない関係を読むマッピングを拒否する**(決定5)。
    **Ontop は不正なマッピングでは起動しない**(実測)ので、通すと
@@ -21,6 +21,9 @@
 5. **改訂は不変で `reason` が必須。監査に照合した版が残る**(決定2・12)
 6. **マッピングが無い / エンドポイントが未設定なら、空を返さず断る**
    (決定11)
+7. **照会がアクセスログに残る**(`P3-08`、[ADR-0048](../../../docs/adr/0048-vkg-access-log.md))。
+   **既存の行の意味を変えていない**ことと、**`term_access` を更新しない**
+   ことも併せて固定する
 """
 
 from __future__ import annotations
@@ -29,10 +32,12 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import pytest
 from fastapi import HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ontology_api.repositories.access import AccessRepository
 from ontology_api.repositories.namespaces import NamespaceRepository
 from ontology_api.repositories.roles import RoleRepository
 from ontology_api.repositories.versions import AuditRepository
@@ -47,11 +52,16 @@ from ontology_api.routers.vkg import (
     revise_vkg_mapping,
 )
 from ontology_api.services.projection import ProjectionService
+from ontology_core.access import build_access_record, build_vkg_access_record
 from ontology_core.auth.entra import Principal
 from ontology_core.blob import BlobStoreError, OntologyBlobStore
 from ontology_core.config import AuthMode, Settings
 from ontology_core.models import ActorType, NamespaceRole, PlatformRole
 from ontology_core.sparql.client import SparqlStore
+from ontology_core.vkg import VirtualGraphClient
+
+#: 2 トリプルの Turtle(トリプル数の記録の検証用)。
+TWO_TRIPLES = "<urn:a> <urn:b> <urn:c> .\n<urn:a> <urn:d> <urn:e> .\n"
 
 _NS = "vkg-ns"
 _BASE_IRI = "https://e.example/vkg#"
@@ -269,6 +279,20 @@ async def _revise(
         session=session,
         blob=blob,
     )
+
+
+def _dead_client() -> VirtualGraphClient:
+    """到達できない仮想グラフのクライアント。
+
+    **これらのテストは仮想グラフに届く前に断られることを確かめている。**
+    到達できるクライアントを渡すと、断られなかったときに
+    「実際に問い合わせに行った」ことが分からない。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("仮想グラフへ問い合わせてはいけない経路です")
+
+    return VirtualGraphClient(client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
 
 
 # ------------------------------------- 観測していない関係(決定5)
@@ -685,6 +709,7 @@ async def test_マッピングが無いソースへの照会は_404(session: Asy
             principal=_ANALYST,
             session=session,
             settings=_settings(VKG_ENDPOINT_TEMPLATE="http://ontop:8080/sparql"),
+            client=_dead_client(),
             response=Response(),
         )
     assert caught.value.status_code == 404
@@ -711,6 +736,7 @@ async def test_エンドポイントが未設定なら_503(
             principal=_ANALYST,
             session=session,
             settings=_settings(),
+            client=_dead_client(),
             response=Response(),
         )
     assert caught.value.status_code == 503
@@ -734,6 +760,7 @@ async def test_更新のクエリは_400(session: AsyncSession, blob_store: Onto
             principal=_ANALYST,
             session=session,
             settings=_settings(VKG_ENDPOINT_TEMPLATE="http://ontop:8080/sparql"),
+            client=_dead_client(),
             response=Response(),
         )
     assert caught.value.status_code == 400
@@ -757,9 +784,250 @@ async def test_SERVICE_句のクエリは_400(
             principal=_ANALYST,
             session=session,
             settings=_settings(VKG_ENDPOINT_TEMPLATE="http://ontop:8080/sparql"),
+            client=_dead_client(),
             response=Response(),
         )
     assert caught.value.status_code == 400
+
+
+# ------------------------------------- アクセスログ(`P3-08`、ADR-0048)
+
+
+def _rows_client(count: int) -> VirtualGraphClient:
+    """`count` 行を返す仮想グラフのクライアント。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "head": {"vars": ["s"]},
+                "results": {
+                    "bindings": [
+                        {"s": {"type": "uri", "value": f"{_DATA_PREFIX}namespace/n{i}"}}
+                        for i in range(count)
+                    ]
+                },
+            },
+        )
+
+    return VirtualGraphClient(client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+
+def _turtle_client(body: str) -> VirtualGraphClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body)
+
+    return VirtualGraphClient(client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+
+async def _query(
+    session: AsyncSession,
+    *,
+    client: VirtualGraphClient,
+    query: str = "SELECT ?s WHERE { ?s ?p ?o }",
+    principal: Principal = _ANALYST,
+) -> Any:
+    return await query_virtual_graph(
+        namespace=_NS,
+        source=_SOURCE,
+        payload=VkgQueryRequest(query=query),
+        principal=principal,
+        session=session,
+        settings=_settings(VKG_ENDPOINT_TEMPLATE="http://ontop:8080/sparql"),
+        client=client,
+        response=Response(),
+    )
+
+
+@pytest.mark.integration
+async def test_仮想グラフへの照会がアクセスログに残る(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**この経路が返すのは顧客の実データである**(ADR-0048)。
+
+    ADR-0046 決定13 は列の形が合わないことを理由に記録を見送っていた。
+    `P3-08` で `vkg_source` と `vkg_mapping_revision` を足して解いた。
+    """
+    await _setup(session)
+    await _register_and_scan(session)
+    await _revise(session, blob_store)
+
+    await _query(session, client=_rows_client(3))
+
+    page = await AccessRepository(session).query_events(namespace=_NS)
+    assert len(page.events) == 1
+    event = page.events[0]
+    assert event.vkg_source == _SOURCE
+    assert event.vkg_mapping_revision == 1
+    assert event.returned_row_count == 3
+    assert event.actor == _ANALYST.object_id
+    # **版の概念が無い。** `vkg_source` があるので、この `None` が
+    # 「承認済み版が無かった」と混ざらない。
+    assert event.default_graph_version is None
+    assert event.used_graph_clause is False
+
+
+@pytest.mark.integration
+async def test_オントロジーへの照会は_vkg_source_が_None_のまま(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**既存の行の意味を変えていない**(ADR-0048 決定1)。
+
+    列を足すときに過去の行の読み方が変わると、記録が信用できなくなる。
+    """
+    await _setup(session)
+    await AccessRepository(session).record(
+        build_access_record(
+            namespace=_NS,
+            actor=_ANALYST.object_id,
+            query="SELECT ?c WHERE { ?c a owl:Class }",
+            results={"results": {"bindings": []}},
+            base_iri=_BASE_IRI,
+            default_graph_version=None,
+        )
+    )
+    await session.commit()
+
+    page = await AccessRepository(session).query_events(namespace=_NS)
+    assert page.events[0].vkg_source is None
+    assert page.events[0].vkg_mapping_revision is None
+
+
+@pytest.mark.integration
+async def test_term_access_を更新しない(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**あの表は用語数で上限されることが設計の一部である**(ADR-0048 決定3)。
+
+    仮想グラフが返すのはインスタンスの IRI なので、入れると
+    **エージェントの稼働に比例して行が増える**。
+    """
+    await _setup(session)
+    await _register_and_scan(session)
+    await _revise(session, blob_store)
+
+    await _query(session, client=_rows_client(5))
+
+    terms = await AccessRepository(session).list_term_access(namespace=_NS)
+    assert list(terms) == []
+
+
+def test_build_vkg_access_record_は_terms_を受け取らない() -> None:
+    """**構造で固定する**(ADR-0048 決定3)。
+
+    引数があると、`base_iri` がスラッシュ区切りの名前空間で
+    **データ IRI が用語として数えられる**経路を作れてしまう。
+    """
+    assert "terms" not in build_vkg_access_record.__code__.co_varnames
+
+
+@pytest.mark.integration
+async def test_RDF_の照会はトリプル数を記録し行数は残さない(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**行とトリプルを混ぜない**(ADR-0034 決定7 と同じ)。"""
+    await _setup(session)
+    await _register_and_scan(session)
+    await _revise(session, blob_store)
+
+    await _query(
+        session,
+        client=_turtle_client(TWO_TRIPLES),
+        query="CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }",
+    )
+
+    event = (await AccessRepository(session).query_events(namespace=_NS)).events[0]
+    assert event.returned_triple_count == 2
+    assert event.returned_row_count is None
+    assert event.vkg_source == _SOURCE
+
+
+@pytest.mark.integration
+async def test_切り詰める前の行数を記録する(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**「何行返ろうとしたか」を記録する**(ADR-0025 決定6 と同じ)。
+
+    エージェントに渡した行数を記録すると、上限に張り付いているクエリを
+    見つけられない。
+    """
+    await _setup(session)
+    await _register_and_scan(session)
+    await _revise(session, blob_store)
+
+    result = await query_virtual_graph(
+        namespace=_NS,
+        source=_SOURCE,
+        payload=VkgQueryRequest(query="SELECT ?s WHERE { ?s ?p ?o }"),
+        principal=_ANALYST,
+        session=session,
+        settings=_settings(VKG_ENDPOINT_TEMPLATE="http://ontop:8080/sparql", SPARQL_MAX_RESULTS=2),
+        client=_rows_client(5),
+        response=Response(),
+    )
+    assert isinstance(result, dict)
+    assert len(result["results"]["bindings"]) == 2  # 切り詰めて返している
+
+    event = (await AccessRepository(session).query_events(namespace=_NS)).events[0]
+    assert event.returned_row_count == 5  # **記録は切り詰める前**
+
+
+@pytest.mark.integration
+async def test_ソースで絞って引ける(session: AsyncSession, blob_store: OntologyBlobStore) -> None:
+    """「この顧客 DB に誰が何を聞いたか」が監査の主用途である(決定4)。"""
+    await _setup(session)
+    await _register_and_scan(session)
+    await _revise(session, blob_store)
+    await _query(session, client=_rows_client(1))
+    await AccessRepository(session).record(
+        build_access_record(
+            namespace=_NS,
+            actor=_ANALYST.object_id,
+            query="SELECT ?c WHERE { ?c a owl:Class }",
+            results={"results": {"bindings": []}},
+            base_iri=_BASE_IRI,
+            default_graph_version="1.0.0",
+        )
+    )
+    await session.commit()
+
+    repo = AccessRepository(session)
+    assert len((await repo.query_events(namespace=_NS)).events) == 2
+    vkg_only = await repo.query_events(namespace=_NS, vkg_source=_SOURCE)
+    assert [e.vkg_source for e in vkg_only.events] == [_SOURCE]
+    # **`vkg_source` の省略と `ontology_only` は別の意味である**(決定4)。
+    ontology = await repo.query_events(namespace=_NS, ontology_only=True)
+    assert [e.vkg_source for e in ontology.events] == [None]
+
+
+@pytest.mark.integration
+async def test_記録に失敗してもクエリは失敗しない(
+    session: AsyncSession, blob_store: OntologyBlobStore
+) -> None:
+    """**アクセスログは読み取りの副産物である**(ADR-0018 決定3)。
+
+    **「記録できなかった」を黙って無かったことにはしない** — 警告として
+    ログに残す(ここでは応答が返ることだけを確かめる)。
+    """
+    await _setup(session)
+    await _register_and_scan(session)
+    await _revise(session, blob_store)
+
+    from ontology_api.repositories import access as access_module
+
+    original = access_module.AccessRepository.record
+
+    async def _boom(self: Any, record: Any) -> None:
+        raise RuntimeError("記録できません(検証用)")
+
+    access_module.AccessRepository.record = _boom  # type: ignore[method-assign]
+    try:
+        result = await _query(session, client=_rows_client(1))
+    finally:
+        access_module.AccessRepository.record = original  # type: ignore[method-assign]
+
+    assert isinstance(result, dict)
+    assert len(result["results"]["bindings"]) == 1
 
 
 # ------------------------------------- Turtle で取り出す口(`P3-07` が使う)

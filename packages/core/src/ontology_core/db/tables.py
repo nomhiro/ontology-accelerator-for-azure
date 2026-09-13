@@ -193,6 +193,10 @@ class AccessEventRow(Base):
     __table_args__ = (
         Index("ix_access_events_namespace_occurred", "namespace", "occurred_at"),
         Index("ix_access_events_actor", "actor"),
+        # ソースで絞る照会(「この顧客 DB に誰が何を聞いたか」)が監査の
+        # 主用途になる(ADR-0048、`P3-08`)。`id` を含めるのは並び順と
+        # ページングの鍵が `id` であるため。
+        Index("ix_access_events_vkg_source", "namespace", "vkg_source", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -226,6 +230,22 @@ class AccessEventRow(Base):
     # `SELECT` / `ASK` では NULL(トリプルの概念が無い)。
     returned_triple_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     returned_term_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 仮想グラフへの照会のとき、そのソース名(ADR-0048 決定1、`P3-08`)。
+    #
+    # **`NULL` はオントロジーへの照会である。** これは既存の全行と同じ意味で、
+    # **意味を変えていない** — 列を足すときに既存の行の読み方が変わると、
+    # 過去の記録が信用できなくなる。
+    #
+    # **この列があるから `default_graph_version` の `NULL` が曖昧でなくなる。**
+    # オントロジーへの照会なら「承認済み版が無かった」、仮想グラフへの照会なら
+    # 「版の概念が無い」である(決定2)。
+    vkg_source: Mapped[str | None] = mapped_column(String(63), nullable=True, default=None)
+    # そのとき有効だった R2RML マッピングの改訂(ADR-0048 決定2)。
+    #
+    # **版の代わりである。** 「どの定義の入口を通して実データを返したか」が
+    # 監査の問いであり、仮想グラフではマッピングの改訂がそれに当たる。
+    # **`vkg_source` が `NULL` なら必ず `NULL`** である。
+    vkg_mapping_revision: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
 
 
 class TermAccessRow(Base):

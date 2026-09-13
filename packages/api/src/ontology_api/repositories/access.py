@@ -40,6 +40,8 @@ def _to_event(row: AccessEventRow) -> AccessEvent:
         returned_row_count=row.returned_row_count,
         returned_triple_count=row.returned_triple_count,
         returned_term_count=row.returned_term_count,
+        vkg_source=row.vkg_source,
+        vkg_mapping_revision=row.vkg_mapping_revision,
     )
 
 
@@ -80,6 +82,8 @@ class AccessRepository:
                 returned_row_count=record.returned_row_count,
                 returned_triple_count=record.returned_triple_count,
                 returned_term_count=record.returned_term_count,
+                vkg_source=record.vkg_source,
+                vkg_mapping_revision=record.vkg_mapping_revision,
             )
         )
         if record.terms:
@@ -116,6 +120,8 @@ class AccessRepository:
         actor: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        vkg_source: str | None = None,
+        ontology_only: bool = False,
         limit: int = DEFAULT_LIMIT,
         cursor: int | None = None,
     ) -> AccessPage:
@@ -141,6 +147,13 @@ class AccessRepository:
         stmt = select(AccessEventRow).where(AccessEventRow.namespace == namespace)
         if actor is not None:
             stmt = stmt.where(AccessEventRow.actor == actor)
+        # **2 つの絞り込みを別の引数にする**(ADR-0048 決定4)。
+        # `vkg_source=None` を「オントロジーへの照会だけ」と解釈すると、
+        # **絞り込まない既定と区別できない**。
+        if vkg_source is not None:
+            stmt = stmt.where(AccessEventRow.vkg_source == vkg_source)
+        if ontology_only:
+            stmt = stmt.where(AccessEventRow.vkg_source.is_(None))
         if since is not None:
             stmt = stmt.where(AccessEventRow.occurred_at >= since)
         if until is not None:

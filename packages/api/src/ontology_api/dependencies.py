@@ -18,6 +18,7 @@ from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import AuthMode, Settings, get_settings
 from ontology_core.db import create_engine_and_factory, session_scope
 from ontology_core.sparql.client import FusekiStore, SparqlStore
+from ontology_core.vkg import VirtualGraphClient
 
 if TYPE_CHECKING:
     from azure.identity.aio import DefaultAzureCredential
@@ -147,6 +148,28 @@ async def blob_store(settings: SettingsDep) -> AsyncIterator[OntologyBlobStore]:
 
 
 BlobDep = Annotated[OntologyBlobStore, Depends(blob_store)]
+
+
+async def virtual_graph_client(settings: SettingsDep) -> AsyncIterator[VirtualGraphClient]:
+    """リクエストごとに仮想グラフのクライアントを提供する(ADR-0046、`P3-01`)。
+
+    **依存として注入する理由はテスト可能性である。** ハンドラの中で
+    `VirtualGraphClient()` を作ると、**アクセスログを記録する経路を
+    差し替えられない**(`P3-08` でそこが監査証跡になった)。`blob_store` と
+    `sparql_store` と同じ形にしてある。
+
+    **宛先はここで決めない。** Ontop の 1 インスタンスは 1 つの DB しか
+    見ないので、宛先は名前空間とソースで変わる(`resolve_endpoint`)。
+    ここが提供するのは HTTP クライアントだけである。
+    """
+    client = VirtualGraphClient(timeout_seconds=settings.vkg_query_timeout_seconds)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+VkgClientDep = Annotated[VirtualGraphClient, Depends(virtual_graph_client)]
 
 
 @lru_cache(maxsize=1)
