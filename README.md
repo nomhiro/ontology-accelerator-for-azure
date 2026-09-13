@@ -91,7 +91,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - Fuseki 側で `SERVICE` 句が HTTP 422 でブロックされる(SSRF 対策)
 - Fuseki は internal ingress のため外部から到達できない
 - API `/healthz` が応答し、トークン無しの `GET /namespaces` は **401**(`AUTH_MODE=entra` が機能)
-- MCP `/mcp` が `tools/list` を返す(`list_namespaces` / `sparql_query` / `version_decisions` / `term_owner` / `term_mappings`)
+- MCP `/mcp` が `tools/list` を返す(`list_namespaces` / `sparql_query` / `version_decisions` / `term_owner` / `term_mappings` / `search_context`)
 - **MCP のツール呼び出しが実際の Entra トークンで Core API まで通る(ADR-0012)。** トークン無し・不正なトークンは MCP 側の検証で拒否され、理由がエージェントに返る。検証手順は `scripts/verify-mcp-auth.sh`
 - API / MCP の scale-to-zero が機能する(初回アクセスはコールドスタート)
 - **Web 画面が Entra ID でサインインできる**(`P2A-20`、[ADR-0045](docs/adr/0045-web-auth.md))。認可コードフロー + PKCE。`http://localhost:5173` を `spa` 型で登録することを実測で確認しました。**対話的な往復は未検証**(資格情報の入力を伴うため)
@@ -219,9 +219,8 @@ flowchart LR
     JOBS["ACA Jobs<br/>scan-job / reasoner-job"]
   end
 
-  PG[("PostgreSQL Flexible Server<br/>正本: 名前空間・RBAC・承認履歴")]
+  PG[("PostgreSQL Flexible Server<br/>正本: 名前空間・RBAC・承認履歴<br/>用語の埋め込み (pgvector)")]
   BLOB[("Blob Storage<br/>正本: バージョン付き TTL")]
-  SEARCH["Azure AI Search<br/>Phase 3"]
   FOUNDRY["Microsoft Foundry<br/>オントロジー帰納 LLM"]
   CUSTDB[("顧客データベース")]
 
@@ -236,7 +235,7 @@ flowchart LR
   API --> FOUNDRY
   API --> ONTOP
   MCP --> FUSEKI
-  MCP --> SEARCH
+  MCP -- "用語検索 (pgvector)" --> API
   BLOB -- "entrypoint が起動時にビルド → EmptyDir" --> FUSEKI
   ONTOP -- JDBC --> CUSTDB
   JOBS --> PG
@@ -1436,6 +1435,93 @@ curl -G "$API/namespaces/retail-core/mappings/export" \
 
 **書き出しは運用者が明示的に取得する行為**で、射影は**エージェントが知らないまま引く静かな事実**です。同じ情報の欠落でも、**誰がそれを引き受けるかが違います**(決定5)。
 
+#### 用語を自然文で探す(ベクトル検索 + 3-gram)
+
+**「どの用語を使えばよいか分からない」状態を解くための口です**(`P3-02`、[ADR-0050](docs/adr/0050-vector-search-in-postgres.md))。`sparql_query` は IRI を知っている前提ですが、こちらは「お客さん」「注文の日付」のような言葉から用語を探せます。
+
+**先に埋め込みを作ります**(`maintainer` が必要)。
+
+```bash
+curl -X POST "$API/namespaces/retail-core/search/rebuild"   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'   --data-binary '{"reason": "1.0.0 を承認したため"}'
+```
+
+```json
+{
+  "namespace": "retail-core", "version": "1.0.0",
+  "model": "text-embedding-3-small", "term_count": 42,
+  "truncated_terms": [], "deprecated_terms": ["https://e.example/retail#Legacy"]
+}
+```
+
+**承認済み版からしか作りません。** 提案中の版の用語が検索に出ると、**四眼原則を通っていない語彙が事実上流通します**。
+
+**承認の中では呼びません。** 埋め込みは射影(不変条件1)なので、**作成の失敗が承認を止めてはいけません**(不変条件3)。だから独立した口にしてあります。
+
+**名前空間の行を丸ごと入れ替えます。** 縮めた版(用語を廃止して消した版。不変条件8)を反映したときに、**検索に出るが版には無い用語**を作らないためです。
+
+そのうえで検索します(`data-analyst`)。
+
+```bash
+curl -G "$API/namespaces/retail-core/search"   --data-urlencode 'q=お客さんの識別番号' --data-urlencode 'limit=5'   -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "query": "お客さんの識別番号", "limit": 5,
+  "hits": [
+    { "term_iri": "https://e.example/retail#customerId",
+      "route": "both", "score": 0.0328,
+      "vector_rank": 2, "trigram_rank": 1,
+      "source_text": "customerId / 顧客ID / 顧客を一意に識別する番号",
+      "deprecated": false },
+    { "term_iri": "https://e.example/retail#Customer",
+      "route": "vector", "score": 0.0164,
+      "vector_rank": 1, "trigram_rank": null,
+      "source_text": "Customer / 顧客 / サービスを利用する主体",
+      "deprecated": false }
+  ],
+  "vector_available": true, "vector_note": "",
+  "embedded_term_count": 42, "deprecated_hits": [],
+  "conclusive": true, "routes": { "vector": 1, "trigram": 0, "both": 1 }
+}
+```
+
+**2 つの経路を持ち、どちらで当たったかを必ず返します。**
+
+| `route` | 何で当たったか | 実装 |
+|---|---|---|
+| `vector` | **言い換え・概念の近さ**(「お客さん」→ `Customer`) | pgvector の `<=>`(cosine) |
+| `trigram` | **表記の一致**(「顧客ID」→ `customerId`) | `pg_trgm` の `word_similarity()` |
+| `both` | 両方。**片方より強い根拠です** | 順位を RRF で融合 |
+
+**片方だけでは成立しないことを実測で確かめました**(PostgreSQL 16 + pgvector 0.8.6)。
+
+| 問い | 3-gram | 判定 |
+|---|---|---|
+| 「顧客ID」 | `customerId` に 1.000 | 表記は 3-gram で当たる |
+| 「お客様」 | **全件 0.000**(閾値を 0 にしても当たらない) | **ベクトルの経路でしか当たらない** |
+
+**融合は順位だけを使います**(RRF、`k = 60`)。cosine 距離と 3-gram の類似度は尺度が違うので、正規化して足し合わせる案は「どちらをどれだけ重視するか」という**測っていない判断**を含みます。
+
+**Azure AI Search は使いません。** Basic は**月 $97 の固定費でスケールゼロが無く**、Free tier は**マネージド ID による Entra 認証に非対応**です(いずれも実測)。ベクトル検索を正本の PostgreSQL に載せたので、**追加費用は $0** です。**残る差は日本語の形態素解析**で、`pg_bigm` / `pgroonga` は Azure の対応拡張一覧に無いため BM25 相当は作れません(3-gram で代用しています。**長文の文書検索には弱い**ことを記録しておきます)。
+
+**`vector_available` が偽のときに「該当なし」と読んではいけません。** 埋め込みを作っていない名前空間、モデルが未設定の環境、モデルが落ちたときは、**表記が似ている用語しか出ていません**。理由は `vector_note` に必ず入ります(**空にしません**)。
+
+```json
+{
+  "hits": [ "..." ],
+  "vector_available": false,
+  "vector_note": "この名前空間の埋め込みがまだ作られていません。表記の部分一致(3-gram)だけで検索しました。埋め込みの作り直しの口で作成できます",
+  "embedded_term_count": 0, "conclusive": false
+}
+```
+
+**モデルが落ちても検索は失敗しません。** 3-gram の結果は正しいので、返せるものを返して**落ちたことを見せます**(不変条件3 と同じ向き)。
+
+**廃止済みの用語も返します**([ADR-0017](docs/adr/0017-deprecation-lifecycle.md) 決定3 と同じ向き)。除外すると「**なぜその用語が使えないのか**」に答えられません。`deprecated` の印と `deprecated_hits` で警告として見せます。
+
+**エージェントは MCP の `search_context` ツールで引けます。** `vector_available` が偽なら「言い換えでは当たっていない」こと、`deprecated` が真の用語を根拠に回答を作ってはいけないことを、ツールの説明に書いてあります。**埋め込みの作り直しは MCP に出していません** — MCP は読み取り専用であり(設計原則4)、**費用が発生する行為をエージェントに開けません**。
+
 #### 使わなくなった名前空間は削除ではなく退役させる
 
 **公開済みオントロジーを含む名前空間は削除しません**(不変条件7)。代わりに**退役**させます([ADR-0032](docs/adr/0032-namespace-retirement.md)、`P2B-19`)。
@@ -1606,9 +1692,10 @@ Japan East の retail 価格(USD)に基づく**見積り**です。実際の課�
 
 | 構成 | 月額(見積り) |
 |---|---|
-| minimal / Phase 1 MVP(Fuseki 0.5 vCPU、AI Search 未デプロイ) | **$39〜49** |
+| minimal / Phase 1 MVP(Fuseki 0.5 vCPU) | **$39〜49** |
 | minimal / Phase 1 MVP(Fuseki 1 vCPU、推奨) | **$51〜61** |
-| Phase 3 以降(AI Search Basic 追加) | **$136〜158** |
+| Phase 3(用語のベクトル検索を追加) | **上と同じ**(pgvector は既存の PostgreSQL に載るため **+$0**) |
+| Phase 3(仮想グラフの Ontop を追加) | **+$10 前後**(`P3-07` で実測する) |
 | production(参考概算) | **$700〜1,200** |
 | Microsoft Foundry (LLM) | 従量。中規模スキーマ 1 回の帰納で $1〜5 程度 |
 
@@ -1626,7 +1713,7 @@ Japan East の retail 価格(USD)に基づく**見積り**です。実際の課�
 |---|---|---|
 | **Phase 1** | MVP「器が動く」 | `azd up` 一発で ACA + Fuseki + API + MCP + PostgreSQL がデプロイされ、同梱サンプルオントロジーを SPARQL で検索でき、AI エージェントが MCP(`sparql_query` / `list_namespaces`)経由で参照できる。名前空間 CRUD、Entra JWT 検証、SPARQL 攻撃面対策(読み取り専用・`SERVICE` 封鎖・上限)を含む。AI 機能はまだない |
 | **Phase 2** | Scan/Model + 運用 | 顧客 DB 接続とスキーマ自動発見(scan-job)、LLM によるオントロジー候補生成(OWL/SHACL)、Web でのレビュー・承認フロー(グラフ可視化含む)、バージョニングと監査証跡、pyshacl による SHACL 検証、名前空間 RBAC の強制。**加えて運用の柱**として、廃止のライフサイクル、責任者、健全性指標、想定質問の SPARQL テスト、OWL 推論器の CI 投入（Phase 4 から前倒し）を含む |
-| **Phase 3** | Serve フル「エージェントがフル活用できる」 | Ontop VKG(R2RML 管理 + 実データを実体化しない連邦クエリ)、AI Search 統合(ベクトル/ハイブリッド検索、`search_context` ツール)、Metric Service、Context Manager のオーケストレーション、(任意)Purview コネクタ |
+| **Phase 3** | Serve フル「エージェントがフル活用できる」 | Ontop VKG(R2RML 管理 + 実データを実体化しない連邦クエリ)、**用語のベクトル検索**(pgvector + pg_trgm、`search_context` ツール。**AI Search は採らなかった** — [ADR-0050](docs/adr/0050-vector-search-in-postgres.md))、Metric Service、Context Manager のオーケストレーション、(任意)Purview コネクタ |
 | **Phase 4** | ハードニング「本番品質・OSS 公開」 | production プロファイル(VNet / Private Endpoint / AKS 昇格ガイド)、可観測性・負荷試験、awesome-azd 申請、v0.1.0 リリース |
 
 Phase 2 が**2 本柱**（AI が作れる / 運用し続けられる）である点は当初のロードマップからの変更です。オントロジーが増え続けたときに人の理解が追従できなくなる問題への対処で、根拠は [ADR-0009](docs/adr/0009-ontology-operations.md) に記録しています。

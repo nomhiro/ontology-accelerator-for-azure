@@ -163,7 +163,17 @@ reconcile                      -> 孤児ゼロ
   **宛先を間違えると 0 件が返る**（例外ではない）。それは「該当する行が
   無い」と区別できないので、混ぜずに分けた。
   **ACA へ載せるのは `P3-07`**（要デプロイ窓）
-- Azure AI Search 統合（ベクトル/ハイブリッド検索、`search_context` ツール）
+- ~~Azure AI Search 統合（ベクトル/ハイブリッド検索、`search_context` ツール）~~ →
+  **完了（2026-09-13、`P3-02`、[ADR-0050](adr/0050-vector-search-in-postgres.md)）。**
+  **ただし AI Search は採らなかった** — Basic は月 $97 の固定費でスケールゼロが
+  無く、Free tier は**マネージド ID による Entra 認証に非対応**（実測）。
+  ベクトル検索は**正本の PostgreSQL（pgvector）に載せて追加費用 $0** にした。
+  **2 つの経路を持つ**（ベクトル＝言い換え、3-gram＝表記の一致）。実測で
+  「お客様」は 3-gram では全件 0.000、「顧客ID」は `similarity` の既定閾値では
+  0 件なので、**どちらか一方では成立しない**。
+  **残る差は日本語の形態素解析**（`pg_bigm` / `pgroonga` が Azure に無く、
+  BM25 相当が作れない）。`search_context` を MCP に出した。
+  **実モデルでの検証は未了**（デプロイ窓が必要）
 - Metric Service
 - Context Manager のオーケストレーション
 - （任意）Microsoft Purview コネクタ（[ADR-0007](adr/0007-no-purview-dependency.md) により依存はしない）

@@ -1,6 +1,8 @@
 // azd テンプレートのエントリポイント。サブスクリプションスコープでリソースグループを作成し、
 // 共有基盤 / Container Apps 環境 / Fuseki / Core API / MCP Server / PostgreSQL / Web を配線する。
-// Phase 3 以降のリソース (Azure AI Search、Ontop、reasoner) はコスト回避のため意図的に作らない。
+// Phase 3 以降のリソース (Ontop、reasoner) はコスト回避のため意図的に作らない。
+// **Azure AI Search は作らない** — ベクトル検索は正本の PostgreSQL (pgvector) に載せる
+// (P3-02、ADR-0050。Basic は月 $97 の固定費でスケールゼロが無い)。
 
 targetScope = 'subscription'
 
@@ -317,6 +319,9 @@ module api './modules/api.bicep' = {
     modelEndpoint: model.outputs.endpoint
     modelDeployment: model.outputs.deploymentName
     modelName: model.outputs.modelName
+    embeddingDeployment: model.outputs.embeddingDeploymentName
+    embeddingModelName: model.outputs.embeddingModelName
+    embeddingDimensions: string(model.outputs.embeddingDimensions)
   }
 }
 
@@ -462,6 +467,9 @@ output SCAN_JOB_TRIGGER_TYPE string = scanJob.outputs.triggerType
 output MODEL_ENDPOINT string = model.outputs.endpoint
 output MODEL_DEPLOYMENT string = model.outputs.deploymentName
 output MODEL_NAME string = model.outputs.modelName
+output EMBEDDING_DEPLOYMENT string = model.outputs.embeddingDeploymentName
+output EMBEDDING_MODEL_NAME string = model.outputs.embeddingModelName
+output EMBEDDING_DIMENSIONS string = string(model.outputs.embeddingDimensions)
 
 output SCAN_ALLOWED_HOSTS string = scanAllowedHosts
 output SCAN_VAULT_URL string = resolvedScanVaultUrl

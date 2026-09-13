@@ -107,6 +107,15 @@ up-vkg:
     docker compose exec -T postgres psql -q -U ontology -d ontology < containers/ontop/testdata/schema.sql
     docker compose --profile vkg up -d --build ontop
 
+# ADR-0050(`P3-02`)。**実物の PostgreSQL に対してしか確かめられない部分**を
+# まとめて回す。`pgvector` の `<=>` と `pg_trgm` の `word_similarity` は SQL 側の
+# 機能で、Python に等価な実装が無い。**「お客様」が 3-gram で当たらないことと、
+# 「顧客ID」が `similarity` の既定閾値で当たらないこと**もここで固定している
+# (どちらか一方の経路では成立しない、という ADR-0050 決定2 の根拠である)。
+# 用語検索の 2 つの経路を検査する(要: docker の postgres)
+test-search:
+    uv run pytest packages/api/tests/test_search_routes.py packages/api/tests/test_search_api.py       packages/core/tests/test_search_fusion.py packages/core/tests/test_term_embedding.py       packages/api/tests/test_embedding_contract.py
+
 # ADR-0014 決定2・3(P2A-09)。**割り当てが無いと azd up の postdeploy が
 # 名前空間の作成で 403 になって止まる。** `--dry-run` を渡すと Entra を
 # 変更せず、何をするかだけ表示する。
@@ -139,6 +148,10 @@ lint-infra:
 up:
     docker compose up -d --build
     uv run --directory {{justfile_directory()}} python scripts/init-local-storage.py
+    # 拡張を作る(`P3-02`、ADR-0050)。**デプロイ環境では `bootstrap-db.py` が
+    # 作るが、ローカルではそれを走らせない**(Entra の登録などが混ざるため)。
+    # Azurite に Blob コンテナを作るのと同じ位置づけの初期化である。
+    docker compose exec -T postgres psql -q -U ontology -d ontology -c 'CREATE EXTENSION IF NOT EXISTS vector' -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm'
 
 # 停止する(データは残る)
 down:

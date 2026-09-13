@@ -31,6 +31,11 @@ EXPECTED_TOOLS = {
     "version_decisions",
     "term_owner",
     "term_mappings",
+    # `P3-02`(ADR-0050)。**承認済み版から作った埋め込みしか引かない** —
+    # 提案中の版の用語は索引に入らないので、四眼原則を通っていない語彙が
+    # エージェントの文脈に入る経路にはならない。権限は Core API 側で
+    # `data-analyst` を要求している。
+    "search_context",
 }
 
 

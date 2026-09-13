@@ -17,6 +17,7 @@ from ontology_core.auth.entra import Principal, TokenVerificationError, TokenVer
 from ontology_core.blob import OntologyBlobStore
 from ontology_core.config import AuthMode, Settings, get_settings
 from ontology_core.db import create_engine_and_factory, session_scope
+from ontology_core.embedding import EmbeddingClient
 from ontology_core.sparql.client import FusekiStore, SparqlStore
 from ontology_core.vkg import VirtualGraphClient
 
@@ -170,6 +171,33 @@ async def virtual_graph_client(settings: SettingsDep) -> AsyncIterator[VirtualGr
 
 
 VkgClientDep = Annotated[VirtualGraphClient, Depends(virtual_graph_client)]
+
+
+async def embedding_client(settings: SettingsDep) -> AsyncIterator[EmbeddingClient]:
+    """リクエストごとに埋め込みのクライアントを提供する(ADR-0050、`P3-02`)。
+
+    **依存として注入する理由はテスト可能性である**(`virtual_graph_client`
+    と同じ)。ハンドラやサービスの中で `EmbeddingClient()` を作ると、
+    **テストが実物の Azure OpenAI を呼ぶか、呼ばない経路だけを検査する
+    ことになる**。
+
+    **モデルが未設定でも生成する。** 生成は HTTP を伴わないので安全で、
+    「設定が無い」の判定はサービス側が `settings` を見て行う
+    (依存の中で例外にすると、**3-gram だけの検索も 500 になる**)。
+    """
+    client = EmbeddingClient(
+        endpoint=settings.model_endpoint,
+        deployment=settings.embedding_deployment,
+        api_version=settings.embedding_api_version,
+        timeout_seconds=settings.embedding_timeout_seconds,
+    )
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+EmbeddingClientDep = Annotated[EmbeddingClient, Depends(embedding_client)]
 
 
 @lru_cache(maxsize=1)

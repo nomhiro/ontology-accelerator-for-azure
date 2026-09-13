@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ontology_core.db import NamespaceRow
+from ontology_core.db import NamespaceRow, by_identifier
 from ontology_core.graphs import validate_namespace_name
 from ontology_core.models import Namespace
 
@@ -122,7 +122,8 @@ class NamespaceRepository:
         return _to_model(row) if row is not None else None
 
     async def list_all(self) -> list[Namespace]:
-        result = await self._session.execute(select(NamespaceRow).order_by(NamespaceRow.name))
+        stmt = select(NamespaceRow).order_by(by_identifier(NamespaceRow.name))
+        result = await self._session.execute(stmt)
         return [_to_model(row) for row in result.scalars()]
 
     async def delete(self, name: str) -> bool:

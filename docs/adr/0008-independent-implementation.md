@@ -53,7 +53,7 @@ AWS 版の技術構成は次の通りである。
 | Neptune | Fuseki on ACA(+ 射影設計) | **永続化設計の根本から異なる**([ADR-0002](0002-triple-store-as-rebuildable-projection.md)) |
 | Smithy | FastAPI / Pydantic | **API 契約の仕組みごと変更**([ADR-0004](0004-api-contract-strategy.md)) |
 | Bedrock | Microsoft Foundry | SDK・認証・モデル可用性が異なる |
-| OpenSearch Serverless | Azure AI Search | API・課金モデルが異なる |
+| OpenSearch Serverless | Azure AI Search → **PostgreSQL(pgvector)**(補記1) | API・課金モデルが異なる |
 | Cognito/IAM | Entra ID + Managed Identity | 認証フローの設計が異なる |
 | Cloudscape | Fluent UI | UI コンポーネントを全面差し替え |
 | Step Functions | ACA Jobs | オーケストレーションのモデルが異なる |
@@ -68,7 +68,7 @@ AWS 版の技術構成は次の通りである。
 
 上記の射影設計はその一例である。他にも、
 
-- **AI Search を Phase 3 まで未デプロイにする**という判断は、Azure AI Search の課金モデル(Basic で月 $97 の固定費)から出てきた。OpenSearch Serverless の課金モデルとは異なる制約である
+- **AI Search を Phase 3 まで未デプロイにする**という判断は、Azure AI Search の課金モデル(Basic で月 $97 の固定費)から出てきた。OpenSearch Serverless の課金モデルとは異なる制約である。**`P3-02` では、その固定費を理由に AI Search 自体を採らない判断になった**(補記1)
 - **Purview に依存しない**判断([ADR-0007](0007-no-purview-dependency.md))は、Glue Data Catalog と Purview の位置づけの違いから出てきた
 - **Java 依存を Phase 4 まで遅らせる**判断([ADR-0005](0005-reasoner-boundary.md))は、Phase 構成をゼロから設計できたから成立した
 
@@ -156,6 +156,22 @@ upstream の修正や機能追加を `git merge` で取り込むことができ�
 3. **README・NOTICE の非提携表記を維持する**
 4. **プロジェクト名の最終決定時に、両社の商標ガイドラインを再確認する**(R8)
 
+## 補記1(2026-09-13、`P3-02`): ベクトル検索の置き換え先が Azure AI Search ではなくなった
+
+上の対応表は「OpenSearch Serverless → Azure AI Search」としていた。**`P3-02` の実装時に一次情報で測り直し、[ADR-0050](0050-vector-search-in-postgres.md) で PostgreSQL(pgvector)に変えた。**
+
+決め手になった実測:
+
+| 測ったこと | 結果 |
+|---|---|
+| AI Search Basic の単価 | **月 $97 の固定費。スケールゼロが無い**(minimal の総額 $39〜49 の 2 倍以上) |
+| AI Search Free tier のマネージド ID による Entra 認証 | **非対応** — 使うと API キー運用に戻る |
+| Azure PG 16 の対応拡張に `vector` / `pg_trgm` があるか | **ある**(0.8.2 / 1.6) |
+
+**この ADR の判断そのものは変わらない。** むしろ補強された — 「AWS 版の構成をそのまま写さない」ことがここで実益になった。**フォークしていれば、OpenSearch に相当するマネージドサービスを探し続けることになっていた**。上の「Azure の制約から出発するほうが良い設計になる」の例が 1 つ増えたと読むのが正確である。
+
+**AWS 版との差分として記録しておく。** AWS 版はベクトル検索を専用サービス(OpenSearch Serverless)に置いている。この実装は正本の PostgreSQL に載せている。**差の実質は日本語の形態素解析である**(`pg_bigm` / `pgroonga` が Azure に無いため BM25 相当が作れない。ADR-0050 決定2)。
+
 ### 影響を受ける他の決定
 
 本 ADR は、以下の ADR が AWS 版と異なる選択をしている理由の土台である。
@@ -164,3 +180,4 @@ upstream の修正や機能追加を `git merge` で取り込むことができ�
 - [ADR-0002](0002-triple-store-as-rebuildable-projection.md) — Neptune 前提では出てこない射影設計
 - [ADR-0004](0004-api-contract-strategy.md) — Smithy 不採用
 - [ADR-0007](0007-no-purview-dependency.md) — Glue に対応する Purview を必須依存にしない
+- [ADR-0050](0050-vector-search-in-postgres.md) — OpenSearch に対応する AI Search を採らず、正本の PostgreSQL に載せる(補記1)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ontology_core.db import NamespaceRoleRow
+from ontology_core.db import NamespaceRoleRow, by_identifier
 from ontology_core.models import NamespaceRole, NamespaceRoleAssignment
 
 __all__ = ["RoleRepository"]
@@ -78,7 +78,7 @@ class RoleRepository:
         stmt = (
             select(NamespaceRoleRow)
             .where(NamespaceRoleRow.namespace == namespace)
-            .order_by(NamespaceRoleRow.principal_id)
+            .order_by(by_identifier(NamespaceRoleRow.principal_id))
         )
         return [_to_model(r) for r in (await self._session.execute(stmt)).scalars()]
 

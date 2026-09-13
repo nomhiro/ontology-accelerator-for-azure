@@ -21,7 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ontology_core.access import AccessRecord
-from ontology_core.db import AccessEventRow, TermAccessRow
+from ontology_core.db import AccessEventRow, TermAccessRow, by_identifier
 from ontology_core.models import AccessEvent, AccessPage, TermAccess
 
 __all__ = ["AccessRepository"]
@@ -184,7 +184,7 @@ class AccessRepository:
         stmt = (
             select(TermAccessRow)
             .where(TermAccessRow.namespace == namespace)
-            .order_by(TermAccessRow.last_accessed_at, TermAccessRow.term_iri)
+            .order_by(TermAccessRow.last_accessed_at, by_identifier(TermAccessRow.term_iri))
         )
         return [_to_term_access(r) for r in (await self._session.execute(stmt)).scalars()]
 

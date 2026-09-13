@@ -107,6 +107,27 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   }
 }
 
+// 拡張の許可リスト (P3-02、ADR-0050)。
+//
+// **Azure では許可リストに無い拡張を `CREATE EXTENSION` できない。**
+// `vector` はベクトル検索、`pg_trgm` は日本語の部分一致(3-gram)に使う。
+//
+// **なぜ `pg_bigm` / `pgroonga` が無いのか**: Azure の対応拡張一覧に
+// 入っていない(PG 16 の一覧を確認)。つまり**日本語の形態素解析による
+// 全文検索は使えない**。3-gram で代用する(ADR-0050 決定6)。
+//
+// **動的か静的かは未確認である。** 静的なら再起動するまで有効にならない。
+// 有効になっていなければ `bootstrap-db.py` の `CREATE EXTENSION` が
+// **明示的に失敗する**ので、黙って進むことはない。
+resource extensionsAllowlist 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
+  parent: postgres
+  name: 'azure.extensions'
+  properties: {
+    value: 'vector,pg_trgm'
+    source: 'user-override'
+  }
+}
+
 // デプロイを実行する運用者を Entra 管理者に登録する(ADR-0011 決定1)。
 // リソース名はオブジェクトIDでなければならない。
 resource entraAdministrator 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = {
@@ -129,6 +150,7 @@ resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-0
   // 子リソースの同時操作はサーバー側で競合するため直列化する。
   dependsOn: [
     entraAdministrator
+    extensionsAllowlist
   ]
 }
 

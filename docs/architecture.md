@@ -58,9 +58,8 @@ flowchart LR
     end
   end
 
-  PG[("PostgreSQL Flexible Server B1ms<br/>正本: 名前空間 / RBAC / 承認履歴<br/>R2RML マッピング / メトリクス定義")]
+  PG[("PostgreSQL Flexible Server B1ms<br/>正本: 名前空間 / RBAC / 承認履歴<br/>R2RML マッピング / メトリクス定義<br/>用語の埋め込み (pgvector。射影)")]
   BLOB[("Blob Storage<br/>正本: バージョン付き TTL / 文書")]
-  SEARCH["Azure AI Search<br/>Phase 3"]
   FOUNDRY["Microsoft Foundry<br/>オントロジー帰納 LLM"]
   CUSTDB[("顧客データベース")]
   PURVIEW["Microsoft Purview Data Map<br/>任意のソースコネクタ / Phase 3"]
@@ -76,8 +75,7 @@ flowchart LR
   API -- "射影: SPARQL Update / GSP<br/>(書き込みは Core API のみ)" --> FUSEKI
   API --> ONTOP
   MCP -- "読み取りクエリ" --> FUSEKI
-  MCP --> SEARCH
-  MCP --> API
+  MCP -- "用語検索 (pgvector + pg_trgm)<br/>list_namespaces / search_context 等" --> API
 
   BLOB == "entrypoint が起動時にビルド<br/>tdb2.tdbloader → EmptyDir" ==> FUSEKI
   ONTOP -- JDBC --> CUSTDB
@@ -136,7 +134,7 @@ flowchart TB
     C1["Context Manager が要求を解析"]
     C2["SPARQL: Fuseki<br/>承認済みオントロジー"]
     C3["連邦クエリ: Ontop VKG<br/>顧客 DB の実データ / Phase 3"]
-    C4["ベクトル検索: AI Search<br/>Phase 3"]
+    C4["ベクトル検索: pgvector<br/>正本の PostgreSQL 内"]
     C5["MCP / Core API 経由で<br/>エージェントへ提供"]
     C6["アクセスログを記録<br/>どのバージョンの何を返したか"]
     C1 --> C2 --> C5
@@ -151,7 +149,7 @@ flowchart TB
 
 - **Scan** — ソース DB のスキーマ・コメント・統計を抽出し、PostgreSQL のカタログへ蓄積します(**実装済み**。`P2A-01`、[ADR-0041](adr/0041-source-schema-scan.md))。**実データを 1 行も読みません** — カタログは LLM のプロンプトへ流れるので、一度混ざったら消せません。発行する SQL は `information_schema` と `pg_catalog` に対する 5 本に固定され、テストがそれを機械的に検査します。**Core API から同期で 1 回**走らせる口と、`scan-job`(ACA Job)による掃引の 2 つがあります。**ジョブは既定で `Manual` トリガで、`SCAN_JOB_CRON` を設定するまで自動では走りません**([ADR-0042](adr/0042-scan-job.md))。ジョブは登録済みの全ソースを掃引し、**Core API と同じイメージ**を別のコマンドで動かします(Fuseki と Blob の資格情報は渡していません)。Blob の文書取り込みと LLM によるメタデータ強化は未実装です。任意で Microsoft Purview Data Map からの取り込みも行えます(依存はしません。[ADR-0007](adr/0007-no-purview-dependency.md))。
 - **Model** — Core API がカタログからオントロジー候補(OWL/SHACL)を LLM 生成し(**実装済み**。`P2A-02`、[ADR-0043](adr/0043-ontology-proposal.md))、専門家がレビュー・承認したうえで、**新バージョンとして Blob + PostgreSQL にコミット**し、Fuseki へ射影します。**LLM の出力が人間の承認を経ずに正本へ入ることはありません** — 生成された候補は検証を通っても `draft` にしか入らず、`draft` は Fuseki に現れないので**エージェントからは見えません**。この前提はこれまで「LLM を呼ぶ経路が無かったから」成り立っていましたが、`P2A-02` で**コードによる強制になりました**。レビューの画面は `P2A-03`(未実装)で、いまは API で操作します。
-- **Serve** — MCP Server / Core API が SPARQL(Fuseki)・連邦クエリ(Ontop)・ベクトル検索(AI Search)を **Context Manager 層**でオーケストレーションし、エージェントに提供します。
+- **Serve** — MCP Server / Core API が SPARQL(Fuseki)・連邦クエリ(Ontop)・**用語検索(pgvector + pg_trgm)**を **Context Manager 層**でオーケストレーションし、エージェントに提供します。用語検索は**実装済み**です(`P3-02`、[ADR-0050](adr/0050-vector-search-in-postgres.md))。**Azure AI Search は使いません** — ベクトル検索は正本の PostgreSQL に載せ、**追加費用を $0 にしています**(AI Search Basic は月 $97 の固定費でスケールゼロが無い)。**2 つの経路を持ちます**: ベクトル(言い換え)と 3-gram(表記の一致)を RRF で融合し、**どちらで当たったかを必ず返します**。**「ベクトルが使えない」を「該当なし」として返しません**(決定8)。
 
 ---
 
@@ -229,7 +227,7 @@ AWS 版 [Context Ontology Accelerator](https://github.com/aws/context-ontology-a
 | AWS 版 | Azure minimal | 備考 |
 |---|---|---|
 | Neptune (RDF/SPARQL) | **Apache Jena Fuseki** on ACA(EmptyDir + 起動時再構築、読み取り専用・internal ingress) | 上記[グラフ永続化設計](#グラフ永続化設計)。`SPARQL_*_ENDPOINT` で外部ストア持ち込みも可 |
-| OpenSearch Serverless | **Azure AI Search**(Phase 3 で追加。それまで未デプロイでコスト回避) | 統合ベクトル化・ハイブリッド検索 |
+| OpenSearch Serverless | **PostgreSQL の pgvector + pg_trgm**(正本に載せる。追加費用 $0) | **AI Search を採らなかった**([ADR-0050](adr/0050-vector-search-in-postgres.md))。Basic は月 $97 の固定費でスケールゼロが無く、Free tier は**マネージド ID による Entra 認証に非対応**(実測)。差は**日本語の形態素解析**(`pg_bigm` / `pgroonga` が Azure に無い) |
 | Bedrock | **Microsoft Foundry**(Azure OpenAI 系、従量) | モデルのリージョン可用性に注意(R4) |
 | API 群 | **Azure Container Apps** Consumption(API/MCP は scale-to-zero) | |
 | Ontop VKG | Ontop コンテナ on ACA(internal、Phase 3) | 実データを実体化しない。これが射影設計を成立させる前提でもある(グラフに巨大な実データを載せない) |

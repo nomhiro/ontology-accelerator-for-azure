@@ -23,6 +23,7 @@ from ontology_api.routers import (
     proposals,
     questions,
     scan,
+    search,
     sparql,
     term_owners,
     versions,
@@ -60,6 +61,7 @@ app.include_router(namespaces.router)
 app.include_router(proposals.router)
 app.include_router(questions.router)
 app.include_router(scan.router)
+app.include_router(search.router)
 app.include_router(sparql.router)
 app.include_router(term_owners.router)
 app.include_router(versions.router)

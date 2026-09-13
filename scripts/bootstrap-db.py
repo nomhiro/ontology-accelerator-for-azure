@@ -209,6 +209,21 @@ async def _pre(app_role: str, database: str) -> None:
     quoted_role = _quote_ident(app_role)
     conn = await _connect(database)
     try:
+        # 拡張を作る(`P3-02`、ADR-0050)。
+        #
+        # **ここで作る理由は権限である。** alembic の `env.py` は
+        # `SET ROLE ontology_owner`(NOLOGIN、azure_pg_admin ではない)で
+        # マイグレーションを走らせるので、**マイグレーションの中では
+        # `CREATE EXTENSION` ができない**。この関数は Entra 管理者
+        # (= `azure_pg_admin` のメンバー)として接続している。
+        #
+        # **Bicep が `azure.extensions` に載せていなければここで失敗する。**
+        # それでよい — 黙って進むと、次の `CREATE TABLE` が
+        # `type "vector" does not exist` で落ち、原因が拡張の許可リストだと
+        # 分からなくなる。
+        for extension in ("vector", "pg_trgm"):
+            await conn.execute(f"CREATE EXTENSION IF NOT EXISTS {_quote_ident(extension)}")
+        say("bootstrap-db: 拡張を用意しました (vector, pg_trgm)")
         # PostgreSQL 15 以降、public スキーマの CREATE は PUBLIC から剥奪されている
         # ため、ontology_owner(マイグレーションを SET ROLE で実行する側)に明示的に
         # 与える(ブリーフ記載の SQL には無かったが、無いと alembic upgrade head が

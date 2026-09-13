@@ -32,6 +32,9 @@
 | SQLAlchemy | MIT | https://github.com/sqlalchemy/sqlalchemy | ✓ 正本(PostgreSQL)へのアクセス |
 | asyncpg | Apache-2.0 | https://github.com/MagicStack/asyncpg | ✓ 正本(PostgreSQL)への async アクセス。psycopg3 は LGPL-3.0 のため採用しない |
 | Alembic | MIT | https://github.com/sqlalchemy/alembic | ✓ PostgreSQL のスキーママイグレーション |
+| pgvector(Python) | MIT | https://github.com/pgvector/pgvector-python | ✓ 用語のベクトル検索(`P3-02`、[ADR-0050](adr/0050-vector-search-in-postgres.md))。SQLAlchemy の列型と asyncpg のコデックを提供する。**2026-09-13 に追加。** `scripts/check-licenses.py` が PyPI の`license_expression` で MIT を確認する |
+| pgvector(PostgreSQL 拡張) | PostgreSQL License | https://github.com/pgvector/pgvector | ✓ **同梱しない。** ローカルは `pgvector/pgvector:pg16` イメージ、デプロイ環境は Azure Database for PostgreSQL の対応拡張(0.8.2)を使う。**配布物に入らないので順守義務は生じない** |
+| pg_trgm | PostgreSQL License | https://www.postgresql.org/docs/16/pgtrgm.html | ✓ **PostgreSQL の contrib モジュール。** 3-gram の部分一致(ADR-0050 決定2)。同上、同梱しない |
 | azure-storage-blob | MIT | https://github.com/Azure/azure-sdk-for-python | ✓ 正本 TTL の読み書き |
 | azure-core | MIT | https://github.com/Azure/azure-sdk-for-python | ✓ Entra ID の非同期トークン取得(`azure.identity.aio`)に必要な `[aio]` extra を明示するための直接依存 |
 

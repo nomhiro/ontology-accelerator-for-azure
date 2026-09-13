@@ -714,3 +714,93 @@ class DivergenceReportView(BaseModel):
     messages: tuple[str, ...] = Field(
         default=(), description="乖離と「調べられなかった」を人が読める行にしたもの"
     )
+
+
+class SearchHitView(BaseModel):
+    """検索で当たった用語 1 件(ADR-0050、`P3-02`)。
+
+    **どちらの経路で当たったかを必ず返す。** 融合しただけの順位を返すと、
+    **なぜその用語が出てきたのかが分からない**。この製品は「説明可能」を
+    掲げているので、経路と順位の両方を見せる。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    term_iri: str = Field(description="用語の IRI")
+    route: str = Field(
+        description="どの経路で当たったか。`vector`(言い換え)/ `trigram`(表記)/ "
+        "`both`(両方)。**`both` は片方より強い根拠である**"
+    )
+    score: float = Field(description="融合後のスコア(RRF)。**大きいほど上位**")
+    vector_rank: int | None = Field(
+        default=None, description="ベクトルの経路での順位(1 始まり)。`null` は当たらなかった"
+    )
+    trigram_rank: int | None = Field(default=None, description="3-gram の経路での順位")
+    vector_similarity: float | None = Field(
+        default=None,
+        description="cosine の類似度。**`null` は「その経路で当たらなかった」であって"
+        "「似ていない」ではない**",
+    )
+    trigram_similarity: float | None = Field(
+        default=None, description="`word_similarity` の値。同上"
+    )
+    source_text: str = Field(
+        default="", description="埋め込みに使ったテキスト。**なぜ当たったかを読むために返す**"
+    )
+    deprecated: bool = Field(
+        default=False,
+        description="廃止済みか。**結果から除外しない** — 廃止された用語を検索で"
+        "見つけられないと「なぜ使えないのか」に答えられない(ADR-0017 決定3)",
+    )
+
+
+class SearchResultView(BaseModel):
+    """1 回の用語検索の結果(ADR-0050、`P3-02`)。
+
+    **`vector_available` が偽のときに「該当なし」と読んではいけない。**
+    埋め込みを作っていない名前空間では、ベクトルの経路は 0 件になる。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    query: str = Field(description="投げた問い")
+    hits: tuple[SearchHitView, ...] = ()
+    limit: int = Field(description="実際に使った件数の上限(範囲外は丸めてある)")
+    vector_available: bool = Field(
+        description="**ベクトルの経路を使えたか。** 偽なら埋め込みが無いかモデルが未設定で、"
+        "**「該当なし」とは限らない**"
+    )
+    vector_note: str = Field(
+        default="", description="`vector_available` が偽の理由。**空にしない**"
+    )
+    embedded_term_count: int = Field(
+        description="その名前空間で埋め込みを持つ用語の数。**`0` は「作っていない」**"
+    )
+    deprecated_hits: tuple[str, ...] = Field(
+        default=(), description="結果に含まれる廃止済みの用語。**警告として渡す**"
+    )
+    conclusive: bool = Field(
+        description="**両方の経路を使えたか。** 偽のときに「これが全部です」と言ってはいけない"
+    )
+    routes: dict[str, int] = Field(
+        default_factory=dict, description="経路ごとの件数。なぜその結果になったかを読むために返す"
+    )
+
+
+class EmbeddingRebuildView(BaseModel):
+    """埋め込みの作り直しの結果(ADR-0050、`P3-02`)。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    version: str = Field(description="どの承認済み版から作ったか")
+    model: str = Field(description="どのモデルで作ったか。**モデルを変えたら作り直す判断に使う**")
+    term_count: int = Field(description="埋め込みを作った用語の数")
+    truncated_terms: tuple[str, ...] = Field(
+        default=(),
+        description="説明が長くて切り詰めた用語。**黙って切らない** — "
+        "「説明を入れたのに検索に出ない」を防ぐため",
+    )
+    deprecated_terms: tuple[str, ...] = Field(
+        default=(), description="廃止済みとして印を付けた用語。**除外はしていない**"
+    )

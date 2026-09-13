@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -23,6 +25,8 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from ontology_core.embedding import EMBEDDING_DIMENSIONS
 
 
 class Base(DeclarativeBase):
@@ -596,3 +600,70 @@ class VkgMappingRow(Base):
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TermEmbeddingRow(Base):
+    """用語 1 件の埋め込み(ADR-0050、`P3-02`)。
+
+    **再構築可能な射影である**(不変条件1 と同じ形)。正本は Blob の TTL で、
+    この表はそこから作り直せる。**だから作成に失敗しても承認は止めない**
+    (不変条件3 と同じ向き)。
+
+    **どの版・どのモデルから作ったかを持つ。** モデルを変えたら作り直す
+    必要があるが、**作り直したかを判定できるのはこの 2 列があるからである**。
+
+    **`source_text` を持つ**(埋め込みの材料)。検索の結果に返して
+    「なぜ当たったか」を読めるようにし、同時に**内容が変わったかの判定**に
+    使う(同じテキストなら呼び直さない)。
+
+    **`pgvector` の `vector` 型を使う。** 拡張が無い環境では
+    `create_all` が `type "vector" does not exist` で落ちる —
+    デプロイ環境は `bootstrap-db.py`、ローカルは `just up` と
+    `conftest.py` が作る。
+    """
+
+    __tablename__ = "term_embeddings"
+    #: **2 つの経路の索引もここで宣言する。**
+    #:
+    #: マイグレーション 0014 は生の `CREATE INDEX` で作っているが、
+    #: **`Base.metadata.create_all` はここに書いたものしか作らない**。
+    #: 書かないと、**テストの DB(create_all)と本番の DB(alembic)で
+    #: 索引が違う**状態になる(実際に踏んだ。索引の存在を確かめるテストが
+    #: 落ちて気づいた)。
+    #:
+    #: `postgresql_using` / `postgresql_ops` で演算子クラスを指定する —
+    #: `vector_cosine_ops` と `gin_trgm_ops` はどちらも既定ではない。
+    __table_args__ = (
+        UniqueConstraint("namespace", "term_iri", name="uq_term_embeddings_ns_term"),
+        Index("ix_term_embeddings_namespace", "namespace"),
+        # ベクトルの経路(概念の近さ)。**cosine で引く。**
+        Index(
+            "ix_term_embeddings_vector",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        # 3-gram の経路(表記の部分一致)。**日本語の形態素解析は使えない。**
+        Index(
+            "ix_term_embeddings_trgm",
+            "source_text",
+            postgresql_using="gin",
+            postgresql_ops={"source_text": "gin_trgm_ops"},
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    namespace: Mapped[str] = mapped_column(
+        ForeignKey("namespaces.name", ondelete="CASCADE"), nullable=False
+    )
+    term_iri: Mapped[str] = mapped_column(String(1024), nullable=False)
+    #: 埋め込みの材料。**検索の結果に返す**(なぜ当たったかを読むため)。
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[Any] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=False)
+    #: どの承認済み版から作ったか。
+    built_from_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: どのモデルで作ったか。**モデルを変えたら作り直す判断に使う。**
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: 廃止済みの用語か。**除外せず印を付ける**(ADR-0017 決定3 と同じ向き)。
+    deprecated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

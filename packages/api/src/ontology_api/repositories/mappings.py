@@ -15,7 +15,7 @@ from collections.abc import Collection
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ontology_core.db import TermMappingRow
+from ontology_core.db import TermMappingRow, by_identifier
 from ontology_core.mapping import (
     MappingPredicate,
     compare_with_counterpart,
@@ -101,7 +101,10 @@ class MappingRepository:
         stmt = (
             select(TermMappingRow)
             .where(TermMappingRow.namespace == namespace)
-            .order_by(TermMappingRow.source_term, TermMappingRow.target_term)
+            .order_by(
+                by_identifier(TermMappingRow.source_term),
+                by_identifier(TermMappingRow.target_term),
+            )
         )
         rows = list((await self._session.execute(stmt)).scalars().all())
         return await self._decorate(rows)
@@ -121,7 +124,10 @@ class MappingRepository:
                 TermMappingRow.target_term.startswith(base_iri),
                 TermMappingRow.namespace != namespace,
             )
-            .order_by(TermMappingRow.target_term, TermMappingRow.source_term)
+            .order_by(
+                by_identifier(TermMappingRow.target_term),
+                by_identifier(TermMappingRow.source_term),
+            )
         )
         rows = list((await self._session.execute(stmt)).scalars().all())
         return await self._decorate(rows)
@@ -195,7 +201,10 @@ class MappingRepository:
         stmt = (
             select(TermMappingRow.target_term, TermMappingRow.namespace, TermMappingRow.source_term)
             .where(TermMappingRow.target_term.in_(list(targets)))
-            .order_by(TermMappingRow.namespace, TermMappingRow.source_term)
+            .order_by(
+                by_identifier(TermMappingRow.namespace),
+                by_identifier(TermMappingRow.source_term),
+            )
         )
         found: dict[str, list[tuple[str, str]]] = {}
         for target, namespace, source in (await self._session.execute(stmt)).all():

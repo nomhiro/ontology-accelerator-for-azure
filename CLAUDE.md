@@ -54,7 +54,10 @@ just dev-api             # Core API 起動
 ### 既知の罠
 
 - **ポート 3030 が別プロジェクトと衝突する場合がある。** `FUSEKI_PORT=3131` を環境変数で指定する。`docker compose` / `pytest` / `Settings`（つまり `scripts/check-questions.py` も）がすべて同じ変数を読む（`POSTGRES_PORT` / `AZURITE_PORT` も同様）。
-  **`SPARQL_QUERY_ENDPOINT` 等を明示した場合はそちらが勝つ**（デプロイ環境では Bicep が内部 ingress の FQDN を注入するため。`P2A-13`）
+  **`SPARQL_QUERY_ENDPOINT` 等を明示した場合はそちらが勝つ**（デプロイ環境では Bicep が内部 ingress の FQDN を注入するため。`P2A-13`）。
+  **ただし、コンテナを起動したときと違う値を渡してはいけない。** `FUSEKI_PORT=3131` でテストを回したのにコンテナが 3030 で公開されていると、
+  **Fuseki に触るテストが一斉に `httpx.ConnectError: All connection attempts failed` で落ちる**（実測で 10 failed + 16 errors）。
+  **落ちるのは変更と無関係なテスト**なので実装を壊したように見える。**`docker port <コンテナ>` で公開ポートを確かめてから渡す**こと
 - **`just up` は Azurite に Blob コンテナを作る。** これを飛ばすと publish と削除が `ContainerNotFound` で失敗する。名前空間の作成と SPARQL 参照は Blob を触らないため動いてしまい、原因が分かりにくい
 - **`just clean` は PostgreSQL のボリュームごと消す。** 消した後は `just migrate` をやり直す必要がある。さらに `alembic` を素で叩くときは `.env` を読まないので、`POSTGRES_*` を環境変数で明示する（`just migrate` は `--env-file` を使っている）。読み込まれないと既定値で接続を試み、`InvalidPasswordError` になる
 - **Docker Desktop が落ちていると、integration テストが**全件セットアップ段階で**
@@ -98,12 +101,47 @@ just dev-api             # Core API 起動
 - **Git Bash は `/` で始まる引数を Windows パスに変換する。** `az` に ARM のリソース ID を渡すと壊れる。**docker の `-w /work` も壊れる**(`W:/` になって拒否される)。`MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` をそのコマンドの**前置き**にするか(**`export` はしない** — 上の罠)、リソース ID ではなく名前を渡す。
   抑止すれば `-v "$PWD:/mnt"` の `/c/...` 形式は Docker Desktop が受け付けるが、**`docker build` のビルドコンテキストは受け付けない**(`path not found`)。スクリプトの中では `cygpath -m` で `C:/...` に直す(`containers/reasoner/*.sh` がその形)
 
+- **PostgreSQL の照合順序はイメージで変わる。`ORDER BY` は Python の
+  `sorted()` と一致しない。** `postgres:*-alpine`(musl)は `lc_collate` が
+  **`C`**(バイト順)だが、Debian 系のイメージは `en_US.utf8` である。
+  **Azure Database for PostgreSQL は `en_US.utf8` 固定**(読み取り専用)なので、
+  **Alpine で通っていたテストは本番の順序を検査していない**。
+  `en_US.utf8` は第一水準で句読点を無視するため、
+  `https://e.example/#Customer` が `http://www.w3.org/…#Concept` より**前**に
+  来る(実測)。ハイフンを含む名前でも変わる(`aa , a-b , ab , a-c`)。
+  **識別子(IRI・名前空間名・プリンシパル ID)を並べるときは
+  `ontology_core.db.by_identifier()` を使う**(`COLLATE "C"` を付ける)。
+  **ラベルや説明には使わない** — 日本語の並びが壊れる。
+  `P3-02` でイメージを替えたときに、**触っていないテストが落ちて**気づいた
+  (`P3-12`)
+- **SQLAlchemy の `text()` で `%` を二重にしてはいけない。** asyncpg の
+  プレースホルダは `$1` 形式なので **`%` はエスケープされない**。
+  paramstyle が `pyformat` のドライバ（psycopg2 等）の癖で `%%` と書くと、
+  `operator does not exist: text %% text` で落ちる（実測。`pg_trgm` の
+  `%` 演算子を使うクエリで踏んだ）
+- **`Base.metadata.create_all` は `__table_args__` に書いた索引しか作らない。**
+  マイグレーションの生の `op.execute("CREATE INDEX ...")` だけで索引を作ると、
+  **テストの DB（`create_all`）と本番の DB（alembic）で索引が違う**状態になる
+  （実測。`term_embeddings` の `hnsw` / `gin` で踏み、索引の存在を確かめる
+  テストが落ちて気づいた）。**ORM 側にも宣言する** —
+  `Index(..., postgresql_using="hnsw", postgresql_ops={...})` で演算子クラスまで
+  書ける。**索引が無くてもクエリは通る**（遅くなるだけ）ので、黙って食い違う
+- **`SHOW pg_trgm.*` は、同じセッションで pg_trgm の関数を 1 度呼んでおかないと
+  `unrecognized configuration parameter` になる。** 拡張の GUC は関数の
+  ロード時に登録されるためである。**「設定が無い」ではない**（実測。
+  `SELECT similarity('a','b')` を先に流せば読める）
+- **何もしない `__aenter__` / `__aexit__` を置いてはいけない。** `async with` を
+  読んだ側は資源が閉じられると思うが、実体は呼び出しごとに
+  `httpx.AsyncClient` を作り捨てていた（`EmbeddingClient` で踏んだ）。
+  **`VirtualGraphClient` と同じ形にする** — 1 本持って `aclose()` で閉じ、
+  **渡されたクライアントは閉じない**（呼び出し側の持ち物である）
+
 ## 検証
 
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1441 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1537 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 just gen-api                                   # openapi.json と TS 型を生成(**Web の型検査の前に必要**)
@@ -316,6 +354,17 @@ docker の `-w /work`)。Blob の名前のような `/` を含むが先頭が `/
 **`azd provision` は Entra 管理者の登録について冪等でない。** 既存環境に再 provision すると `AadAuthPrincipalCreationFailed: role "..." already exists` で失敗する。同じ環境に作り直すのではなく `azd env new` で別環境を使うか、管理者登録を先に削除する。
 
 **Bicep のパラメータは `string` で宣言する（`int` にしない）。** azd の `main.parameters.json` の置換（`${SUPERSEDED_RETAIN=0}`）は**文字列**を渡すため、`int` で宣言すると ARM が型エラーで落ちる。既存のパラメータが全て `string` なのはこの理由である（`fusekiCpu` が `'0.5'` なのも同じ）。値の検証はアプリ側（`Settings`）で行う。
+
+**Bicep の `@description` に cp932 で書けない文字を入れてはいけない。**
+`@description` の中身は**出力の JSON にメタデータとして載る**ため、
+`az bicep build --stdout` が日本語 Windows のコンソールコードページで
+符号化しようとして `UnicodeEncodeError: 'cp932' codec can't encode
+character '—'` で**コマンド全体が落ちる**(実測。em ダッシュ 1 つで
+`main.bicep` のビルドまで落ちた)。**`//` コメントは出力に載らないので
+落ちない**(既存の Bicep 5 ファイルに em ダッシュがあるのは全部コメント)。
+**コンパイル自体は通る** — `--outfile` なら成功するので、
+**メッセージが Bicep の中身を指さない**。
+`packages/api/tests/test_infra_contract.py` が機械的に検査する。
 
 **ARM の output 名は camelCase で返る。** `SERVICE_API_URI` は `servicE_API_URI` として返ってくる。復元するときは先頭 1 文字だけ大文字化するのではなく、キー全体を `upper()` する（`ServicE_API_URI` のような中途半端な名前を作らないため）。
 

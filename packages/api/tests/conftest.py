@@ -82,6 +82,18 @@ async def session() -> AsyncIterator[AsyncSession]:
     engine, factory = create_engine_and_factory(_test_settings())
     async with engine.begin() as conn:
         await conn.execute(sa.text(f"SET lock_timeout = '{_LOCK_TIMEOUT}'"))
+        # 拡張を `create_all` の**前**に作る(`P3-02`、ADR-0050)。
+        #
+        # `term_embeddings.embedding` の型が `vector(1536)` なので、拡張が
+        # 無いと `create_all` が `type "vector" does not exist` で落ちる。
+        #
+        # **ここで作るのは、デプロイ環境と経路が違うからである。** あちらは
+        # `bootstrap-db.py`(Entra 管理者)が作る。テストは `ontology` ロール
+        # (ローカルの所有者)で接続しているので自分で作れる。
+        #
+        # **`IF NOT EXISTS` で冪等にする。** テストごとに走る。
+        for extension in ("vector", "pg_trgm"):
+            await conn.execute(sa.text(f"CREATE EXTENSION IF NOT EXISTS {extension}"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
         # `alembic_version` を head で stamp する(P1-23)。

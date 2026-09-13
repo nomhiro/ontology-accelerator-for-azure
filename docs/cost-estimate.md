@@ -20,8 +20,8 @@
 | ACA Consumption メモリ (active / idle **同単価**) | `$0.000003 / GiB秒` |
 | ACA 無料枠 | **180,000 vCPU秒 + 360,000 GiB秒 / 月**(**サブスクリプション単位でアプリ間共有**) |
 | PostgreSQL Flexible Server B1ms | `$0.026 / 時` |
-| Azure AI Search Basic | `$0.133 / 時` |
-| Azure AI Search S1 | `$0.444 / 時` |
+| Azure AI Search Basic | `$0.133 / 時`(**採用しない**。ADR-0050) |
+| Azure AI Search S1 | `$0.444 / 時`(**採用しない**) |
 | Azure Files Premium LRS | `$0.192 / GiB / 月` |
 
 ### 計算の前提
@@ -33,7 +33,7 @@
 
 ---
 
-## minimal — Phase 1 MVP 時点(AI Search 未デプロイ、EmptyDir 構成)
+## minimal — Phase 1 MVP 時点(EmptyDir 構成)
 
 | リソース | 構成 | 月額(idle 課金前提) |
 |---|---|---|
@@ -108,12 +108,26 @@ $0.026 / 時 × 730 時 = $18.98
 
 リクエストがない間はレプリカが 0 になるため、下限は $0 です。上限 $5 は、無料枠を Fuseki が消費し切った状態で API と MCP が断続的に起動する場合の目安です。実際の値は呼び出し頻度に完全に依存するため、レンジで示しています。
 
-### Azure AI Search(Phase 3 で追加)
+### Azure AI Search(**採用しなかった**)
+
+当初の計画は Phase 3 でベクトル検索のために追加する前提でした。`P3-02` で
+**採らない判断をしました**([ADR-0050](adr/0050-vector-search-in-postgres.md))。
+参考として単価だけ残します。
 
 ```
 Basic: $0.133 / 時 × 730 時 = $97.09  → +$97 / 月
 S1   : $0.444 / 時 × 730 時 = $324.12 → $324 / 月
 ```
+
+**Basic は minimal の総額($39〜49)の 2 倍以上で、スケールゼロがありません。**
+ベクトル検索は正本の PostgreSQL(pgvector)に載せたので、**追加費用は $0** です。
+`vector` と `pg_trgm` はどちらも Azure Database for PostgreSQL の対応拡張で、
+**拡張を有効にすることに課金はありません**(実測で PG 16 の一覧を確認)。
+
+**ただし埋め込みの生成には従量課金が発生します。**
+`text-embedding-3-small` を使い、**用語の数だけ 1 回呼ぶ**(作り直しのたび)。
+1,000 用語で入力 10 万トークン程度の規模なので、**1 回の作り直しで $0.01 未満**が
+目安です(下の「Microsoft Foundry の従量課金」と同じ扱いで、月額表には含めていません)。
 
 ### Azure Files Premium LRS(`graphPersistence: azureFiles` を選んだ場合)
 
@@ -220,19 +234,27 @@ zoneRedundant   : false
 
 ---
 
-## Phase 3 以降(AI Search 追加後)
+## Phase 3 以降
 
-AI Search Basic `+$97/月` → **合計 月 $136〜158 + LLM 従量**
+**当初は AI Search Basic の `+$97/月` を見込んでいましたが、なくなりました**
+([ADR-0050](adr/0050-vector-search-in-postgres.md))。ベクトル検索を正本の
+PostgreSQL に載せたため、**Phase 3 で増える固定費は $0** です。
+
+| 何を足したか | 増える固定費 |
+|---|---|
+| 用語のベクトル検索(`P3-02`。pgvector + pg_trgm) | **$0**(既存の B1ms に載る) |
+| 仮想グラフ(`P3-01`。Ontop on ACA、internal) | 0.5 vCPU / 1 GiB の常時 1 レプリカで **$10 前後**(`P3-07` で実測する) |
 
 ```
-Fuseki 0.5 vCPU: $39〜49 + $97 = $136〜146
-Fuseki 1 vCPU  : $51〜61 + $97 = $148〜158
-→ 全体レンジ $136〜158
+Fuseki 0.5 vCPU: $39〜49(+ Ontop $10 = $49〜59)
+Fuseki 1 vCPU  : $51〜61(+ Ontop $10 = $61〜71)
 ```
+
+**埋め込みの生成は従量**です(上記「Azure AI Search」節を参照)。
 
 ## production(参考概算)
 
-AI Search S1(`$324/月`)、PostgreSQL General Purpose、ACA 専用プラン or AKS + Managed Disk、Private Endpoint(約 $7.3/月 × 5 本)等で **月 $700〜1,200 規模**です。
+PostgreSQL General Purpose、ACA 専用プラン or AKS + Managed Disk、Private Endpoint(約 $7.3/月 × 5 本)等で **月 $700〜1,200 規模**です(**AI Search S1 の $324/月 は、ADR-0050 により見込まなくなりました**)。
 
 **加えて、環境レベルのメーターが乗ります。** VNet 統合 + Private Endpoint を有効にすると `Environment Management Hour` / `Environment Private Endpoint` が **各 $0.145/時 ≒ 月 $105** で課金されます（minimal 構成では乗らないことを実測で確認済み。上記「環境レベルのメーターは乗っていません」を参照）。
 
@@ -254,7 +276,7 @@ azd down --purge
 
 コストを抑えるための設計上の選択:
 
-- **AI Search は Phase 3 まで未デプロイ**にしてコストを回避します($97/月)
+- **AI Search を使いません。** ベクトル検索を正本の PostgreSQL(pgvector)に載せ、**月 $97 の固定費を回避しています**([ADR-0050](adr/0050-vector-search-in-postgres.md))
 - **API / MCP は scale-to-zero** にします
 - **Azure Files は既定で不要**です(EmptyDir 構成、$19/月の削減)
 - **ACR は省略可能**です(`ghcr.io` 利用、$5/月の削減)

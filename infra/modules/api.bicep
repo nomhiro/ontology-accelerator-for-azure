@@ -105,6 +105,15 @@ param modelDeployment string = ''
 @description('モデル名。**監査に書くためだけに持つ** (ADR-0043 決定10)。呼び出しに使うのはデプロイ名である。')
 param modelName string = ''
 
+@description('埋め込みのデプロイ名 (P3-02、ADR-0050)。空ならベクトル検索は提供されない。')
+param embeddingDeployment string = ''
+
+@description('埋め込みモデル名。監査と再構築の判断に使う。')
+param embeddingModelName string = ''
+
+@description('埋め込みの次元。pgvector の列の次元と一致していなければならない。')
+param embeddingDimensions string = '1536'
+
 @description('Application Insights の接続文字列。')
 param applicationInsightsConnectionString string
 
@@ -338,6 +347,28 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
               // デプロイ名を使う。
               name: 'MODEL_NAME'
               value: modelName
+            }
+            {
+              // ベクトル検索 (P3-02、ADR-0050)。**同じアカウント・同じ
+              // マネージド ID で呼ぶ** — 埋め込み専用の資格情報は無い。
+              //
+              // **空ならベクトル検索を提供しない**(決定9)。半端に有効化
+              // すると、検索が常に 0 件を返す状態になる。
+              name: 'EMBEDDING_DEPLOYMENT'
+              value: embeddingDeployment
+            }
+            {
+              // **どのモデルで作った埋め込みかを記録する**(決定4)。
+              // モデルを変えたら作り直す必要があるが、**作り直したかを
+              // 判定できるのはこの値があるからである**。
+              name: 'EMBEDDING_MODEL_NAME'
+              value: embeddingModelName
+            }
+            {
+              // **列の次元と一致していなければならない**(決定5)。
+              // 食い違うと実行時まで分からない。
+              name: 'EMBEDDING_DIMENSIONS'
+              value: embeddingDimensions
             }
           ], postgresPasswordEnv)
           // /healthz は認証不要でプロセスの生存だけを返す (依存先の到達性は含めない)。

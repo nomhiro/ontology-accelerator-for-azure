@@ -203,3 +203,41 @@ def test_既定のモデルは実測で決めたものである() -> None:
     assert "param modelName string = 'gpt-4.1'" in body
     assert "param modelSkuName string = 'GlobalStandard'" in body
     assert "param modelCapacity int = 10" in body
+
+
+# ------------------------------------- `@description` の文字(`P3-02` で踏んだ)
+
+
+def test_description_に_cp932_で書けない文字を入れない() -> None:
+    """**`az bicep build --stdout` が日本語 Windows で落ちる**(実測で切り分けた)。
+
+    `@description` の中身は**出力の JSON にメタデータとして載る**。
+    Azure CLI はそれを標準出力へ書くときにコンソールのコードページ
+    (日本語 Windows では cp932)で符号化するので、cp932 に無い文字が
+    あると `UnicodeEncodeError` で**コマンド全体が失敗する**。
+
+    ```
+    ERROR: 'cp932' codec can't encode character '\u2014' in position 2207
+    ```
+
+    **`//` コメントは載らないので落ちない。** リポジトリの既存の Bicep には
+    em ダッシュが 5 ファイルにあるが、すべて `//` コメントの中である。
+    `@description` に 1 つ入れた瞬間に `main.bicep` のビルドまで落ちた
+    (入れる / 戻すを切り替えて確認した)。
+
+    **コンパイル自体は通る。** `--outfile` なら成功する。落ちるのは
+    標準出力への書き出しだけで、**原因がメッセージから Bicep の中身に
+    結びつかない**。だから機械的に固定する。
+    """
+    offenders: list[str] = []
+    for path in sorted(_INFRA.rglob("*.bicep")):
+        body = path.read_text(encoding="utf-8")
+        for line_number, line in enumerate(body.splitlines(), start=1):
+            if "@description(" not in line:
+                continue
+            try:
+                line.encode("cp932")
+            except UnicodeEncodeError as exc:
+                bad = line[exc.start : exc.end]
+                offenders.append(f"{path.relative_to(_INFRA)}:{line_number} に {bad!r} がある")
+    assert not offenders, offenders

@@ -447,6 +447,75 @@ async def term_mappings(namespace: str, ctx: Context[Any, Any]) -> list[dict[str
         return result
 
 
+@mcp.tool()
+async def search_context(
+    namespace: str, query: str, ctx: Context[Any, Any], limit: int = 10
+) -> dict[str, Any]:
+    """用語を自然文で検索する(ADR-0050、`P3-02`)。
+
+    **どの用語を使えばよいか分からないときに、まずこれを呼ぶ。**
+    `sparql_query` は IRI を知っている前提だが、この道具は
+    「お客さん」「注文の日付」のような言葉から用語を探せる。
+
+    **2 つの経路の結果を融合して返す。**
+
+    | `route` | 何で当たったか |
+    |---|---|
+    | `vector` | **言い換え・概念の近さ**(「お客さん」→ `Customer`) |
+    | `trigram` | **表記の一致**(「顧客ID」→ `customerId`) |
+    | `both` | 両方。**片方より強い根拠である** |
+
+    **`vector_available` を必ず見ること。** 偽なら**言い換えでは当たって
+    いない** — 表記が似ている用語しか出ていない。**結果が空でも
+    「そんな用語は無い」とは言えない**。理由は `vector_note` に入る。
+
+    **`conclusive` も同じ意味で見ること。** 偽のときに「これが全部です」と
+    答えてはいけない。
+
+    **`deprecated` が真の用語を根拠に回答を作ってはいけない。**
+    廃止された用語も**あえて返している** — 「なぜその用語が使えないのか」に
+    答えられるようにするためである(ADR-0017 決定3)。使うなら廃止されて
+    いる旨を添え、`term_mappings` や `sparql_query` で後継を確かめること。
+
+    Args:
+        namespace: 対象の名前空間の名前。`list_namespaces` で取得できる。
+        query: 探したい言葉。自然文でも識別子でもよい。
+        limit: 返す件数(1〜50)。既定は 10。
+
+    Returns:
+        次を持つオブジェクト。
+
+        - `hits`: 当たった用語。各件は `term_iri` / `route` / `score` /
+          `source_text`(なぜ当たったかを読むためのテキスト)/ `deprecated`
+        - `vector_available`: **ベクトルの経路を使えたか。** 偽なら
+          言い換えでは当たっていない
+        - `vector_note`: 偽の理由
+        - `embedded_term_count`: 埋め込みを持つ用語の数。**`0` は
+          「作っていない」であって「用語が無い」ではない**
+        - `deprecated_hits`: 結果に含まれる廃止済みの用語
+        - `conclusive`: すべての経路を使えたか
+        - `routes`: 経路ごとの件数
+
+    Raises:
+        ToolError: 呼び出し元のトークンが無い、検証を通らない、または
+            問いが空のとき。
+    """
+    if not query.strip():
+        # **SDK が隠すので `ToolError` で投げる**(`ValueError` は
+        # `Error executing tool search_context` になって理由が消える)。
+        raise ToolError(
+            "検索の問いが空です。**空の問いで全件は返しません** — "
+            "「検索した結果これが全部である」と読めてしまいます"
+        )
+    async with _api_client(_forward_headers(ctx)) as client:
+        response = await client.get(
+            f"/namespaces/{namespace}/search", params={"q": query, "limit": limit}
+        )
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+
 async def _healthz(request: Request) -> JSONResponse:
     """プロセスの生存確認。
 

@@ -48,6 +48,21 @@ param modelCapacity int = 10
 @description('モデルのデプロイ名。アプリはこの名前で呼ぶ (MODEL_DEPLOYMENT)。')
 param deploymentName string = 'ontology-proposer'
 
+@description('埋め込みモデル名 (P3-02、ADR-0050)。**1536 次元のものに限る**: pgvector の hnsw 索引は 2000 次元までである (実測)。text-embedding-3-large は 3072 次元なので halfvec へのキャストが要り、採らない。')
+param embeddingModelName string = 'text-embedding-3-small'
+
+@description('埋め込みモデルの版。')
+param embeddingModelVersion string = '1'
+
+@description('埋め込みデプロイの SKU。')
+param embeddingSkuName string = 'GlobalStandard'
+
+@description('埋め込みデプロイの容量 (千 TPM 単位)。既定 10 は Japan East で実測した割り当て 4,000 の 0.25%。')
+param embeddingCapacity int = 10
+
+@description('埋め込みデプロイの名前。アプリはこの名前で呼ぶ (EMBEDDING_DEPLOYMENT)。')
+param embeddingDeploymentName string = 'ontology-embedder'
+
 // `Cognitive Services OpenAI User`。推論の呼び出しに必要な最小のロール。
 // **`Contributor` や `OpenAI Contributor` を付けない** — デプロイの作成や
 // 削除はアプリの仕事ではない。
@@ -85,6 +100,41 @@ resource deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01
   }
 }
 
+// 埋め込みモデルのデプロイ (P3-02、ADR-0050)。
+//
+// **`dependsOn` で直列化する。** 同じアカウントに対する 2 つのデプロイを
+// 並行に作るとサーバー側で競合する (PostgreSQL の子リソースを直列化して
+// いるのと同じ理由)。
+//
+// **実測して決めた** (2026-09-13 / Japan East):
+//
+// | 測ったこと | 結果 |
+// |---|---|
+// | `text-embedding-3-small` v1 の SKU | Standard / GlobalStandard / DataZoneStandard |
+// | `OpenAI.GlobalStandard.text-embedding-3-small` の割り当て | 上限 4,000 (使用 0) |
+// | `text-embedding-3-large` の GlobalStandard | **既に 3,002/6,000 使用中** (別用途) |
+//
+// 3-large を採らないのは次元 (3072 > hnsw の上限 2000) が主な理由だが、
+// 割り当てが既に埋まりつつあることも避ける理由になる。
+resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
+  parent: account
+  name: embeddingDeploymentName
+  sku: {
+    name: embeddingSkuName
+    capacity: embeddingCapacity
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: embeddingModelName
+      version: embeddingModelVersion
+    }
+  }
+  dependsOn: [
+    deployment
+  ]
+}
+
 resource openAiUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: account
   name: guid(account.id, identityPrincipalId, openAiUserRoleId)
@@ -102,3 +152,8 @@ output name string = account.name
 output endpoint string = account.properties.endpoint
 output deploymentName string = deployment.name
 output modelName string = modelName
+output embeddingDeploymentName string = embeddingDeployment.name
+output embeddingModelName string = embeddingModelName
+// **次元は Bicep が持つ。** アプリ側の既定と食い違うと、索引の次元と
+// 埋め込みの次元が合わずに実行時まで分からない (ADR-0050 決定5)。
+output embeddingDimensions int = 1536

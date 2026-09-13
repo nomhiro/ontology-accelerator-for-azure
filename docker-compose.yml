@@ -37,7 +37,22 @@ services:
       start_period: 20s
 
   postgres:
-    image: postgres:16-alpine
+    # **pgvector を含むイメージを使う**(`P3-02`、ADR-0050)。
+    #
+    # 素の `postgres:16-alpine` には `vector` 拡張が無く、**ベクトル検索を
+    # ローカルで検証できない**。この製品は「ローカルで検証できることを
+    # 増やす」を優先してきたので、イメージを寄せる。
+    #
+    # **実測した版の差**: このイメージは pgvector 0.8.6、Azure Database for
+    # PostgreSQL Flexible Server(PG 16)は 0.8.2 である。使うのは `hnsw` と
+    # `vector_cosine_ops` で、どちらも 0.5 からある。
+    #
+    # **照合順序が `C` から `en_US.utf8` に変わる**(`P3-12`)。Alpine は musl
+    # なので `lc_collate` が `C`(バイト順)だが、こちらは Debian である。
+    # **Azure は `en_US.utf8` 固定**(読み取り専用)なので、**こちらのほうが
+    # 本番に近い**。素の `ORDER BY` は Python の `sorted()` と一致しなくなる
+    # ため、識別子は `ontology_core.db.by_identifier()` で並べる。
+    image: pgvector/pgvector:pg16
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     environment:

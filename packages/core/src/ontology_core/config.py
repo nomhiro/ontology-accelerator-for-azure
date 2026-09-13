@@ -133,6 +133,62 @@ class Settings(BaseSettings):
         default=16000, ge=1000, le=128000, alias="PROPOSAL_MAX_OUTPUT_TOKENS"
     )
 
+    # ---- 用語のベクトル検索(ADR-0050、`P3-02`) ----
+    #
+    # 埋め込みモデルのデプロイ名。**空なら埋め込みの作成はできない**
+    # (不変条件11 と同じ向き — 設定が無ければ機能しない)。
+    #
+    # **検索そのものは空でも動く。** 3-gram の経路は PostgreSQL だけで
+    # 完結するので、モデルが未設定でも「表記で当てる」検索は使える。
+    # そのとき応答は `vector_available: false` を返す — **「該当なし」と
+    # 見分けがつかない空の結果を返さない**(ADR-0050 決定8)。
+    embedding_deployment: str = Field(default="", alias="EMBEDDING_DEPLOYMENT")
+
+    # 埋め込みモデル名。**行に保存して監査に使う** — モデルを変えたときに
+    # 「どの行を作り直すべきか」を判定する唯一の手掛かりである。
+    embedding_model_name: str = Field(default="", alias="EMBEDDING_MODEL_NAME")
+
+    # 埋め込みの次元。
+    #
+    # **`ontology_core.embedding.EMBEDDING_DIMENSIONS` を import しない。**
+    # `ontology_core/__init__.py` が config を読むので、import すると
+    # **`import ontology_core` のたびに rdflib が読み込まれる**
+    # (embedding は rdflib に依存する)。値の一致は
+    # `test_embedding_dimensions_contract.py` が Bicep とマイグレーションも
+    # 含めて機械的に突き合わせる。
+    #
+    # **上限を 2000 にしてある。** pgvector の hnsw 索引の上限である
+    # (実測。2001 以上で `column cannot have more than 2000 dimensions`)。
+    embedding_dimensions: int = Field(default=1536, ge=1, le=2000, alias="EMBEDDING_DIMENSIONS")
+
+    # 埋め込みの API バージョン。
+    embedding_api_version: str = Field(default="2024-10-21", alias="EMBEDDING_API_VERSION")
+
+    # 1 回の呼び出しのタイムアウト(秒)。**候補の生成より短い** —
+    # 埋め込みの出力は固定長で、長い生成を待つ理由が無い。
+    embedding_timeout_seconds: float = Field(
+        default=60.0, gt=0, le=600, alias="EMBEDDING_TIMEOUT_SECONDS"
+    )
+
+    # 3-gram の経路の閾値(ADR-0050 決定6)。
+    #
+    # **`similarity` ではなく `word_similarity` を使う。** 実測で、
+    # `pg_trgm` の既定閾値 0.3 の `similarity` は**「顧客ID」で 1 件も
+    # 当たらなかった**(長い `source_text` の中の短い部分一致は全体の
+    # 類似度を上げないため)。`word_similarity` なら 1.000 で当たる。
+    #
+    # **既定は 0.6 — PostgreSQL 自身が `<%` に対して選んだ値である**
+    # (実測: `pg_trgm.word_similarity_threshold` = 0.6、
+    # `similarity_threshold` = 0.3、`strict_word_similarity_threshold` = 0.5)。
+    #
+    # **緩めない。** 0.3 にすると「顧客ID」で `Customer` と `customerName`
+    # まで当たる(実測 0.400)。それは**概念の隣**であって表記の一致では
+    # なく、ベクトルの経路の担当である。2 つの経路の役割を混ぜると、
+    # `route` を返している意味が薄れる。
+    search_trigram_threshold: float = Field(
+        default=0.6, ge=0.0, le=1.0, alias="SEARCH_TRIGRAM_THRESHOLD"
+    )
+
     # ---- 仮想グラフ(Ontop VKG。ADR-0046、`P3-01`) ----
     #
     # ソースごとの SPARQL エンドポイントのテンプレート。`{namespace}` と

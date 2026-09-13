@@ -116,7 +116,14 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        # **pgvector を含むイメージ**(`P3-02`、ADR-0050)。
+        # `docker-compose.yml` と同じものを使う — ローカルと CI で拡張の
+        # 有無が違うと、片方だけ「検証していない」状態になる。
+        #
+        # **照合順序も Azure と同じ `en_US.utf8` になる**(`P3-12`)。
+        # Alpine(musl)の `C` で通っていたテストは、**本番の順序を
+        # 検査していなかった**。
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_DB: ontology
           POSTGRES_USER: ontology

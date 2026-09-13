@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ontology_core.db import NamespaceRoleRow, TermOwnerRow
+from ontology_core.db import NamespaceRoleRow, TermOwnerRow, by_identifier
 from ontology_core.models import (
     NamespaceRole,
     OwnerResolution,
@@ -94,7 +94,7 @@ class TermOwnerRepository:
         stmt = (
             select(TermOwnerRow)
             .where(TermOwnerRow.namespace == namespace)
-            .order_by(TermOwnerRow.term_iri)
+            .order_by(by_identifier(TermOwnerRow.term_iri))
         )
         return [_to_model(r) for r in (await self._session.execute(stmt)).scalars()]
 
@@ -165,7 +165,7 @@ class TermOwnerRepository:
                 NamespaceRoleRow.namespace == namespace,
                 NamespaceRoleRow.role == NamespaceRole.OWNER.value,
             )
-            .order_by(NamespaceRoleRow.principal_id)
+            .order_by(by_identifier(NamespaceRoleRow.principal_id))
         )
         fallback = tuple((await self._session.execute(stmt)).scalars())
 

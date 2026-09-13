@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ontology_core.db import ScanColumnRow, ScanRunRow, ScanSourceRow, ScanTableRow
+from ontology_core.db import ScanColumnRow, ScanRunRow, ScanSourceRow, ScanTableRow, by_identifier
 from ontology_core.models import ScanColumn, ScanRun, ScanSource, ScanTable
 from ontology_core.scan import ScanRunStatus, TableObservation
 
@@ -128,7 +128,7 @@ class ScanRepository:
         stmt = (
             select(ScanSourceRow)
             .where(ScanSourceRow.namespace == namespace)
-            .order_by(ScanSourceRow.name)
+            .order_by(by_identifier(ScanSourceRow.name))
         )
         return [_to_source(row) for row in (await self._session.execute(stmt)).scalars()]
 
@@ -146,7 +146,9 @@ class ScanRepository:
         **API のハンドラから呼んではいけない。** 名前空間を絞る
         `list_sources` を使う。
         """
-        stmt = select(ScanSourceRow).order_by(ScanSourceRow.namespace, ScanSourceRow.name)
+        stmt = select(ScanSourceRow).order_by(
+            by_identifier(ScanSourceRow.namespace), by_identifier(ScanSourceRow.name)
+        )
         return list((await self._session.execute(stmt)).scalars())
 
     async def delete_source(self, *, namespace: str, name: str) -> bool:
@@ -289,7 +291,9 @@ class ScanRepository:
         table_stmt = (
             select(ScanTableRow)
             .where(ScanTableRow.run_id == run_id)
-            .order_by(ScanTableRow.schema_name, ScanTableRow.table_name)
+            .order_by(
+                by_identifier(ScanTableRow.schema_name), by_identifier(ScanTableRow.table_name)
+            )
         )
         tables = list((await self._session.execute(table_stmt)).scalars())
         column_stmt = (
