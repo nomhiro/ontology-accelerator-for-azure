@@ -14,6 +14,19 @@ build/
 
 # ---- Node ----
 node_modules/
+# **npm のロックファイルをコミットしない**(`P2A-22`)。
+#
+# このリポジトリは pnpm ワークスペースで、CI も `justfile` も pnpm しか
+# 使わない。それでも `apps/web/package-lock.json` が 1 度コミットされていた
+# (**MCP の修正コミット `da37b7e` に紛れ込んだ副産物**で、意図的なもので
+# はなかった)。
+#
+# **読まれないロックファイルは嘘をつく。** 実測で、そのファイルは
+# `npm ci` が `Missing: stackback@0.0.2 from lock file` で失敗する状態まで
+# 古くなっていた。**「npm でも入る」と思って叩くと、何が起きたのか
+# 分からないエラーで止まる。**
+package-lock.json
+npm-shrinkwrap.json
 apps/*/dist/
 *.tsbuildinfo
 .pnpm-store/
