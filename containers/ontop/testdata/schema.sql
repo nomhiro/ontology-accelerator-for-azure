@@ -27,3 +27,15 @@ INSERT INTO vkg."order" VALUES
   (10, 1, 12800.00),
   (11, 1, 4500.50),
   (12, 2, 990.00);
+
+-- **空の表。** 「定義はあるのに実データが 0 件」(乖離)を実測するために置く
+-- (`P3-05`、ADR-0047)。1 行も入れない。
+CREATE TABLE vkg.refund (
+  id       integer PRIMARY KEY,
+  order_id integer NOT NULL REFERENCES vkg."order"(id)
+);
+
+-- **`tier` が NULL の顧客を 1 人足す。** 必須(`sh:minCount 1`)にした
+-- プロパティが実データで欠けていることを実測するため。**R2RML は NULL の
+-- 列をトリプルにしないので、この行には `ex:tier` が付かない。**
+INSERT INTO vkg.customer VALUES (3, '鈴木 次郎', NULL);

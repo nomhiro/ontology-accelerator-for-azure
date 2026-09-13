@@ -69,9 +69,22 @@ from ontology_api.services.authorization import (
     principal_id_of,
     require_namespace_role,
 )
+from ontology_api.services.divergence import (
+    DivergenceUnavailableError,
+    divergence_messages,
+    measure_divergence,
+)
 from ontology_api.services.vkg import MappingRejectedError, validate_mapping
+from ontology_core.divergence import MAX_PROBES
 from ontology_core.graphs import NamespaceNameError, validate_namespace_name
-from ontology_core.models import NamespaceRole, VkgMapping, VkgMappingSummary
+from ontology_core.models import (
+    ClassDivergenceView,
+    DivergenceReportView,
+    NamespaceRole,
+    PropertyDivergenceView,
+    VkgMapping,
+    VkgMappingSummary,
+)
 from ontology_core.r2rml import MAX_MAPPING_LENGTH, R2rmlError
 from ontology_core.sparql.guards import QueryRejectedError, ensure_agent_safe_query, query_form
 from ontology_core.sparql.limits import cap_bindings
@@ -448,3 +461,117 @@ async def query_virtual_graph(
         capped.truncated,
     )
     return capped.payload
+
+
+@router.get(
+    "/{namespace}/scan-sources/{source}/divergence",
+    summary="定義と実データの乖離を測る(`data-analyst`。状態は変えない)",
+    responses={
+        404: {
+            "description": "承認済み版またはマッピングが無い。**空の報告を返さない**"
+            "(ADR-0047 決定6)"
+        },
+        503: {"description": "`VKG_ENDPOINT_TEMPLATE` が未設定。**空の報告を返さない**"},
+    },
+)
+async def measure_source_divergence(
+    namespace: str,
+    source: str,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    settings: SettingsDep,
+    blob: BlobDep,
+) -> DivergenceReportView:
+    """承認したオントロジーが実データと食い違っていないかを測る(`P3-05`)。
+
+    **状態は変えない。** SHACL の `.../validate` や想定質問の `.../run` と
+    同じ位置づけである。
+
+    **これは SHACL 検証ではない**(ADR-0047 決定1)。見るのは 2 つだけ —
+    「クラスに実データがあるか」と「必須プロパティが欠けている件数」。
+    `sh:pattern` / `sh:datatype` / `sh:maxCount` は見ない。
+    **`conclusive` が偽のときに「乖離なし」と読んではいけない。**
+
+    **実データはこちらに来ない。** 投げるのは `ASK` と `COUNT` だけで、
+    行の中身は取らない([ADR-0046](../../../../../docs/adr/0046-virtual-knowledge-graph.md)
+    が守っているものを検査のために壊さない)。
+
+    **測れないときは 404 / 503 で断る。** 承認済み版が無ければ測る基準が
+    無く、マッピングが無ければ入口が無い。**空の報告を返すと
+    「乖離なし」と読まれる**(決定6)。
+    """
+    await _prepare(
+        session, namespace=namespace, principal=principal, required=NamespaceRole.DATA_ANALYST
+    )
+    # **退役した名前空間では測らない**(ADR-0032 決定5 と同じ形)。
+    # データセットを消してあるので、測っても意味のある答えにならない。
+    try:
+        await ensure_not_retired(session, namespace=namespace, doing="乖離の測定")
+    except NamespaceRetiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    source_id = await _resolve_source_id(session, namespace=namespace, source=source)
+
+    try:
+        endpoint = resolve_endpoint(
+            settings.vkg_endpoint_template, namespace=namespace, source=source
+        )
+    except VirtualGraphNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+    async with VirtualGraphClient(timeout_seconds=settings.vkg_query_timeout_seconds) as client:
+        try:
+            report = await measure_divergence(
+                session,
+                blob=blob,
+                client=client,
+                endpoint=endpoint,
+                namespace=namespace,
+                source=source,
+                source_id=source_id,
+                limit=MAX_PROBES,
+            )
+        except DivergenceUnavailableError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    logger.info(
+        "乖離を測りました %s/%s (actor=%s, 探り=%d 本, 乖離=%d 件, 不明=%d 件, 調べきれた=%s)",
+        namespace,
+        source,
+        principal_id_of(principal),
+        report.issued_probes,
+        len(report.diverged),
+        len(report.unknown),
+        report.conclusive,
+    )
+    return DivergenceReportView(
+        classes=tuple(
+            ClassDivergenceView(
+                shape=item.shape,
+                target_class=item.target_class,
+                status=item.status.value,
+                properties=tuple(
+                    PropertyDivergenceView(
+                        path=prop.path,
+                        status=prop.status.value,
+                        missing_count=prop.missing_count,
+                        note=prop.note,
+                    )
+                    for prop in item.properties
+                ),
+                note=item.note,
+            )
+            for item in report.classes
+        ),
+        diverged_count=len(report.diverged),
+        unknown_count=len(report.unknown),
+        conclusive=report.conclusive,
+        issued_probes=report.issued_probes,
+        skipped_probes=report.skipped_probes,
+        no_shapes=report.no_shapes,
+        version=report.version,
+        mapping_revision=report.mapping_revision,
+        messages=tuple(divergence_messages(report)),
+    )

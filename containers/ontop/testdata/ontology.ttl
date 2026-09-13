@@ -9,6 +9,7 @@
 
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
 @prefix ex:   <https://e.example/vkg#> .
 
 <https://e.example/vkg> a owl:Ontology .
@@ -21,3 +22,21 @@ ex:fullName a owl:DatatypeProperty .
 ex:tier     a owl:DatatypeProperty .
 ex:totalJpy a owl:DatatypeProperty .
 ex:placedBy a owl:ObjectProperty .
+ex:Refund   a owl:Class ; rdfs:label "返金" .
+ex:ofOrder  a owl:ObjectProperty .
+
+## **乖離の測定に使う形**(`P3-05`、ADR-0047)。
+##
+## `ex:tier` を必須にしてある。実データには `tier` が NULL の顧客が
+## 1 人いるので、**定義が現実より厳しい**状態を作ってある。
+##
+## `ex:Refund` にも形を付ける。マッピングはこのクラスを作らないので、
+## **`unmapped`(乖離ではない)として報告されるべき**である。
+ex:CustomerShape a sh:NodeShape ;
+  sh:targetClass ex:Customer ;
+  sh:property [ sh:path ex:fullName ; sh:minCount 1 ] ;
+  sh:property [ sh:path ex:tier ; sh:minCount 1 ] .
+
+ex:RefundShape a sh:NodeShape ;
+  sh:targetClass ex:Refund ;
+  sh:property [ sh:path ex:ofOrder ; sh:minCount 1 ] .

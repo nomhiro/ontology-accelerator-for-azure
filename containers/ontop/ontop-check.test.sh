@@ -10,13 +10,16 @@
 # マッピングの検査とこちら側の HTTP の扱いを固定するが、
 # **SPARQL が SQL に書き換わって実データが返ること**は実物でしか確かめられない。
 #
-# ここで固定するのは 6 つである。
+# ここで固定するのは 7 つである。
 #
 # 1. **2 表をまたぐ SPARQL の結合が、実データの行として返る**
 #    (仮想グラフの要点そのもの)
 # 2. **TBox の推論が効く**(上位クラスで問い合わせるとインスタンスが返る)
 # 3. **TBox のトリプル自体はデータとして返らない** —
 #    つまり**宛先を間違えると 0 件が返る**(ADR-0046 決定11 の根拠)
+# 3b. **乖離の探りが実物で動く**(P3-05、ADR-0047)。あわせて
+#    **FILTER NOT EXISTS が Ontop に拒否されること**を固定する —
+#    こちらが OPTIONAL + !BOUND で書いている理由そのものである
 # 4. **SPARQL Update を受け付けない**(構造的に読み取り専用)
 # 5. **ポータルページが出ない**
 # 6. **不正なマッピングのエラー本文が全関係を列挙する**
@@ -221,10 +224,11 @@ note ""
 note "--- 2. TBox の推論が効く"
 # `Customer ⊑ Party` を TBox に書いてある。**上位クラスで問い合わせて
 # インスタンスが返れば、語彙の意味は仮想グラフ側でも効く**(決定1)。
-assert_query "上位クラス Party で顧客 2 件が返る" \
+# 顧客は 3 人いる(P3-05 の題材で 1 人足した。うち 1 人は tier が NULL)。
+assert_query "上位クラス Party で顧客 3 件が返る" \
     'PREFIX ex: <https://e.example/vkg#>
      SELECT ?x WHERE { ?x a ex:Party } ORDER BY ?x' \
-    'code == "200" and len(rows) == 2
+    'code == "200" and len(rows) == 3
      and rows[0]["x"]["value"].endswith("/customer/1")'
 
 note ""
@@ -238,6 +242,38 @@ assert_query "owl:Class を問うと 0 件(エラーではない)" \
 assert_query "rdfs:label を問うと 0 件(TBox に label はあるのに)" \
     'SELECT ?s ?l WHERE { ?s <http://www.w3.org/2000/01/rdf-schema#label> ?l }' \
     'code == "200" and len(rows) == 0'
+
+note ""
+note "--- 3b. 乖離の探りが実物に対して成立する(P3-05、ADR-0047)"
+# **`ontology_core.divergence` が組み立てる探りと同じ形を投げる。**
+# Python 側のテストは探りの文字列と判定を固定するが、**その SPARQL が
+# Ontop で本当に動くこと**は実物でしか確かめられない。
+#
+# 題材はこうしてある。
+#   - `vkg.customer` に 3 行。うち 1 行は `tier` が NULL
+#   - `vkg.refund` は空の表(マッピングには入れていない)
+assert_query "クラスの探り: Customer には実データがある"     'ASK { ?s a <https://e.example/vkg#Customer> }'     'code == "200" and doc.get("boolean") is True'
+# **NULL の列はトリプルにならない。** だから必須にした `ex:tier` が
+# 1 件で欠ける — **定義が現実より厳しい**状態である。
+assert_query "欠けている件数の探り: tier が 1 件で欠けている"     'SELECT (COUNT(DISTINCT ?s) AS ?missing) WHERE {
+       ?s a <https://e.example/vkg#Customer> .
+       OPTIONAL { ?s <https://e.example/vkg#tier> ?v }
+       FILTER(!BOUND(?v))
+     }'     'code == "200" and len(rows) == 1 and rows[0]["missing"]["value"] == "1"'
+# **FILTER NOT EXISTS では書けない。** Ontop 5.3.0 がサポートしていない。
+# **その事実をここで固定する** — 「読みやすくする」変更で戻されたら落ちる。
+assert_query "FILTER NOT EXISTS は実物が拒否する(500)"     'SELECT (COUNT(DISTINCT ?s) AS ?missing) WHERE {
+       ?s a <https://e.example/vkg#Customer> .
+       FILTER NOT EXISTS { ?s <https://e.example/vkg#tier> ?v }
+     }'     'code == "500" and "not supported" in raw'
+assert_query "欠けている件数の探り: fullName は欠けていない(測った 0)"     'SELECT (COUNT(DISTINCT ?s) AS ?missing) WHERE {
+       ?s a <https://e.example/vkg#Customer> .
+       OPTIONAL { ?s <https://e.example/vkg#fullName> ?v }
+       FILTER(!BOUND(?v))
+     }'     'code == "200" and rows[0]["missing"]["value"] == "0"'
+# **マッピングに無いクラスは 0 件で返る** — これが「`unmapped` を `empty` と
+# 混ぜてはいけない」の実測である。例外にはならない。
+assert_query "マッピングに無いクラスの探りは false(エラーではない)"     'ASK { ?s a <https://e.example/vkg#Refund> }'     'code == "200" and doc.get("boolean") is False'
 
 note ""
 note "--- 4. SPARQL Update を受け付けない"

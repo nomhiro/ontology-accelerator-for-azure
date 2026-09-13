@@ -639,3 +639,65 @@ class VkgMapping(BaseModel):
             created_by=self.created_by,
             reason=self.reason,
         )
+
+
+class PropertyDivergenceView(BaseModel):
+    """必須プロパティ 1 件の乖離(ADR-0047 決定2)。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    status: str = Field(
+        description="`matched` / `empty` / `unmapped` / `unknown`。"
+        "**`unknown` は「乖離なし」ではない**"
+    )
+    missing_count: int | None = Field(
+        default=None,
+        description="そのプロパティが欠けているインスタンスの件数。"
+        "**`null` は「数えていない」**(`0` は「測った 0」)",
+    )
+    note: str = ""
+
+
+class ClassDivergenceView(BaseModel):
+    """クラス 1 件の乖離(ADR-0047 決定2)。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    shape: str
+    target_class: str
+    status: str
+    properties: tuple[PropertyDivergenceView, ...] = Field(
+        default=(),
+        description="必須プロパティごとの判定。**クラスが `matched` でなければ空である**",
+    )
+    note: str = ""
+
+
+class DivergenceReportView(BaseModel):
+    """定義と実データの乖離の報告(ADR-0047)。
+
+    **`conclusive` が偽のときに「乖離なし」と読んではいけない。**
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    classes: tuple[ClassDivergenceView, ...] = ()
+    diverged_count: int = Field(description="乖離しているクラスの数")
+    unknown_count: int = Field(
+        description="調べられなかったクラスの数。**`diverged_count` と足して全体にはならない**"
+    )
+    conclusive: bool = Field(
+        description="**すべて調べきれたか。** 偽のときに「乖離なし」と言ってはいけない"
+    )
+    issued_probes: int = Field(description="実際に仮想グラフへ投げた探りの本数")
+    skipped_probes: int = Field(description="上限に達して投げなかった探りの本数")
+    no_shapes: bool = Field(
+        default=False,
+        description="SHACL の形が 1 つも無かったか。**「乖離が無い」とは違う**",
+    )
+    version: str | None = Field(default=None, description="照合した承認済み版")
+    mapping_revision: int | None = Field(default=None, description="照合したマッピングの改訂")
+    messages: tuple[str, ...] = Field(
+        default=(), description="乖離と「調べられなかった」を人が読める行にしたもの"
+    )

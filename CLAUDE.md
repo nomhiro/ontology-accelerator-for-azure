@@ -94,7 +94,7 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1343 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1395 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 just gen-api                                   # openapi.json と TS 型を生成(**Web の型検査の前に必要**)
@@ -277,6 +277,13 @@ docker の `-w /work`)。Blob の名前のような `/` を含むが先頭が `/
 **成功した直後にスクリプトが死ぬ** — 失敗の場所が原因を指さない。
 `cygpath -m` で Windows のパスに直すか、捨て先を実ファイルにする
 (`containers/ontop/ontop-check.test.sh` の `DISCARD` がその形)。
+
+**Ontop は `FILTER NOT EXISTS` をサポートしていない。**
+`OntopUnsupportedKGQueryException: The expression Exists ... is not supported yet!`
+で **HTTP 500** になる(実測。5.3.0)。`OPTIONAL { ... } FILTER(!BOUND(?v))` か
+`MINUS` で書く(どちらも動いた。前者のほうが移植性が高い)。
+**フェイクの応答では再現しない** — 探りの文字列を固定するテストは
+`NOT EXISTS` でも全部通っていた。**実物に当てて初めて分かる。**
 
 **`ontop/ontop` の公式イメージには CA 証書が 1 枚も無い**(実測。
 `/etc/ssl/certs` が空)。イメージの中から `wget`/`curl` で HTTPS を取ると
