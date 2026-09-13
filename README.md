@@ -7,7 +7,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 > **オントロジーやナレッジグラフをご存じない方へ**: 専門用語を使わない解説資料を用意しています → **[意味の設計図](https://nomhiro.github.io/ontology-accelerator-for-azure/introduction.html)**
 > 何が嬉しいのか、どういう仕組みなのかを、同じ質問を「表」と「グラフ」で比べる対話図つきで説明しています。客先への説明にもそのまま使えます。
 
-> **名称について**: `Ontology Accelerator for Azure` という表示名は**暫定**です。Microsoft および AWS の商標を製品名として使わない方針のため、公開時に変更する可能性があります。
+> **名称について**: `Ontology Accelerator for Azure` が確定した表示名です（`P4-05`、[ADR-0051](docs/adr/0051-display-name.md)）。Microsoft のガイドラインは「**製品名で始めない**」「`for` は許容される語」「**平文で書く**」を条件に挙げており、この名前はその型に適合しています（Microsoft 自身が挙げている良い例が `Bob's Points Calculator for Xbox` です）。`certified` / `official` / `authentic` / `licensed` は使いません — これらは法的な提携を含意するため、正式な商標ライセンスが無い限り使えません。
 
 ---
 

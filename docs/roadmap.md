@@ -195,9 +195,21 @@ reconcile                      -> 孤児ゼロ
 - **VNet 内で実行されるマイグレーション経路**（[ADR-0011](adr/0011-database-privilege-separation.md) 決定6）。`publicNetworkAccess: Disabled` では運用者のマシンから届かないため、Phase 1 の`postdeploy` 経路が成立しない。Container Apps Job かパイプラインの実行環境を選ぶ
 - 可観測性・負荷試験
 - ライセンス自動スキャンの CI 化
-- GitHub Actions の依存更新（現在 Node.js 20 対象のアクションが強制的に 24 で動いている）
-- awesome-azd 申請（アーキ図画像・タグが必須）
-- 表示名の最終決定（`Ontology Accelerator for Azure` は暫定。商標の論点は [ADR-0008](adr/0008-independent-implementation.md)）
+- ~~GitHub Actions の依存更新（現在 Node.js 20 対象のアクションが強制的に 24 で動いている）~~ →
+  **完了（2026-09-13、`P4-04`）。** 7 つすべてを最新メジャーへ上げた。
+  **各メジャーのリリースノートを読んでから上げた** — 消えた入力があると
+  CI が落ちて初めて気づくため。確認した内容は `ci.yml` の先頭に表で残した
+- awesome-azd 申請（アーキ図画像・タグが必須）。**アクションを SHA で固定するかも
+  ここで決める**（`P4-04` はタグ固定のままにした）
+- ~~表示名の最終決定~~ → **完了（2026-09-13、`P4-05`、[ADR-0051](adr/0051-display-name.md)）。**
+  `Ontology Accelerator for Azure` で**確定**。Microsoft の一次情報は
+  「アプリ名を**製品名で始めない**」「`for` は許容される語」を明文で示しており、
+  **グレーなのは先頭に置く形**（`Azure Ontology Accelerator`）である。
+  機械的な検査を置いた（`test_branding.py`）
+- ~~`docs/superpowers/` を公開範囲に含めるかの決定~~ →
+  **完了（2026-09-13、`P4-06`）。公開しない。** 読み手がエージェントであり、
+  Phase 1 で凍結されていて**現行の決定と矛盾していた**（LGPL のため却下した
+  psycopg3 を使うよう指示していた）。履歴には残してある
 - v0.1.0 リリース
 
 ---

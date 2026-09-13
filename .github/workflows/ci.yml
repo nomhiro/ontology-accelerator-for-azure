@@ -9,6 +9,25 @@ on:
 permissions:
   contents: read
 
+# ## アクションの版(`P4-04`、2026-09-13 に更新)
+#
+# **7 つすべてが Node 24 の実行環境へ移った**(Actions Runner v2.327.1 以降が
+# 必要。GitHub ホストのランナーは自動更新される)。更新前に各メジャーの
+# リリースノートを読み、**この設定に効く破壊的変更が無いことを確かめた**。
+#
+# | アクション | 版 | 確かめたこと |
+# |---|---|---|
+# | `actions/checkout` | v7 | v7 の「fork PR の checkout を止める」は `pull_request_target` / `workflow_run` 限定。このワークフローは `push` / `pull_request` / `workflow_dispatch` のみ |
+# | `actions/setup-node` | v7 | v5 で `packageManager` による自動キャッシュが入り v6 で **npm 限定**になった。ここは `cache: pnpm` を明示しているので影響しない |
+# | `astral-sh/setup-uv` | v10 | v6 で `pyproject-file` / `uv-file` が削除されたが**どちらも使っていない**。v10 の「`enable-cache: auto` ならキャッシュを切る」は `auto` のときだけで、ここは `true` を明示している |
+# | `docker/build-push-action` | v7 | v7 で `DOCKER_BUILD_NO_SUMMARY` 等の env が削除されたが**使っていない**。入力(`context` / `file` / `cache-from` / `cache-to`)は変わっていない |
+# | `docker/setup-buildx-action` | v4 | Node 24 化のみ |
+# | `dorny/paths-filter` | v4 | Node 24 化のみ |
+# | `pnpm/action-setup` | v6 | v6 は pnpm 11 への対応。**`version: 9` は変えない** — `pnpm-lock.yaml` が `lockfileVersion: '9.0'` なので、メジャーを上げると `--frozen-lockfile` が落ちる |
+#
+# **SHA では固定していない。** タグ固定のままなのは意図した状態ではなく、
+# 供給網の固定は `P4-07` で扱う(バックログに追記した)。
+
 # **main では打ち消さない**(P2A-12)。
 #
 # `cancel-in-progress: true` を無条件に置くと、**コードを検証中の run を
@@ -36,8 +55,8 @@ jobs:
       reasoner: ${{ steps.filter.outputs.reasoner }}
       vkg: ${{ steps.filter.outputs.vkg }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -134,9 +153,9 @@ jobs:
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
 
@@ -208,10 +227,10 @@ jobs:
       #
       # **`licenses list --json` の出力の形は 9 と 10 で同じ**ことを実測した
       # (dict: ライセンス → パッケージの配列)。ローカルは 10 である。
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -225,13 +244,13 @@ jobs:
     if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -245,7 +264,7 @@ jobs:
       #
       # **ここで生成することが検出の仕組みそのものである**(ADR-0044 決定2)。
       # API を変えて Web が追従していなければ、次の `build`(`tsc`)が落ちる。
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
 
@@ -265,7 +284,7 @@ jobs:
     if: needs.changes.outputs.infra == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Bicep をビルドして構文を検証する
         run: az bicep build --file infra/main.bicep --stdout > /dev/null
@@ -291,13 +310,13 @@ jobs:
             context: containers/ontop
             dockerfile: containers/ontop/Dockerfile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Windows 上で書いたシェルスクリプトが Linux で動くことを含めて検証する。
       - name: イメージをビルドする
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -321,9 +340,9 @@ jobs:
     if: needs.changes.outputs.reasoner == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # 検査結果の JSON の判定に uv（ontology_core.console）を使う。
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
       - name: 依存関係を入れる
@@ -357,9 +376,9 @@ jobs:
     if: needs.changes.outputs.vkg == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # 応答の JSON の判定に uv（ontology_core.console）を使う。
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
       - name: 依存関係を入れる
@@ -372,7 +391,7 @@ jobs:
     if: needs.changes.outputs.shell == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # **バージョンを固定した docker イメージを使う。** ubuntu-latest に apt で
       # 入る shellcheck は 0.9.0 で、ローカルで使っていた 0.11.0 と指摘が違う
       # （0.9.0 だけが SC2015 を出した）。**ローカルの検査が CI より緩い**状態は、
@@ -405,7 +424,7 @@ jobs:
       # check-platform-admin.py（ontology_core を import する）を本物として
       # 実行する。トークンの解釈こそが検証したい対象なので、そこはスタブに
       # しない（P2A-09）。
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
       - name: 依存関係を入れる

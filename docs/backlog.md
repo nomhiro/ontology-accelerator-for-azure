@@ -444,8 +444,8 @@ $ validate_manifest_json '{"schema":2,"namespace":"x","versions":[]}' ; echo $?
   食い違うため)。`validate.test.sh` に 6 パターン(承認済み+current一致/
   不一致、in-review、superseded×SUPERSEDED_RETAIN=0/2、未掲載版)を追加し、
   修正前は関数が存在せず `not found` で落ちることを確認してから直した。
-  **範囲を絞った**: ブリーフ(`.superpowers/sdd/2026-09-06-validation-and-loader-tests/brief.md`)
-  の指示により、`fetch_manifest`(curl の I/O)と、マニフェストが取得できない・
+  **範囲を絞った**: 着手時のブリーフ(**リポジトリには含めていない内部の作業記録**。
+  `P4-06` と同じ理由で公開範囲の外である)の指示により、`fetch_manifest`(curl の I/O)と、マニフェストが取得できない・
   不正な名前空間を丸ごとスキップする `build_tdb` の制御は今回の対象外にした
   (前者は外部 I/O、後者は `validate_manifest_json` の形式検証は既にテスト
   済みで、スキップの分岐そのものの制御フローテストはまだ無い)。したがって
@@ -2878,11 +2878,12 @@ C    : a-b , a-c , aa , ab
 | `P4-01` | production プロファイル（VNet / Private Endpoint / AKS 昇格ガイド） | 高 | 未着手 |
 | `P4-02` | 可観測性・負荷試験 | 高 | 未着手 |
 | `P4-03` | ライセンス自動スキャンの CI 化 | 中 | **完了**（2026-09-13） |
-| `P4-04` | GitHub Actions の依存更新（Node.js 20 対象のアクション） | 低 | 未着手 |
-| `P4-05` | 表示名の最終決定（商標の論点） | 中 | 未着手 |
-| `P4-06` | `docs/superpowers/` を公開範囲に含めるかの決定 | 低 | 未着手 |
+| `P4-04` | GitHub Actions の依存更新（Node.js 20 対象のアクション） | 低 | **完了**（2026-09-13） |
+| `P4-05` | 表示名の最終決定（商標の論点） | 中 | **完了**（2026-09-13、ADR-0051） |
+| `P4-06` | `docs/superpowers/` を公開範囲に含めるかの決定 | 低 | **完了**（2026-09-13。**公開しない**） |
 | `P4-07` | awesome-azd 申請 | 低 | 未着手 |
 | `P4-08` | v0.1.0 リリース | 低 | 未着手 |
+| `P4-09` | 公開文書の表現をリリース前にもう一度見直す | 低 | 未着手 |
 
 `P4-03` の補足（**完了。2026-09-13**）: 設計は
 [ADR-0049](adr/0049-license-scanning-in-ci.md)（決定 6 件）。
@@ -2924,7 +2925,134 @@ C    : a-b , a-c , aa , ab
 （リポジトリのルートに `package.json` が無い）。**ワークスペースに 2 つ目の
 Node パッケージを足したときに拾えるかは確かめていない。**
 
-`P4-06` の補足: `docs/superpowers/plans/` は 2400 行超の内部実装計画で、controller 向けの指示文を含む。実リソース名は伏せ字にしたが、公開範囲に含めるか自体は未決。
+### `P4-09` 公開文書の表現をリリース前にもう一度見直す
+
+- **状態**: 未着手
+- **優先**: 低
+- **内容**: `P4-05` で置いた機械的な検査（`test_branding.py`）が見ていない
+  ものを、v0.1.0 の前に人が読む
+- **検査していないこと**（ADR-0051 決定1 の条件のうち）:
+  - **「平文で書く」。** ロゴ画像や装飾フォントを入れたかは拡張子では
+    判定できない。**判定できないものを「検査した」と書けない**ので、
+    機械化していない
+  - **`docs/*.html`（`introduction.html` など）。** 検査の対象は
+    README / CONTRIBUTING / SECURITY / CODE_OF_CONDUCT / NOTICE だけである
+  - **画面の文字列（`apps/web`）。** 表示名が UI に出るかを見ていない
+- **出典**: `P4-05` の実装（ADR-0051「帰結」）
+
+---
+
+### `P4-07` の補足: タグ固定のままである
+
+`P4-04` で 7 つのアクションを最新メジャーへ上げたが、**SHA では固定して
+いない**。タグは動かせるので、供給網の観点では弱い。
+
+**awesome-azd の申請（`P4-07`）と v0.1.0（`P4-08`）の前に決める。**
+固定すると更新のたびに SHA を引き直す手間が増えるので、Dependabot の
+設定と合わせて判断する（現時点で Dependabot は設定していない）。
+
+---
+
+### `P4-04` GitHub Actions の依存更新（**完了。2026-09-13**）
+
+**7 つすべてが Node.js 20 を対象にしていた。** CI のログが毎回
+「Node.js 20 is deprecated. The following actions target Node.js 20 but are
+being forced to run on Node.js 24」と警告していた（実測。2026-09-13 の run）。
+**強制的に 24 で動かされていたので壊れてはいなかったが、警告が常に出る状態は
+「新しい警告に気づけない」状態である。**
+
+| アクション | 前 | 後 | 破壊的変更の確認 |
+|---|---|---|---|
+| `actions/checkout` | v4 | **v7** | v7 の「fork PR の checkout を止める」は `pull_request_target` / `workflow_run` 限定。このワークフローは使っていない |
+| `actions/setup-node` | v4 | **v7** | v5 で `packageManager` による自動キャッシュが入り v6 で **npm 限定**になった。ここは `cache: pnpm` を明示しているので影響しない |
+| `astral-sh/setup-uv` | v5 | **v10** | v6 で `pyproject-file` / `uv-file` が削除されたが**どちらも使っていない**。v10 の「`enable-cache: auto` ならキャッシュを切る」は `auto` のときだけで、ここは `true` を明示 |
+| `docker/build-push-action` | v6 | **v7** | v7 で `DOCKER_BUILD_NO_SUMMARY` 等の env が削除されたが**使っていない**。入力は変わっていない |
+| `docker/setup-buildx-action` | v3 | **v4** | Node 24 化のみ |
+| `dorny/paths-filter` | v3 | **v4** | Node 24 化のみ |
+| `pnpm/action-setup` | v4 | **v6** | v6 は pnpm 11 への対応。**`version: 9` は変えない** — `pnpm-lock.yaml` が `lockfileVersion: '9.0'` なので、上げると `--frozen-lockfile` が落ちる |
+
+**各メジャーのリリースノートを読んでから上げた。** 「最新にする」だけの
+更新だと、入力が消えたときに**CI が落ちて初めて気づく**。確認した内容は
+`ci.yml` の先頭にも表で残した（次に上げる人が同じ調査を繰り返さないため）。
+
+**SHA では固定していない。** タグ固定のままなのは意図した状態ではなく、
+供給網の固定は `P4-07` の範囲で扱う（下記に追記した）。
+
+---
+
+### `P4-05` 表示名の最終決定（**完了。2026-09-13**）
+
+設計は [ADR-0051](adr/0051-display-name.md)（決定 4 件）。
+**表示名は `Ontology Accelerator for Azure` で確定した。**
+
+[ADR-0008](adr/0008-independent-implementation.md) は「OSS 名の先頭に
+"Azure" を置くのは Microsoft の商標ガイドライン上グレー」として判断を
+先送りしていた。**一次情報を読んだら、先送りする理由が無かった。**
+
+Microsoft は「自分のアプリ名に Microsoft の製品名を入れてよいか」に
+明文で答えている（[Trademark and copyright protection](https://learn.microsoft.com/windows/apps/publish/partner-center/trademark-and-copyright-protection) の Q2）。
+
+> The name of your app **should not begin with** the Microsoft product or
+> service name at issue. For example, "Xbox Points Calculator" should not be
+> used as an app name. **"Bob's Points Calculator for Xbox" is a better name.**
+>
+> "works with," "for," "designed for," and "optimized for" are all
+> **acceptable** terms. "certified," "official," "authentic," and "licensed"
+> **must not be used** absent a formal trademark license agreement.
+
+**グレーなのは先頭に置く形であって、`... for Azure` は Microsoft 自身が
+推奨している型である。** 現行の表示名は 4 条件すべてに適合していた。
+
+**先送りしていたのは調査であって、判断そのものは難しくなかった** —
+これは他の「未決」項目にも当てはまりうる。
+
+**機械的な検査を置いた**（`packages/core/tests/test_branding.py`、7 件）。
+表示名が商標で始まらないこと、README / devcontainer / `azure.yaml` の
+名前が食い違わないこと、禁止語が公開文書に現れないこと、非提携の明記が
+README と NOTICE の両方にあることを固定する。**「Microsoft 公式」を
+README に注入すると落ちることを実測で確かめた。**
+
+**検査はコードスパンの中を見ない。** README は禁止語を挙げて説明して
+いるので、素朴に検索すると**検査が自分の説明文に反応して落ちる**
+（実際に落ちた。このリポジトリで 3 度目の形である）。
+
+**「平文で書く」は検査していない。** ロゴ画像を入れたかは拡張子では
+判定できず、**判定できないものを「検査した」と書けない**。
+
+---
+
+### `P4-06` `docs/superpowers/` を公開範囲に含めるかの決定（**完了。2026-09-13**）
+
+**含めない。** `docs/superpowers/plans/2026-08-28-phase1-core.md`（2,512 行）を
+追跡から外し、`.gitignore` に `docs/superpowers/` を足した。
+**ファイルはローカルに残り、履歴にも残っている**（`git log -- docs/superpowers/`）。
+
+**そもそも同種の成果物は既に除外されていた。** `.superpowers/sdd/.gitignore`
+が `*` で内部の作業記録を全部落としている。`docs/superpowers/` は、計画を
+書いたスキルの既定の出力先がそこだったために**1 つだけ取り残されていた**。
+つまり新しい判断ではなく、**既にある判断の抜けを埋めた**。
+
+**公開を止めた理由は 3 つ。**
+
+1. **読み手がエージェントである。** 冒頭が
+   `REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development` で
+   始まる。`docs/` の読み手は製品の利用者であり、**持っていない道具への
+   指示**が混ざる
+2. **Phase 1 で凍結されており、現行の決定と矛盾する。** いちばん悪いのは
+   `"psycopg[binary]>=3.2"` と `postgresql+psycopg://` を指示している点で、
+   **psycopg3 は LGPL-3.0 のため採用しないと決めてある**
+   （`docs/third-party-licenses.md`）。**公開した文書が自分の方針違反を
+   指示している**状態だった。帰属行も古い（`Claude Fable 5`）
+3. **正本は他にある。** 決定は ADR、残っている作業は `docs/backlog.md`。
+   凍結された計画はどちらでもなく、**維持されない第 3 の記述**になる
+
+**削除ではなく追跡の解除にした理由**: 履歴は残したい（Phase 1 をどう
+組み立てたかの記録には価値がある）が、**`docs/` に置いたままにすると
+「維持されている文書」として読まれる**。
+
+**副産物**: `docs/backlog.md` が `.superpowers/sdd/.../brief.md` という
+**リポジトリに含まれないパスを参照していた**のを直した（読み手が辿れない
+リンクだった）。
 
 ---
 

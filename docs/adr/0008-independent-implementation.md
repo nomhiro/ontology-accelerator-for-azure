@@ -129,9 +129,9 @@ AWS 版の技術構成は次の通りである。
 
 - **"AWS" / "Amazon" をプロジェクト名・ブランディングに使えない。** 「AWS Context Ontology Accelerator の Azure 版」のような名乗り方は、Amazon の商標を製品名として使うことになるため避ける
 - **README に非提携である旨を明記する必要がある。** 「本プロジェクトは Amazon Web Services および Microsoft とは提携・承認・スポンサー関係にありません。AWS, Amazon, Azure, Microsoft は各社の商標です。」を掲載する
-- **"Azure" も同じ論点を持つ**(R8)。OSS 名の先頭に "Azure" を置くのは Microsoft の商標ガイドライン上グレーである。現在の表示名 `Ontology Accelerator for Azure` は**暫定**であり、公開時に変更する可能性がある。ディレクトリ名(`azure-ontology-accelerator`)は当面維持するが、これも再考の余地がある
+- **"Azure" も同じ論点を持つ**(R8)。**この点は `P4-05` で決着した**([ADR-0051](0051-display-name.md))。Microsoft の一次情報は「アプリ名を**製品名で始めない**」「`for` は許容される語」を明文で示しており、**グレーなのは先頭に置く形**(`Azure Ontology Accelerator`)であって `... for Azure` は Microsoft 自身が推奨している型である。表示名 `Ontology Accelerator for Azure` は**確定**とした。ローカルの作業ディレクトリ名(`azure-ontology-accelerator`)は**配布物にも公開物にも現れない**ので追わない(`git clone` は `ontology-accelerator-for-azure` を作る)
 
-つまり、**参照元と参照先の両社の商標を、製品名として使えない**という制約下で名前を決める必要がある。これは本プロジェクト固有の面倒さであり、解決を先送りしている論点である。
+つまり、**参照元と参照先の両社の商標を、製品名として使えない**という制約下で名前を決める必要がある。これは本プロジェクト固有の面倒さである。**`P4-05` で一次情報を読んで解いた**([ADR-0051](0051-display-name.md)) — 先送りしていたのは調査であって、判断そのものは難しくなかった。
 
 #### 3. 実装量が増える
 

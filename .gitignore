@@ -63,3 +63,23 @@ containers/fuseki/staging/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# エージェント向けの内部実装計画(`P4-06`)。
+#
+# **公開しない。** `.superpowers/sdd/.gitignore` が `*` で内部成果物を
+# 除外しているのと同じ判断である。`docs/superpowers/` は、計画を書いた
+# スキルの既定の出力先がここだったために**1 つだけ取り残されていた**。
+#
+# 公開を止めた理由は 3 つ。
+#
+# 1. **読み手がエージェントである**("REQUIRED SUB-SKILL: Use
+#    superpowers:subagent-driven-development" で始まる)。`docs/` の
+#    読み手は製品の利用者であり、持っていない道具への指示が混ざる
+# 2. **Phase 1 で凍結されており、現行の決定と矛盾する。** 例:
+#    `psycopg[binary]>=3.2` と `postgresql+psycopg://` を指示しているが、
+#    **psycopg3 は LGPL-3.0 のため採用しないと決めてある**
+#    (docs/third-party-licenses.md)。公開した文書が方針違反を指示している
+# 3. **正本は他にある。** 決定は ADR、残りの作業は docs/backlog.md が持つ
+#
+# 履歴には残っている(`git log -- docs/superpowers/`)。
+docs/superpowers/
