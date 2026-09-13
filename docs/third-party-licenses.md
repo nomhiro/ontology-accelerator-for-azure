@@ -26,6 +26,7 @@
 | FastAPI | MIT | https://github.com/fastapi/fastapi | ✓ 利用中 |
 | Fluent UI | MIT | https://github.com/microsoft/fluentui | ✓ 利用中 |
 | MCP Python SDK | MIT | https://github.com/modelcontextprotocol/python-sdk | ✓ 利用中 |
+| @azure/msal-browser | MIT | https://github.com/AzureAD/microsoft-authentication-library-for-js | ○ Web の認証(認可コードフロー + PKCE)。**2026-09-13 に追加**(`P2A-20`、[ADR-0045](adr/0045-web-auth.md))。**認証を設定したときだけ動的に読み込む**(約 256 kB) |
 | Cytoscape.js | MIT | https://github.com/cytoscape/cytoscape.js | ○ グラフ可視化。**2026-09-13 に依存関係へ追加した**(`P2A-04`、[ADR-0044](adr/0044-review-ui.md) 決定5)。`apps/web` の依存で、**グラフのタブを開いたときだけ動的に読み込む**(約 445 kB) |
 | SQLAlchemy | MIT | https://github.com/sqlalchemy/sqlalchemy | ✓ 正本(PostgreSQL)へのアクセス |
 | asyncpg | Apache-2.0 | https://github.com/MagicStack/asyncpg | ✓ 正本(PostgreSQL)への async アクセス。psycopg3 は LGPL-3.0 のため採用しない |

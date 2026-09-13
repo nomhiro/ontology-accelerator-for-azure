@@ -94,11 +94,11 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
-uv run pytest                                  # 1236 件(件数は増える。減っていたら何かを壊している)
+uv run pytest                                  # 1261 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
 just gen-api                                   # openapi.json と TS 型を生成(**Web の型検査の前に必要**)
-pnpm --filter @ontology-accelerator/web build   # 型検査 + Web のテスト 58 件 + ビルド
+pnpm --filter @ontology-accelerator/web build   # 型検査 + Web のテスト 89 件 + ビルド
 sh containers/fuseki/lib/validate.test.sh      # シェル側の検証関数
 sh containers/fuseki/load-snapshot.test.sh     # ローダの制御フロー
 sh scripts/lint-shell.sh                       # シェルの移植性(素の python 等)

@@ -94,6 +94,7 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 - MCP `/mcp` が `tools/list` を返す(`list_namespaces` / `sparql_query` / `version_decisions` / `term_owner` / `term_mappings`)
 - **MCP のツール呼び出しが実際の Entra トークンで Core API まで通る(ADR-0012)。** トークン無し・不正なトークンは MCP 側の検証で拒否され、理由がエージェントに返る。検証手順は `scripts/verify-mcp-auth.sh`
 - API / MCP の scale-to-zero が機能する(初回アクセスはコールドスタート)
+- **Web 画面が Entra ID でサインインできる**(`P2A-20`、[ADR-0045](docs/adr/0045-web-auth.md))。認可コードフロー + PKCE。`http://localhost:5173` を `spa` 型で登録することを実測で確認しました。**対話的な往復は未検証**(資格情報の入力を伴うため)
 - Fluent UI の Web 画面でレビュー・承認とグラフ可視化ができる(`P2A-03` / `P2A-04`、[ADR-0044](docs/adr/0044-review-ui.md))。
   **「差分を計算できなかった」ことを「変更が無い」と同じ見た目にしません** — これがこの画面の設計の中心です
   (ADR-0016 決定5 が区別したものを、画面が最後に潰さないため)。LLM が生成した候補であることは最上部に出し、
@@ -595,6 +596,37 @@ curl -X POST "$API/namespaces/retail-core/versions/0.1.0/submit" \
 **モデルの出自が監査に残ります。** モデル名・デプロイ名・API バージョン・試行回数が `audit_events.reason` に入ります(追記専用なので消えません)。**再現性は主張しません** — `temperature` を 0 にしても同じ出力になる保証はモデル側にないので、「再現できる」とは書かず**何が作ったか**を書きます。
 
 **既定のモデルは実測して決めました**(2026-09-12、Japan East)。`gpt-4.1`(`2025-04-14`)/ `GlobalStandard` / 容量 10。`OpenAI.GlobalStandard.gpt4.1` の割り当ては **9,000(使用 0)** だったので、既定は約 0.1% です。モデル・版・SKU・容量は `azd env set MODEL_NAME ...` などで変えられ、**リージョンは `MODEL_LOCATION` でアプリと分けられます**(Japan East で使えるモデルは限られます)。
+
+#### Web 画面にサインインする
+
+**Microsoft Entra ID の認可コードフロー(PKCE)でサインインします**([ADR-0045](docs/adr/0045-web-auth.md)、`P2A-20`)。
+
+```bash
+# 1. SPA のリダイレクト URI をアプリ登録に登録する(**Graph への PATCH だけ。課金なし**)
+uv run python scripts/setup-app-role.py
+#    → http://localhost:5173 が `spa` 型で登録される
+
+# 2. Web に appId を渡す
+cp apps/web/.env.example apps/web/.env
+#    VITE_ENTRA_CLIENT_ID=<アプリ登録の appId> を設定する
+
+# 3. 画面を開いて「サインイン」を押す
+just dev-web
+```
+
+**`VITE_ENTRA_CLIENT_ID` が空なら認証の仕組みを一切作りません。** `AUTH_MODE=disabled` の Core API に対してはそのままで動きます。**半端に初期化しません** — 設定が無いのに MSAL を作ると、押したときに `AADSTS900971` のような**設定の誤りに見えないエラー**になります。
+
+**`spa` 型で登録する必要があります。** `web` 型のまま認可コードフローを使うと **CORS で失敗します**([Entra の文書](https://learn.microsoft.com/entra/identity-platform/v2-oauth2-auth-code-flow#redirect-uris-for-single-page-apps-spas))。`setup-app-role.py` が `spa` 型で登録します。
+
+**localhost はポートが照合で無視されます。** `http://localhost:5173` を登録すれば `vite preview`(4173)でも通ります。**ポートだけ違う URI を足してはいけません** — サーバが任意に 1 つを選び、どの登録の型が使われるか不定になります(Entra の文書が明示的に禁じています)。スクリプトは 2 つ目の localhost を拒否します。
+
+**トークンは `sessionStorage` に置きます。** `localStorage` は使いません — **XSS で持ち出されたトークンが再起動後も有効になる**ためです。`sessionStorage` なら被害はそのタブの寿命に限られます。メモリだけにできないのは、**リダイレクト方式がページの遷移をまたぐ**ためです(PKCE の verifier が消えるとフローが成立しません)。
+
+**サインインするとページが離れます。** レビュー画面で理由を書いている途中にトークンが切れると、書きかけが失われます。`acquireTokenSilent` を先に試すので通常は起きません。
+
+**トークンを貼り付ける口はありません。** 以前は貼り付けでしたが(ADR-0044 決定9)、**その判断の理由が誤っていた**ので撤回しました — localhost の登録にデプロイ窓は要りませんでした。2 つの経路を残すと、MSAL が動かないときに貼り付けへ逃げる運用が生まれ、**「サインインが壊れている」ことに誰も気づきません**。
+
+> **対話的なサインインの往復は検証していません**(ADR-0045 決定10)。確かめたのは、アプリ登録が `spa` 型で登録されること(Graph に PATCH して読み戻した)、設定の組み立て・スコープ・エラーの訳し分け(テスト 31 件)、`.default` と `user_impersonation` が同じトークンを生むこと(実測)、型検査とビルドまでです。**デプロイ済みオリジンでの動作は `P2A-21`** です。
 
 #### SHACL 検証は承認を止めます
 

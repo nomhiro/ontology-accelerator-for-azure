@@ -61,6 +61,7 @@ from typing import Any
 
 from ontology_core.auth.app_roles import merge_app_role
 from ontology_core.auth.optional_claims import merge_optional_claim
+from ontology_core.auth.spa_redirect import SpaRedirectError, merge_spa_redirect_uri
 from ontology_core.console import decode_output, say, warn
 from ontology_core.models import PlatformRole
 
@@ -80,6 +81,13 @@ _CLAIM_TARGET = "accessToken"
 #: v2.0 のアクセストークンに `idtyp: "user"` が乗る — 文書は v1.0 固有の節に
 #: 載せているが、実際には v2.0 でも効く。**この組み合わせを崩さないこと。**
 _CLAIM_ADDITIONAL = ("include_user_token",)
+
+#: Web 画面(SPA)の既定のリダイレクト URI(ADR-0045 決定4、`P2A-20`)。
+#:
+#: **`vite dev` のポートである。** localhost は**ポートが照合で無視される**ので、
+#: これ 1 つで `vite preview`(4173)でも通る。**ポートだけ違う URI を足しては
+#: いけない** — Entra の文書が明示的に禁じている(サーバが任意に 1 つ選ぶ)。
+_DEFAULT_SPA_REDIRECT_URI = "http://localhost:5173"
 
 
 class AzError(RuntimeError):
@@ -257,6 +265,51 @@ def _define_role(app_id: str, *, dry_run: bool) -> str:
     return merged.role_id
 
 
+def _ensure_spa_redirect(app_id: str, uri: str, *, dry_run: bool) -> None:
+    """SPA のリダイレクト URI を登録する(ADR-0045 決定3、`P2A-20`)。
+
+    **`spa` 型で登録する。** `web` 型のまま認可コードフローを使うと
+    **CORS で失敗する**(Entra の文書)。`spa` 型が PKCE と CORS を有効にする。
+
+    **完全な配列を送る。** `spa` は `appRoles` と同じ複合プロパティで、
+    部分更新すると既存の URI が丸ごと消える(`P1-09` の罠1)。
+
+    **デプロイ済みオリジンは `--spa-redirect-uri` で渡す。** ホスト名は
+    provision 後にしか分からないので、既定は localhost だけである。
+    """
+    app = _az_json("ad", "app", "show", "--id", app_id)
+    if not isinstance(app, dict):
+        raise AzError(f"アプリ登録 '{app_id}' を取得できません")
+    object_id = str(app.get("id") or "")
+    if not object_id:
+        raise AzError("アプリ登録のオブジェクト ID が取得できません")
+
+    try:
+        merged = merge_spa_redirect_uri(app.get("spa"), uri=uri)
+    except SpaRedirectError as exc:
+        # **理由を捨てない。** 「localhost が 2 つ」と「http が localhost 以外」は
+        # 対処が違う。
+        raise AzError(f"リダイレクト URI を登録できません: {exc}") from exc
+
+    if not merged.changed:
+        say(f"setup-app-role: SPA のリダイレクト URI {uri} は既に登録されています")
+        return
+
+    say(
+        f"setup-app-role: SPA のリダイレクト URI {uri} を登録します。"
+        f"同時に送る既存の URI: {[u for u in merged.redirect_uris if u != uri] or 'なし'}"
+    )
+    if dry_run:
+        say("setup-app-role: --dry-run のため送信しません")
+        return
+    _graph_send(
+        "PATCH",
+        f"{_GRAPH}/applications/{object_id}",
+        {"spa": {"redirectUris": merged.redirect_uris}},
+    )
+    say("setup-app-role: 登録しました")
+
+
 def _ensure_optional_claim(app_id: str, *, dry_run: bool) -> None:
     """`idtyp` を任意クレームとして設定する(ADR-0035 決定7)。
 
@@ -341,6 +394,19 @@ def main() -> int:
         help="何をするかだけ表示し、Entra を変更しない",
     )
     parser.add_argument(
+        "--spa-redirect-uri",
+        default=_DEFAULT_SPA_REDIRECT_URI,
+        help="Web 画面(SPA)のリダイレクト URI。既定は "
+        f"{_DEFAULT_SPA_REDIRECT_URI}(ローカル開発)。"
+        "デプロイ済みオリジンを登録するときはここに渡す(ADR-0045 決定4)",
+    )
+    parser.add_argument(
+        "--skip-spa-redirect",
+        action="store_true",
+        help="SPA のリダイレクト URI の登録を飛ばす。"
+        "飛ばすと Web 画面からサインインできない(ADR-0045 決定9)",
+    )
+    parser.add_argument(
         "--skip-optional-claims",
         action="store_true",
         help=f"'{_CLAIM_NAME}' 任意クレームの設定を飛ばす(ADR-0035 決定7)。"
@@ -360,6 +426,14 @@ def main() -> int:
             )
         else:
             _ensure_optional_claim(app_id, dry_run=args.dry_run)
+        if args.skip_spa_redirect:
+            warn(
+                "setup-app-role: --skip-spa-redirect のため SPA のリダイレクト URI を"
+                "登録しません。**Web 画面からサインインできません**"
+                "(ADR-0045 決定9)"
+            )
+        else:
+            _ensure_spa_redirect(app_id, args.spa_redirect_uri, dry_run=args.dry_run)
         sp_object_id = _ensure_service_principal(app_id, dry_run=args.dry_run)
         if args.principal_id:
             principal_id, principal_type = args.principal_id, "指定された主体"

@@ -5,19 +5,24 @@
  * すべて純粋関数にあり、テストされている(ADR-0044 決定6)。ここは
  * **取得と受け渡しだけ**を行う。
  *
- * **トークンはメモリにしか持たない**(ADR-0044 決定9)。`localStorage` に
- * 書かない — 再読み込みで消えるのは不便だが、持ち出される不便さのほうが高い。
- * `AUTH_MODE=disabled`(ローカル開発)ではトークンが要らない。
+ * **認証は MSAL の認可コードフロー(PKCE)である**([ADR-0045](../../../docs/adr/0045-web-auth.md)、
+ * `P2A-20`)。ADR-0044 決定9 の「トークンを貼る」は**撤回した** — localhost の
+ * リダイレクト URI の登録にデプロイ窓は要らなかった。
+ *
+ * **貼り付けの口は無い**(ADR-0045 決定8)。2 つの経路を残すと、MSAL が
+ * 動かないときに貼り付けへ逃げる運用が生まれ、**「サインインが壊れている」
+ * ことに誰も気づかない**。
+ *
+ * **`VITE_ENTRA_CLIENT_ID` が空なら認証の仕組みを一切作らない**(決定9)。
+ * `AUTH_MODE=disabled`(ローカル開発)でトークンを送らずに動く。
  */
 
 import {
   Body1,
-  Button,
   Card,
   CardHeader,
   Dropdown,
   Field,
-  Input,
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
@@ -34,6 +39,14 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react
 
 import { ApiClient, ApiError } from "./api/client";
 import type { components } from "./api/schema";
+import { SignInBar } from "./auth/SignInBar";
+import { buildAuthConfig } from "./auth/config";
+import {
+  type AccountLike,
+  type TokenOutcome,
+  acquireToken,
+  resolveAccount,
+} from "./auth/session";
 
 import {
   DRAFT_NOT_PROJECTED,
@@ -58,6 +71,33 @@ const GraphView = lazy(async () => ({
 }));
 
 const API_BASE_URL = import.meta.env["VITE_API_BASE_URL"] ?? "/api";
+
+/**
+ * MSAL の設定。**`null` なら認証を使わない**(ADR-0045 決定9)。
+ *
+ * モジュールの読み込み時に 1 度だけ組み立てる — 設定は実行中に変わらない。
+ */
+const AUTH_CONFIG = buildAuthConfig(
+  import.meta.env as Record<string, string | undefined>,
+  globalThis.location?.origin ?? "http://localhost:5173",
+);
+
+/**
+ * MSAL のインスタンスを作る。**設定が無ければ作らない。**
+ *
+ * `@azure/msal-browser` は約 200 kB あるので**動的に読み込む**
+ * (認証を使わないローカル開発がその分を払う理由が無い)。
+ */
+async function createMsal() {
+  if (AUTH_CONFIG === null) {
+    return null;
+  }
+  const { PublicClientApplication } = await import("@azure/msal-browser");
+  return new PublicClientApplication({
+    auth: AUTH_CONFIG.auth,
+    cache: AUTH_CONFIG.cache,
+  });
+}
 
 const useStyles = makeStyles({
   page: {
@@ -102,7 +142,10 @@ const GRAPH_QUERY = "SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 2000";
 export function App() {
   const styles = useStyles();
   const [token, setToken] = useState<string | null>(null);
-  const [tokenDraft, setTokenDraft] = useState("");
+  const [account, setAccount] = useState<AccountLike | null>(null);
+  const [outcome, setOutcome] = useState<TokenOutcome | null>(null);
+  // `createMsal` の結果。**設定が無ければ `null` のまま。**
+  const [msal, setMsal] = useState<Awaited<ReturnType<typeof createMsal>>>(null);
   const [namespaces, setNamespaces] = useState<Namespace[]>([]);
   const [selectedNamespace, setSelectedNamespace] = useState<string | null>(null);
   const [versions, setVersions] = useState<Version[]>([]);
@@ -136,6 +179,55 @@ export function App() {
     },
     [],
   );
+
+  // **サインインの状態を先に解決する**(ADR-0045)。
+  // `handleRedirectPromise` を呼ばないと、戻ってきた認可コードが処理されず
+  // アカウントが現れない。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const instance = await createMsal();
+      if (cancelled || instance === null) {
+        return;
+      }
+      setMsal(instance);
+      try {
+        const resolved = await resolveAccount(instance);
+        if (cancelled) {
+          return;
+        }
+        setAccount(resolved);
+        const result = await acquireToken(instance, resolved, AUTH_CONFIG?.scopes ?? []);
+        if (cancelled) {
+          return;
+        }
+        setOutcome(result);
+        setToken(result.kind === "token" ? result.accessToken : null);
+      } catch (cause: unknown) {
+        if (!cancelled) {
+          // **黙って無視しない。** 理由を画面へ運ぶ。
+          setOutcome({ kind: "failed", message: String(cause) });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const signIn = useCallback(() => {
+    if (msal === null || AUTH_CONFIG === null) {
+      return;
+    }
+    void msal.loginRedirect({ scopes: [...AUTH_CONFIG.scopes] });
+  }, [msal]);
+
+  const signOut = useCallback(() => {
+    if (msal === null) {
+      return;
+    }
+    void msal.logoutRedirect({ account });
+  }, [msal, account]);
 
   useEffect(() => {
     void load(async () => {
@@ -210,26 +302,14 @@ export function App() {
     <main className={styles.page}>
       <Title1>Ontology Accelerator for Azure</Title1>
 
-      <Card>
-        <CardHeader header={<Subtitle1>接続</Subtitle1>} />
-        <div className={styles.row}>
-          <Field
-            label="アクセストークン"
-            hint="AUTH_MODE=disabled のローカル開発では空のままでよい。**メモリにしか保持しません**(再読み込みで消えます)。"
-          >
-            <Input
-              type="password"
-              value={tokenDraft}
-              onChange={(_, data) => setTokenDraft(data.value)}
-              placeholder="az account get-access-token ... の accessToken"
-            />
-          </Field>
-          <Button onClick={() => setToken(tokenDraft.trim() || null)}>適用</Button>
-          <Body1 className={styles.muted}>
-            {client.hasToken ? "トークンを送っています" : "トークンを送っていません"}
-          </Body1>
-        </div>
-      </Card>
+      <SignInBar
+        configured={AUTH_CONFIG !== null}
+        account={account}
+        outcome={outcome}
+        onSignIn={signIn}
+        onSignOut={signOut}
+        busy={busy}
+      />
 
       {error !== null && (
         <MessageBar intent="error">
