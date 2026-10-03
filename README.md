@@ -11,9 +11,22 @@ AI エージェントに社内の用語・関係・ポリシーを「推測さ�
 
 ---
 
-## 現在のステータス: Phase 1(MVP「器が動く」)
+## 現在のステータス: Phase 3進行中・本番ハードニング前
 
-製品として使える状態ではありません。何が動作確認済みで、何が未実装なのかを以下に正確に示します。
+Phase 0〜2の実装は完了し、Phase 3のVKG・用語検索・乖離検出・VKGアクセスログも
+実装済みです。ただしAzure実機・実ブラウザの残検証があり、本番品質を保証する
+リリースはまだありません。
+
+**開発は [GitHub Issues](https://github.com/nomhiro/ontology-accelerator-for-azure/issues)
+から進めます。** 現在の状態はIssue、ID・出典・判断履歴は
+[バックログ索引](docs/backlog.md)、Phaseの方針は [ロードマップ](docs/roadmap.md)。
+手順は [CONTRIBUTING](CONTRIBUTING.md)、Claude/Copilot共通指示は
+[AGENTS.md](AGENTS.md) を参照してください。
+必須・任意・残検証・ブロックを区別し、任意課題をリリース必須条件にしません。
+
+以下の詳細には過去の説明が残っています。現行との照合・HTML/UIも含む公開文書の
+見直しは [`P4-09`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/13) で追跡し、
+未検証を検証済みとは扱いません。
 
 ### 動作を確認済み(ローカル)
 

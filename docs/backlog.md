@@ -1,22 +1,186 @@
 # バックログ
 
-**このファイルはタスクの状態を持つ単一の正本である。** 方針は [`docs/roadmap.md`](roadmap.md)、設計判断は [`docs/adr/`](adr/) にある。
+**タスクの現在の状態は [GitHub Issues](https://github.com/nomhiro/ontology-accelerator-for-azure/issues) が正本である。**
+このファイルはID・出典・判断履歴・Issueリンクの索引。
+方針は [`docs/roadmap.md`](roadmap.md)、設計判断は [`docs/adr/`](adr/)、
+開発手順は [`CONTRIBUTING.md`](../CONTRIBUTING.md) にある（[ADR-0052](adr/0052-issue-based-development.md)）。
 
-最終更新: 2026-09-13（**Phase 3 を進めている**。`P3-01`（Ontop VKG）/ `P3-05`（乖離検出）/ `P3-08`（仮想グラフのアクセスログ）が完了し、`P4-03`（ライセンス自動スキャン）も入れた。残るデプロイ窓は `P2A-21` と `P3-07` である）
+Issue索引への移行: 2026-10-04（`P4-10`）。以下の旧状態・実測の履歴は2026-09-13までの記録であり、
+**以後の進捗を二重記録しない**。未検証・未決・任意課題もIssueへ対応させている。
 
 ## 使い方
 
 - **ID は変えない。** コミットメッセージや ADR から参照するため
-- **状態を変えたら同じコミットでこのファイルを更新する。** これが守られないとセッションをまたいだ引き継ぎが壊れる
+- **ID・出典・判断履歴・Issueリンクが変わったら同じコミットで索引を更新する。** 着手・ブロック・再開・完了の状態はIssueへ記録し、ここへ二重記録しない
 - 各タスクの **出典** は「なぜこのタスクが存在するか」を示す。後から来た人が背景を辿れるようにするため
-- 完了したタスクは削除せず `完了` にして残す。判断の履歴が消えると同じ議論を繰り返す
+- 過去の完了記録は削除しない。新しい完了はIssue/PRで記録する。部分対応で閉じない
+- 新しい発見はまずIssue化し、ID・出典・リンクを索引に追加する。脆弱性は公開せず `SECURITY.md` に従う
 
-状態: `未着手` / `進行中` / `完了` / `見送り`
-優先: `Critical` / `高` / `中` / `低`
+現在の状態: Issueのopen/closedと `status:in-progress` / `status:blocked`、コメントを確認する。
+見送りは根拠を残して `wontfix`、重複は既存Issueへリンクして `duplicate`。
+範囲: `scope:required` / `scope:optional`。任意・条件付き課題を必須マイルストーンに入れない。
+現在の優先: `priority:high` / `priority:medium` / `priority:low`。
+旧表の `Critical` / `高` / `中` / `低` は履歴の表記である。
+
+---
+
+## Issue索引
+
+[着手可能な必須・高優先度](https://github.com/nomhiro/ontology-accelerator-for-azure/issues?q=is%3Aissue+is%3Aopen+label%3Ascope%3Arequired+label%3Apriority%3Ahigh+-label%3Astatus%3Ablocked+-label%3Astatus%3Ain-progress)
+ / [ブロック中](https://github.com/nomhiro/ontology-accelerator-for-azure/issues?q=is%3Aissue+is%3Aopen+label%3Astatus%3Ablocked)
+ / [任意・条件付き](https://github.com/nomhiro/ontology-accelerator-for-azure/issues?q=is%3Aissue+label%3Ascope%3Aoptional)
+ / [マイルストーン](https://github.com/nomhiro/ontology-accelerator-for-azure/milestones)。
+
+追跡用: [[TRACK-01] 残作業のIssue索引（必須・任意・残検証）](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/52)。
+**状態はリンク先のIssueで確認する。** 下の必須/任意は範囲の分類であって状態ではない。
+必須27件・任意/条件付き24件（移行作業1件を含む）。任意課題は必須マイルストーンに含めない。
+設計判断Issueの採用後に実装を残す場合は、独立Issueと新しい索引行を追加する。
+
+| ID | 課題 | Issue | 範囲 | 出典 |
+|---|---|---|---|---|
+| `P2A-21` | デプロイ済みオリジンでWebのサインインを検証する | [#3](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/3) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P2A-21`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/3)、[ADR-0045](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0045-web-auth.md)。localhost登録の確認はデプロイ済みWebの往復を証明しない。 |
+| `P3-03` | Metric Serviceの責務と業務メトリクスを定義する | [#4](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/4) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P3-03`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/4)、[`docs/roadmap.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/roadmap.md)、[ADR-0020](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0020-health-metrics.md)。既存health指標との違いが未確定。 |
+| `P3-04` | Context Managerの宛先選択とオーケストレーションを実装する | [#1](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/1) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P3-04`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/1)、[`docs/roadmap.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/roadmap.md)、[ADR-0046](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0046-virtual-knowledge-graph.md) / [ADR-0050](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0050-vector-search-in-postgres.md)。語彙と実データは別の宛先である。 |
+| `P3-06` | 任意のPurviewコネクタの採用範囲を決める | [#5](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/5) | 任意/条件付き | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P3-06`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/5)、[ADR-0007](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0007-no-purview-dependency.md)。Purviewを必須依存にしない。 |
+| `P3-07` | OntopをContainer Appsへ展開する | [#2](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/2) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) P3-07の事前実測、[ADR-0046](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0046-virtual-knowledge-graph.md)。ローカルVKGは完了、ACA配布は未実装。 |
+| `P3-09` | 定義と実データの乖離を定期実行して通知する | [#6](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/6) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P3-09`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/6)、[`P3-05`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L2596)、[ADR-0047](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0047-definition-data-divergence.md)。報告APIは実装済み、定期実行は無い。 |
+| `P3-10` | 用語検索の規模と索引の効果を実測する | [#7](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/7) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P3-10`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/7)、[ADR-0050](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0050-vector-search-in-postgres.md)。212行ではSeq Scanで、索引の存在しか確認できていない。 |
+| `P3-11` | 承認済み版と埋め込みの更新漏れを検出する | [#10](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/10) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P3-11`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/10)、[ADR-0050](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0050-vector-search-in-postgres.md)決定4。古いbuilt_from_versionでもvector_availableが真になる。 |
+| `P3-13` | Cognitive Services作成の外部ブロックを再確認する | [#12](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/12) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P3-13`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/12)。2026-09-13、Azure preflightの715-123420で作成が拒否された。 |
+| `P4-01` | productionプロファイルと昇格・DB運用手順を整備する | [#14](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/14) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P4-01`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/14)、[`docs/roadmap.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/roadmap.md)、[ADR-0002](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0002-triple-store-as-rebuildable-projection.md) / [ADR-0011](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0011-database-privilege-separation.md)。minimal構成は本番ハードニングの証明ではない。 |
+| `P4-02` | 可観測性とAPI・VKGの負荷限界を検証する | [#8](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/8) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P4-02`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/8)、[`P3-01`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L2432) / [`P3-05`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L2596) / [`P3-08`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L2693)、[`P2A-08`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1) / [`P2A-14`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1)、[`P2B-12`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1)、[ADR-0024](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0024-namespace-delete-locking.md) / [ADR-0047](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0047-definition-data-divergence.md) / [ADR-0048](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0048-vkg-access-log.md)。 |
+| `P4-07` | awesome-azdへ申請する | [#11](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/11) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P4-07`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/11)、[`docs/roadmap.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/roadmap.md)。外部掲載申請は未実施。 |
+| `P4-08` | v0.1.0のリリース条件を確定して公開する | [#9](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/9) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P4-08`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/9)。GitHub releaseは無く、Python/Webは0.0.1、azd templateは0.1.0。 |
+| `P4-09` | 公開文書とUIの状態・名称・検証範囲を現行へ揃える | [#13](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/13) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P4-09`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/13)、[ADR-0051](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0051-display-name.md)。README/architecture/packages/api/READMEには実装済みを未実装とする記述が残る。 |
+| `P2A-23` | Webレビュー・グラフ・ローカルMSALを実ブラウザで検証する | [#20](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/20) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P2A-03`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1085) / [`P2A-04`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1) / [`P2A-20`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L960)、[ADR-0044](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0044-review-ui.md) / [ADR-0045](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0045-web-auth.md)。純関数とlocalhost URI登録では描画・認証往復は未確認。 |
+| `P2A-24` | platform-adminのない別主体の実機403を確認する | [#17](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/17) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) P2A-09の実機未検証項目、[ADR-0014](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0014-namespace-rbac.md)。手元の管理者トークンでは拒否経路を確認できていない。 |
+| `P2A-25` | MCP認可の発見メタデータとクライアント互換性を決める | [#16](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/16) | 任意/条件付き | [ADR-0012](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0012-mcp-to-core-api-authentication.md)の未解決事項。Protected Resource Metadata/WWW-Authenticate discoveryのフル対応は未着手。 |
+| `P2A-26` | 実エージェントからMCPへ認証接続する手順を実証する | [#15](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/15) | 必須 | [ADR-0012](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0012-mcp-to-core-api-authentication.md)の未解決事項。verify-mcp-auth.shによる実トークンE2Eとエージェント製品での設定を区別する。 |
+| `P2A-27` | MCP固有スコープが必要になった場合のOBO移行を設計する | [#21](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/21) | 任意/条件付き | [ADR-0012](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0012-mcp-to-core-api-authentication.md)。現行は検証した呼出元トークンを転送する。別スコープを必要とする実要求は未確定。 |
+| `P2A-28` | 名前空間ロール管理UIの採用範囲を決める | [#18](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/18) | 任意/条件付き | READMEの未実装項目、[ADR-0014](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0014-namespace-rbac.md)。ロールAPIは実装済み、管理UIは別の課題。 |
+| `P2A-29` | PostgreSQL以外のスキーマ検出の採用範囲を決める | [#22](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/22) | 任意/条件付き | [ADR-0041](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0041-source-schema-scan.md)、[`docs/architecture.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/architecture.md)。VKGのSQL Serverドライバ同梱はスキーマ検出対応の証拠ではない。 |
+| `P2A-30` | Blob文書取り込みとLLMメタデータ強化の採用範囲を決める | [#19](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/19) | 任意/条件付き | [`docs/architecture.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/architecture.md)の構想と[ADR-0041](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0041-source-schema-scan.md) / [ADR-0043](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0043-ontology-proposal.md)のmetadata-only・draft生成の境界。 |
+| `P2B-24` | audit_eventsを厳密な追記専用にするか決める | [#24](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/24) | 任意/条件付き | [ADR-0011](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0011-database-privilege-separation.md)の未解決事項。UPDATE禁止とprojected_at等の更新要件を整理する必要がある。 |
+| `P2B-25` | reconcileの内容相違検出と保持整合を設計する | [#29](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/29) | 任意/条件付き | [ADR-0013](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0013-reconcile-repairs-observed-divergence.md)の未解決事項。既定グラフの存在は別版の内容ではないことを証明しない。 |
+| `P2B-26` | Entraグループへの名前空間ロール付与を設計する | [#30](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/30) | 任意/条件付き | [ADR-0014](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0014-namespace-rbac.md)の未解決事項。グループOIDをprincipal_idへ入れるだけでは入れ子/解決を扱えない。 |
+| `P2B-27` | 同一人物の複数IDと四眼原則の扱いを決める | [#25](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/25) | 任意/条件付き | [ADR-0014](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0014-namespace-rbac.md)の未解決事項。同じ人がuser/service principal等の複数識別子を持つ場合の別人判定。 |
+| `P2B-28` | 用語責任者への問い合わせ・通知経路を決める | [#23](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/23) | 任意/条件付き | [ADR-0015](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0015-term-owners.md) / [ADR-0040](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0040-term-owner-not-an-approval-gate.md)。責任者の解決は実装済み、実際に届けるメール/Teams/Issue等は未決。 |
+| `P2B-29` | 用語責任者の一括付与と責任者別逆引きを設計する | [#27](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/27) | 任意/条件付き | [ADR-0015](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0015-term-owners.md)の未解決事項。一括運用とprincipal別の用語一覧は既存単一用語APIとは別。 |
+| `P2B-30` | 廃止された用語の責任者を保持する方針を決める | [#28](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/28) | 任意/条件付き | [ADR-0015](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0015-term-owners.md) / [ADR-0017](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0017-deprecation-lifecycle.md)の未解決事項。廃止後の問い合わせ先と履歴の扱いが未決。 |
+| `P2B-31` | 廃止参照・クエリ本文警告・推移的後継の拡張を判断する | [#26](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/26) | 任意/条件付き | [ADR-0017](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0017-deprecation-lifecycle.md)の残る問い。mapping先の生死とRDF結果の警告は[ADR-0030](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0030-mapping-target-lifecycle.md) / [ADR-0038](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0038-rdf-deprecation-warning.md)で実装済み。 |
+| `P2B-32` | 意味的差分の制約強弱・正規化・推論後比較を判断する | [#38](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/38) | 任意/条件付き | [ADR-0016](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0016-semantic-diff.md)の未解決事項。modifiedの強化/緩和、空白ノードの島ごとの正規化、推論後差分。 |
+| `P2B-33` | PROV-Oのページングと監査IRI参照方式を決める | [#34](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/34) | 任意/条件付き | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P2A-07`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1) / [`P2A-17`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1)、[ADR-0026](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0026-provenance-export.md) / [ADR-0036](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0036-jsonld-serialization.md)。期間分割とurn採用の先に残る問い。 |
+| `P2B-34` | 名前空間横断の監査・アクセス照会の認可を設計する | [#35](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/35) | 任意/条件付き | [ADR-0006](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0006-ontology-versioning-and-audit.md) / [ADR-0018](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0018-context-access-log.md)、[`P2B-11`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1)。単一名前空間の監査APIは完了、全体照会の認可は未決。 |
+| `P2B-35` | GRAPH句で参照した版のアクセス記録を設計する | [#36](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/36) | 任意/条件付き | [ADR-0018](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0018-context-access-log.md)の未解決事項。既定グラフの版の記録とGRAPHで読む版は異なる。 |
+| `P2B-36` | term_accessを保持中イベントから再構築する経路を設計する | [#32](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/32) | 任意/条件付き | [ADR-0018](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0018-context-access-log.md)の未解決事項。集約表の再構築口は無い。 |
+| `P2B-37` | 保持期間の既定値・参照中版・draftの運用方針を決める | [#33](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/33) | 任意/条件付き | [ADR-0010](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0010-approval-and-projection.md) / [ADR-0018](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0018-context-access-log.md) / [ADR-0019](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0019-retention-policy.md)。SUPERSEDED_RETAIN、ログ保持、namespace別policy、参照中版、rejected/draftの問いが残る。 |
+| `P2B-38` | 外部承認システム連携の採否と統制を決める | [#31](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/31) | 任意/条件付き | [ADR-0010](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0010-approval-and-projection.md)の未解決事項。Webhook/ポーリング等の外部連携は未決。 |
+| `P2B-39` | 健全性の用語別鮮度・時系列・閾値・横断集計を判断する | [#37](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/37) | 任意/条件付き | [ADR-0020](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0020-health-metrics.md)の未解決事項。単時点healthは実装済み。 |
+| `P2B-40` | 利用者オントロジーの推論検査と不完全警告の運用を決める | [#39](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/39) | 任意/条件付き | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P2B-01`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1)、[ADR-0005](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0005-reasoner-boundary.md) / [ADR-0021](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0021-owl-reasoning-in-ci.md) / [ADR-0028](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0028-no-entailment-projection.md)。サンプルのELK CIは完了、利用者のTTLへの経路と不完全警告UXは別。 |
+| `P2B-41` | 想定質問のrdflib/Fuseki差と病的クエリの打切りを検証する | [#40](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/40) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P2B-14`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1)、[ADR-0022](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0022-competency-question-sets.md)。承認時rdflibと射影後Fusekiの差、重いクエリの安全な打切りが未確認。 |
+| `P3-14` | 実モデルの埋め込み検索とAzure PostgreSQL拡張を検証する | [#47](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/47) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P3-02`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L2511) / [`P3-13`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/12)、[ADR-0050](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0050-vector-search-in-postgres.md)。実装完了だが実埋め込みモデルのE2Eとazure.extensionsの動的/再起動要否は未確認。 |
+| `P3-15` | SQL ServerのVKG照会と乖離検出を実機確認する | [#42](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/42) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P3-01`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L2432) / [`P3-05`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L2596)、[ADR-0046](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0046-virtual-knowledge-graph.md) / [ADR-0047](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0047-definition-data-divergence.md)。mssql-jdbcは同梱したが実確認はPostgreSQLのみ。 |
+| `P4-10` | Issueベース開発とClaude/Copilot共通指示へ移行する | [#44](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/44) | 必須 | 利用者の残作業全件Issue化依頼とCopilot対応の追加レビュー。現行backlog正本と[`CLAUDE.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/CLAUDE.md)だけの指示を移行する。 |
+| `P4-11` | Copilotクラウドエージェントの開発環境を用意する | [#45](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/45) | 必須 | Issue移行時の追加レビュー。.github/workflows/copilot-setup-steps.ymlは未作成。指示ファイル対応と環境再現は別。 |
+| `P4-12` | Dev Containerと並行作業の環境再現性を確認する | [#43](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/43) | 必須 | [`.devcontainer/devcontainer.json`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/.devcontainer/devcontainer.json)、[`justfile`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/justfile)、[`docker-compose.yml`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docker-compose.yml)、[`packages/api/tests/conftest.py`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/packages/api/tests/conftest.py)。postCreateはuv/justまで、全手順未検証。 |
+| `P4-13` | CIのpaths-filterを検査対象の依存関係へ揃える | [#41](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/41) | 必須 | [`.github/workflows/ci.yml`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/.github/workflows/ci.yml)。[`scripts/setup-app-role.py`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/scripts/setup-app-role.py)だけの変更ではpython jobが走らず、test_setup_app_role_cli.pyは同スクリプトを読む。 |
+| `P4-14` | mainの保護・必須CI・レビューのマージ方針を決める | [#46](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/46) | 必須 | Issue移行時のGitHub API確認。mainはBranch not protected、repository rulesetsは0件。 |
+| `P4-15` | 共通検査コマンドとWindows/Linuxの手順を揃える | [#49](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/49) | 必須 | [`justfile`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/justfile)、AGENTS.md、CI。check-allはWeb/全シェル等を含まず、up-vkgのstdin '<'はPowerShellとの互換性が未確認。 |
+| `P4-16` | 2つ目のNode workspace packageのライセンス検査を確認する | [#50](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/50) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P4-03`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md#L1)、[ADR-0049](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0049-license-scanning-in-ci.md)、[`scripts/check-licenses.py`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/scripts/check-licenses.py)。pnpm licenses listはapps/webから実行し別packageは未検証。 |
+| `P4-17` | Java依存・コンテナ基盤のライセンス検査範囲を決める | [#51](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/51) | 任意/条件付き | [ADR-0049](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0049-license-scanning-in-ci.md)決定6、[`docs/third-party-licenses.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/third-party-licenses.md)。現行自動検査はJava/基盤imageを意図的に範囲外としている。 |
+| `P4-18` | GitHub ActionsのSHA固定とDependabot更新方針を整備する | [#48](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/48) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) P4-07補足、ci.yml先頭。最新tagへの更新は完了したがSHA固定/Dependabotは無い。 |
+
+### 表外の候補・追加レビューの対応表
+
+完了タスクの残検証と未決事項も、次のようにIssueまたは除外へ対応させた。
+同じIssueに統合した候補も、それぞれ受け入れ条件/対象へ含める。
+
+| 棚卸し候補 | 対応 |
+|---|---|
+| ローカルMSALの対話的往復 | [`P2A-23` / #20](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/20) |
+| レビュー・承認・グラフの実ブラウザ描画と操作 | [`P2A-23` / #20](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/20) |
+| platform-adminを持たない別主体が実環境で403になること | [`P2A-24` / #17](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/17) |
+| 実モデルでの埋め込み・API/MCP検索E2E | [`P3-14` / #47](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/47) |
+| Azure PGのazure.extensionsが動的か、再起動が必要か | [`P3-14` / #47](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/47) |
+| SQL Serverでの照会・乖離検出 | [`P3-15` / #42](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/42) |
+| 大規模テーブルの照会・ASK/COUNTコスト | [`P4-02` / #8](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/8) |
+| VKGイベント量・保持期間の適正 | [`P4-02` / #8](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/8) |
+| 2つ目のNodeパッケージがライセンス検査に入るか | [`P4-16` / #50](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/50) |
+| Java依存・コンテナ基盤のライセンス検査範囲 | [`P4-17` / #51](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/51) |
+| ActionsのSHA固定とDependabotの方針 | [`P4-18` / #48](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/48) |
+| Protected Resource Metadata/WWW-Authenticateの発見経路 | [`P2A-25` / #16](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/16) |
+| Foundry等の実エージェントからの認証接続手順 | [`P2A-26` / #15](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/15) |
+| 固有スコープが必要な場合のMI/FICによるOBO移行 | [`P2A-27` / #21](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/21) |
+| 複数運用者へのontology_owner付与手順 | [`P4-01` / #14](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/14) |
+| audit_eventsのUPDATE禁止を厳密化するか | [`P2B-24` / #24](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/24) |
+| 既定グラフの内容相違の検出 | [`P2B-25` / #29](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/29) |
+| 保持ポリシーと修復対象の整合 | [`P2B-25` / #29](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/29) |
+| 高頻度修復を異常として通知 | [`P4-02` / #8](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/8) |
+| Entraグループと入れ子グループ対応 | [`P2B-26` / #30](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/30) |
+| 同一人物の複数IDと四眼原則 | [`P2B-27` / #25](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/25) |
+| 責任者への通知経路 | [`P2B-28` / #23](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/23) |
+| 用語の一括付与と責任者別逆引き | [`P2B-29` / #27](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/27) |
+| 廃止された用語の責任者を残すか | [`P2B-30` / #28](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/28) |
+| 別名前空間の廃止用語への参照 | [`P2B-31` / #26](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/26) |
+| 結果が空でもクエリ本文中の廃止IRIを警告 | [`P2B-31` / #26](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/26) |
+| 推移的な後継A→B→Cの解決 | [`P2B-31` / #26](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/26) |
+| 制約の強化/緩和の分類 | [`P2B-32` / #38](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/38) |
+| 空白ノードの島ごとの正規化 | [`P2B-32` / #38](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/38) |
+| 推論後の意味的差分 | [`P2B-32` / #38](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/38) |
+| PROV-Oのページング | [`P2B-33` / #34](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/34) |
+| 監査IRIのdereference方針 | [`P2B-33` / #34](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/34) |
+| 名前空間横断の監査・アクセス照会 | [`P2B-34` / #35](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/35) |
+| GRAPH句で参照した版の解決 | [`P2B-35` / #36](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/36) |
+| term_accessをイベントから再構築する口 | [`P2B-36` / #32](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/32) |
+| ログ保持期間・SUPERSEDED_RETAIN既定値とガイド | [`P2B-37` / #33](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/33) |
+| 参照中の版の保持 | [`P2B-37` / #33](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/33) |
+| 名前空間別ポリシーを持つか | [`P2B-37` / #33](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/33) |
+| rejected/draftのライフサイクル | [`P2B-37` / #33](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/33) |
+| 外部承認システムとの連携 | [`P2B-38` / #31](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/31) |
+| 用語単位の再承認の古さ | [`P2B-39` / #37](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/37) |
+| 指標の時系列、閾値・警告、名前空間横断集計 | [`P2B-39` / #37](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/37) |
+| 利用者のオントロジーに対する推論検査の経路 | [`P2B-40` / #39](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/39) |
+| 「不完全」の警告が読み流される問題 | [`P2B-40` / #39](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/39) |
+| rdflib/Fusekiの判定差と病的なクエリの打ち切り | [`P2B-41` / #40](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/40) |
+| 本番のロック待ちタイムアウト | [`P4-02` / #8](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/8) |
+| ストア応答全体がメモリに載る | [`P4-02` / #8](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/8) |
+| PostgreSQL以外のスキーマ検出 | [`P2A-29` / #22](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/22) |
+| Blob文書取り込みとLLMメタデータ強化 | [`P2A-30` / #19](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/19) |
+| 名前空間ロールの管理画面 | [`P2A-28` / #18](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/18) |
+| 状態説明・未解決の問い・MCP監査等の古い記述 | [`P4-09` / #13](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/13) |
+| Claude/Copilot共通指示 | [`P4-10` / #44](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/44) |
+| Copilotクラウド環境セットアップ | [`P4-11` / #45](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/45) |
+| クラウド環境の制約と復旧手順 | [`P4-11` / #45](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/45) |
+| Dev Container/Codespacesの再現性 | [`P4-12` / #43](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/43) |
+| CI paths-filterの検査漏れ | [`P4-13` / #41](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/41) |
+| mainの保護とマージ条件 | [`P4-14` / #46](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/46) |
+| PRテンプレートの証拠欄 | [`P4-10` / #44](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/44) |
+| 共通の検査入口と説明 | [`P4-15` / #49](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/49) |
+| 作業面とDBの隔離 | [`P4-12` / #43](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/43) |
+| バージョン・リリース整合 | [`P4-08` / #9](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/9) |
+| パッケージ文書・公開HTMLの古い説明 | [`P4-09` / #13](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/13) |
+| スキル・カスタムエージェント移植 | 除外: 共有 .claude agents/skills は現状存在しない。個人環境のスキルを共有要件にしない |
+
+### 重複起票しないもの
+
+| 候補 | 判断・根拠 |
+|---|---|
+| principalTypeのazd変数連携 | 解決済み: infra/main.parameters.jsonにAZURE_PRINCIPAL_TYPE連携がある。P1-11の古い補足だけで再起票しない |
+| 責任者管理・MSAL導入・PROV系譜・idtyp | 実装/判断済み: ADR-0015/0027/0035/0045。残る実機確認は別Issueで追跡 |
+| マッピング先の生死・退役・RDF廃止警告 | 解決済み: ADR-0030/0032/0037/0038。旧文書の矛盾はP4-09へ |
+| SHACLのpattern/datatype/maxCount/class・property path | ADR-0047で受け入れた対象外。乖離報告のconclusiveを保つ。無条件に機能実装必須としない |
+| DESCRIBE/空白ノードラベル/NULL/呼出主体依存指標 | ADR-0034/0037/0039/0047で明記した制約。測れなかったことを成功扱いしない |
+| 品質点数ゲート・AIによる矛盾判断・全社単一ontology | 見送り: ADR-0009。下の見送り履歴を保持する |
+| IRI削除/再利用・owl:equivalentClass領域統合・含意射影 | 却下: ADR-0017/0023/0028。今回のIssue化で復活させない |
+| Purview必須化・HermiT同梱・Smithy契約 | 却下: ADR-0004/0005/0007。任意機能の採否とは区別する |
 
 ---
 
 ## 今すぐ着手すべきもの
+
+**ここから末尾の状態表・補足は移行前の履歴である。**
+旧「未着手」や「未解決」の記述から着手可否を判断せず、上のIssue索引から最新状態を確認する。
+古い記述が後続ADR/実装で解決されている場合は重複起票しない。
 
 **Phase 1 は全 22 件が完了した（2026-09-09）。Phase 2 も完了した（2026-09-13）。**
 現在は Phase 3 を進めている（`P3-01` と `P3-02` が完了。**実データを実体化せずに
