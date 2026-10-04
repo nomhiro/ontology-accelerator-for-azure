@@ -298,7 +298,7 @@ PROV-O の書き出しは**測った事実だけを標準語彙で主張しま�
 | Azure Developer CLI (`azd`) | 最新 |
 | Docker | 最新(Compose v2 を含む) |
 | uv | 最新 |
-| pnpm | 最新 |
+| pnpm | 9 |
 | Node.js | 22 |
 | Python | 3.12 |
 | just | 最新(タスクランナー) |
@@ -308,6 +308,8 @@ Windows 環境では、リポジトリ同梱の [Dev Container](.devcontainer/) 
 ### ローカル開発
 
 タスクは `just` にまとめてあります(Windows / Linux / macOS で同じコマンドが使えます)。`just` だけを実行すると一覧が出ます。
+`just check` は高速な Python 検査、`just check-all` は Azure provisioning・
+資格情報/権限変更・破壊的 cleanup を除く全ローカル検査の入口です。
 
 `just dev-api` は uvicorn を直接起動するだけで、コンテナ用の `docker-entrypoint.sh` を経由しません。そのため Azure 実行時に注入される環境変数(`AUTH_MODE=entra` の既定値、Entra 経由の PostgreSQL 接続など)がここでは設定されず、そのままでは `just up` で立てたローカルの PostgreSQL に接続できません。**先に `.env` を用意してください。**
 
@@ -316,11 +318,20 @@ cp .env.example .env   # AUTH_MODE=disabled / POSTGRES_PASSWORD=localdev など�
 just setup      # 依存関係を入れる (uv sync --all-packages + pnpm install)
 just up         # Fuseki + PostgreSQL + Azurite を起動し、正本 Blob のコンテナを作る
 just migrate    # PostgreSQL にテーブルを作る (alembic upgrade head)
+just up-vkg     # ローカルの vkg schema を作り直し、Ontop を起動
 just dev-api    # Core API を起動 (http://localhost:8000)
 just dev-mcp    # MCP サーバーを起動 (別ターミナル)
 just dev-web    # Web を起動 (別ターミナル)
 just down       # 停止する (データは残る / just clean でデータも消す)
 ```
+
+PowerShellでは最初の行を `Copy-Item .env.example .env` に読み替えます。
+Git Bash/Linuxでは表示どおり `cp` を使い、それ以降の `just` recipe は全OS共通です。
+
+`just check-all` は `just up` 済みのローカルサービス、Docker、jq、curl、uv、
+pnpm、Azure CLI(Bicep buildのみ)を必要とします。API 型生成は Web build の前に
+自動実行されます。Azure 実環境への provision、認証/権限変更、破壊的 cleanup は
+この入口から実行しません。
 
 `.env` を用意せずに `just dev-api` を起動すると、`GET /namespaces` は次のいずれかで失敗します。`.env` が無ければまず 401(`AUTH_MODE` の既定 `entra` でトークン必須)、`AUTH_MODE=disabled` だけを指定しても `POSTGRES_PASSWORD` が空だと Entra 経由の接続に切り替わり 500、`just migrate` を実行していなければ `relation "namespaces" does not exist` で 500 になります。`.env.example` と `just migrate` はこれらすべてに対応します。
 

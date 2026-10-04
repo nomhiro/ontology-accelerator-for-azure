@@ -28,11 +28,13 @@ setup-web:
 # 検査
 # ---------------------------------------------------------------------------
 
-# lint・型検査・テストをまとめて実行する(integration は含まない)
+# 高速な Python の lint・型検査・単体テストを実行する
 check: lint typecheck test
 
-# lint・型検査・テスト・integrationテストをすべて実行する(CI と同じ内容)
-check-all: lint typecheck test test-integration
+# Azure への接続・provision・破壊的操作を除くローカル検査をすべて実行する。
+# Web の型生成は build-web より前、ローカルサービスを使う検査は
+# test-integration / test-vkg の中でそれぞれ必要な前提を確認する。
+check-all: check gen-api build-web test-integration test-shell test-reasoner test-vkg check-licenses lint-infra
 
 lint:
     uv run ruff check .
@@ -56,6 +58,10 @@ typecheck-web:
 test-web:
     pnpm --filter @ontology-accelerator/web test
 
+# Web の型検査・テスト・本番ビルド(型は gen-api の後に生成済み)
+build-web:
+    pnpm --filter @ontology-accelerator/web build
+
 # 単体テスト(DB不要)
 test:
     uv run pytest -m "not integration"
@@ -74,8 +80,10 @@ check-questions questions="samples/retail-core.questions.yaml" dataset="retail-c
 # 要求するため docker 経由で回す(Windows には jq が既定で無い)。
 # シェルスクリプトのテストをすべて実行する(要: uv、docker)
 test-shell:
+    sh scripts/lint-shell.sh
     sh scripts/preprovision.test.sh
     docker run --rm -v "{{justfile_directory()}}:/w" -w /w alpine:3.20 sh -c       'apk add --no-cache jq >/dev/null && sh containers/fuseki/lib/validate.test.sh && sh containers/fuseki/load-snapshot.test.sh'
+    docker run --rm -v "{{justfile_directory()}}:/mnt" -w /mnt koalaman/shellcheck:v0.11.0       scripts/check-reasoning.sh scripts/lint-shell.sh scripts/postdeploy.sh       scripts/preprovision.sh scripts/preprovision.test.sh scripts/verify-mcp-auth.sh       containers/fuseki/entrypoint.sh containers/fuseki/load-snapshot.sh       containers/fuseki/load-snapshot.test.sh containers/fuseki/lib/validate.sh       containers/fuseki/lib/validate.test.sh containers/reasoner/reasoner-check.test.sh       containers/ontop/ontop-check.test.sh
 
 # OWL 推論器(ELK)で論理的整合性を検査する(ADR-0021)。要: docker、uv
 #
@@ -104,7 +112,8 @@ test-vkg:
 # ローカルの PostgreSQL に流してから Ontop を起動する。
 # 仮想グラフ(Ontop VKG)をローカルで起動する(`just up` では起動しない)
 up-vkg:
-    docker compose exec -T postgres psql -q -U ontology -d ontology < containers/ontop/testdata/schema.sql
+    docker compose cp containers/ontop/testdata/schema.sql postgres:/tmp/ontology-vkg-schema.sql
+    docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 -U ontology -d ontology       -c 'DROP SCHEMA IF EXISTS vkg CASCADE' -f /tmp/ontology-vkg-schema.sql
     docker compose --profile vkg up -d --build ontop
 
 # ADR-0050(`P3-02`)。**実物の PostgreSQL に対してしか確かめられない部分**を
@@ -155,11 +164,11 @@ up:
 
 # 停止する(データは残る)
 down:
-    docker compose down
+    docker compose --profile vkg down
 
 # 停止してデータも消す
 clean:
-    docker compose down -v
+    docker compose --profile vkg down -v
 
 # DBマイグレーションを適用する(要: just up、.env を用意しておくこと)
 #
