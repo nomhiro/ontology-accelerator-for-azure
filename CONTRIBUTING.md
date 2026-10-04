@@ -89,9 +89,7 @@ Azure資格情報を渡したり、検証として無断でprovisionを実行し
 
 ## 開発環境
 
-> 既存の手順です。クリーンDev Container/Codespacesや各OSでの再現性の残検証は
-> [`P4-12`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/43) /
-> [`P4-15`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/49) で追跡します。
+同じ `just` recipe を PowerShell、Git Bash、Linux/Dev Container で使います。
 
 ### 前提ツール
 
@@ -99,7 +97,7 @@ Azure CLI / Azure Developer CLI (`azd`) / Docker / uv / pnpm / Node.js 22 / Pyth
 
 pnpmはCIと同じ9系を使います。シェル検査には `sh` / `jq` が必要です。
 Windows固有の注意とDocker経由の検査は [AGENTS.md](AGENTS.md) を読んでください。
-同梱 [Dev Container](.devcontainer/) の完全な再現性は未確認です。
+同梱 [Dev Container](.devcontainer/) も Node.js 22 / pnpm 9 に固定しています。
 
 ### セットアップ
 
@@ -110,36 +108,61 @@ cp .env.example .env # PowerShellでは Copy-Item .env.example .env
 just setup      # 依存関係を入れる (uv sync --all-packages + pnpm install)
 just up         # Fuseki + PostgreSQL + Azurite、Blob container/vector/pg_trgm初期化
 just migrate    # .envを明示的に読み、DBテーブルを作る
+just up-vkg     # ローカルの vkg schema を題材データで作り直し、Ontopを起動
 just gen-api    # Webの生成型を準備
 just dev-api    # Core API を起動
 just dev-mcp    # MCP サーバーを起動 (別ターミナル)
 just dev-web    # Web を起動 (別ターミナル)
 ```
 
+最初の `.env` の作成だけがOSで異なります。PowerShellは
+`Copy-Item .env.example .env`、Git Bash/Linuxは `cp .env.example .env` を
+使います。それ以降の `just setup` / `up` / `migrate` / `up-vkg` / `check-all`
+は共通です。Git Bashでも `MSYS_NO_PATHCONV` をシェル全体へ export しないで
+ください。recipe がDockerへ渡すパスを管理します。
+
 ### 検証
 
 Pull Requestでは該当領域の検査を実行し、コマンドと結果を記録してください。
-`just check` はintegrationを含まず、`just check-all`もCI全体を網羅しません。
-完全なコマンドとOSごとの注意は [AGENTS.md](AGENTS.md#検証)、
-実際のジョブは [CI](.github/workflows/ci.yml) を参照してください。
+`just check` は高速な Python 検査、`just check-all` は Azure provisioning・
+資格情報操作・破壊的 cleanup を除くローカル検査の統合入口です。CI は同じ検査を
+ジョブごとに並列実行します。完全なコマンドとOSごとの注意は
+[AGENTS.md](AGENTS.md#検証)、実際のジョブは [CI](.github/workflows/ci.yml) を
+参照してください。
 
 ```bash
 just check          # Python lint + strict型検査 + 単体テスト
-just check-all      # 上記 + integration（要: ローカルサービス）
+just check-all      # 上記 + 型生成/Web/integration/全個別検査
 just gen-api        # Webの型検査/ビルドの前に生成
 pnpm --filter @ontology-accelerator/web build # Webの型検査・テスト・ビルド
-just lint-infra     # Bicepを変更した場合
-just test-shell     # Fusekiシェルとpreprovisionの検査
+just test-shell     # shellcheck・移植性・Fuseki・preprovision
 just test-reasoner  # 推論器の実コンテナ検査
 just test-vkg       # Ontop/PostgreSQLの実コンテナ検査
-just check-licenses # 依存ライセンス検査
+just check-licenses # Python + Node の依存ライセンス検査
+just lint-infra     # Bicep の構文検査
 ```
 
-シェル変更では `sh scripts/lint-shell.sh` とCIと同じshellcheck v0.11.0も実行します。
-`just test-shell`だけですべてのシェル検査が済んだとは書かないでください。
+`just check-all` は `just up` 済みのローカルサービス、Docker、jq、curl、uv、
+pnpm、Azure CLI(Bicep buildのみ)を必要とします。Azure provisioning、実テナントの
+認証・権限変更、`just clean` / `azd down --purge` は含みません。
 pytestは同じDBに対して2プロセス同時に走らせないでください。
 テストのfixtureがスキーマを再作成します。Dockerと公開ポートを事前に確認し、
 サービス未起動をコードの失敗と混同しないでください。
+
+| ローカル入口 | 含む検査 | 対応するCI job |
+|---|---|---|
+| `just check` | Ruff、format、strict mypy、非integration pytest | `python` |
+| `just gen-api` + `just build-web` | API型生成、Web型検査、89 tests、Vite build | `web` |
+| `just test-integration` | PostgreSQL/Azurite/Fusekiを使うpytest | `python` |
+| `just test-shell` | shellcheck 0.11.0、移植性、preprovision、Fuseki loader | `shell` |
+| `just test-reasoner` | ELKの実コンテナ検査 | `reasoner` |
+| `just test-vkg` | Ontop/PostgreSQLの実コンテナ検査 | `vkg` |
+| `just check-licenses` | Python/Node依存ライセンス | `python` |
+| `just lint-infra` | Bicep build | `infra` |
+| `just check-all` | 上記すべてを表の順序で実行 | 上記jobの集合 |
+
+CIの `containers` job は配布イメージのbuild検査であり、ローカルの各実機検査が
+必要なイメージをbuildするため `check-all` へ別重複では追加しません。
 
 Azure実機確認は課金の事前承認が必要です。検証後は `azd down --purge` を完了させ、
 RG・論理削除されたKey Vault等が消えたことを副作用で確認します。

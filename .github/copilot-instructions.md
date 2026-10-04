@@ -48,9 +48,11 @@ types. Prove a regression test fails before fixing the code. Preserve errors
 and unknown/incomplete states; do not turn them into success or empty results.
 Generate API types with `just gen-api` before Web type checks/builds. Never
 run pytest processes simultaneously against the same DB (fixtures rebuild it).
-`just check` excludes integration; `just check-all` still excludes Web and
-other checks. Use the full relevant commands in `AGENTS.md` and CI, and report
-what was not run. Keep UTF-8/LF and follow OS-specific shell rules.
+`just check` is the fast Python lint/typecheck/unit-test entry point; `just
+check-all` is the complete local validation entry point except Azure
+provisioning, credential/permission changes, and destructive cleanup. Use the
+full relevant commands in `AGENTS.md` and CI, and report what was not run.
+Keep UTF-8/LF and follow OS-specific shell rules.
 
 Azure deployment incurs costs: obtain explicit approval, then tear down with
 `azd down --purge` and verify resources and soft-deleted vaults are gone.

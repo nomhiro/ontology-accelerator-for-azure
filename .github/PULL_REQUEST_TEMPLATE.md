@@ -32,9 +32,10 @@
 - [ ] ID・出典・判断・リンクを変更した場合: `docs/backlog.md` の索引も更新した
 - [ ] 対応 Issue に検証結果と未検証事項を残した
 
-`just check` は integration を含みません。`just check-all` も Web・ライセンス・
-シェル・推論器・VKG・Bicep の全検査を含むわけではありません。
-該当しないチェックは未選択のまま、下に理由を書いてください。
+`just check` は高速な Python 検査です。`just check-all` は Web・ライセンス・
+シェル・推論器・VKG・Bicep・integration を含む全ローカル検査ですが、Azure
+provisioning、資格情報/権限変更、破壊的 cleanup は含みません。実行できない検査は
+未選択のまま、下に理由を書いてください。
 
 ### 検証の証拠
 

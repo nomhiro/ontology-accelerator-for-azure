@@ -153,6 +153,8 @@ just dev-api             # Core API 起動
 変更をコミットする前に全部通すこと。
 
 ```bash
+just check                                     # 高速な Python lint・型検査・単体テスト
+just check-all                                 # Azure操作を除く全ローカル検査
 uv run pytest                                  # 1546 件(件数は増える。減っていたら何かを壊している)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy packages
@@ -166,15 +168,20 @@ sh scripts/preprovision.test.sh                # provision を止めるゲート
 sh containers/reasoner/reasoner-check.test.sh  # OWL 推論器の検査(要: docker、uv。約 2 分)
 sh containers/ontop/ontop-check.test.sh        # 仮想グラフの実機確認(要: docker、uv、curl。約 2 分)
 sh scripts/check-reasoning.sh samples          # 同梱サンプルの論理的整合性(要: docker、uv)
-# **Git Bash では docker の前に変換抑止が必要。** 無いと `-w /mnt` が
-# `C:/Program Files/Git/mnt` に変換されて docker が拒否する(実測)。
-# **`export` ではなく前置きにする** — 広げると uv が壊れる(下の罠を参照)。
-# shellcheck は CI と同じバージョンを使う(apt 版 0.9.0 と指摘が違うため固定)
-MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
-docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
-  scripts/*.sh containers/fuseki/*.sh containers/fuseki/lib/*.sh containers/reasoner/*.sh containers/ontop/*.sh
+just test-shell                                # shellcheck 0.11.0 を含む全shell検査
 az bicep build --file infra/main.bicep --stdout > /dev/null
 ```
+
+`just check-all` は `just gen-api`、Web build、integration、shell、
+reasoner、VKG、ライセンス、Bicep の各検査を含む。Azure provisioning、
+資格情報/権限変更、`just clean` や `azd down --purge` のような破壊的操作は
+含まない。`just up` 済みのローカルサービス、Docker、jq、curl、uv、pnpm、
+Azure CLI(Bicep buildのみ)が必要である。PowerShell、Git Bash、Linux で同じ
+`just` レシピを使えるよう、シェル依存の入力リダイレクトは避ける。
+`.env` の作成だけは PowerShell で `Copy-Item .env.example .env`、Git Bash /
+Linux で `cp .env.example .env` を使う。以後は共通の `just setup` / `up` /
+`migrate` / `up-vkg` / `check-all` を使う。`up-vkg` はローカルの `vkg` schemaを
+題材データで作り直す。Git Bashでパス変換抑止をシェル全体へexportしない。
 
 **Azure へのデプロイは費用が発生する。** `azd up` は約 11 分、`azd down --purge` は約 24 分。実施前に確認を取り、**検証後は必ず `azd down --purge`** する。
 
