@@ -69,8 +69,22 @@ jobs:
               # **`pnpm-lock.yaml` も含める** — Node の依存が増えたときに
               # ライセンスを検査しないと、この仕組みの意味が無い。
               - 'scripts/check-licenses.py'
+              # Python job のテストは scripts/*.py を実際に読み込む。
+              - 'scripts/**/*.py'
               - 'pnpm-lock.yaml'
               - 'apps/web/package.json'
+              # 統合テストと開発用エントリポイントが読む実行設定。
+              - 'docker-compose.yml'
+              - '.env.example'
+              - 'justfile'
+              - '.devcontainer/**'
+              # branding 契約テストが読む公開文書とテンプレート名。
+              - 'azure.yaml'
+              - 'README.md'
+              - 'CONTRIBUTING.md'
+              - 'SECURITY.md'
+              - 'CODE_OF_CONDUCT.md'
+              - 'NOTICE'
               # packages/api/tests/test_isolation.py が実物の Fuseki に対して
               # containers/fuseki/config.ttl の SERVICE 無効化(arq:httpServiceAllowed)
               # を検証している。containers/ 側だけの変更(config.ttl から誤って
@@ -99,6 +113,7 @@ jobs:
             containers:
               - 'containers/**'
               - 'packages/*/Dockerfile'
+              - 'docker-compose.yml'
               - '.github/workflows/ci.yml'
             # シェルスクリプトの検査。**`scripts/**` を含める。**
             # 以前は `shell` ジョブが `containers` フィルタで動いていたため、
