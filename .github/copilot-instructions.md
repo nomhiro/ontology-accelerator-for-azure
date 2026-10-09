@@ -57,3 +57,13 @@ Keep UTF-8/LF and follow OS-specific shell rules.
 Azure deployment incurs costs: obtain explicit approval, then tear down with
 `azd down --purge` and verify resources and soft-deleted vaults are gone.
 Do not run provisioning or destructive cleanup as an environment check.
+
+## Copilot cloud environment
+
+The `.github/workflows/copilot-setup-steps.yml` workflow prepares local PostgreSQL,
+Fuseki, and Azurite, applies database migrations, creates the Blob container, and
+generates API types. It does not run test suites. GitHub may still start the agent
+after a setup step fails, so verify required services before relying on them:
+inspect `docker compose ps`, query PostgreSQL with `SELECT 1`, and check Fuseki at
+`http://localhost:3030/$/ping`. Report setup failures and checks that could not be
+run; never treat unavailable services as empty data or a passing check.

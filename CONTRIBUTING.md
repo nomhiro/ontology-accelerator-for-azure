@@ -34,10 +34,33 @@ Copilot CLI・クラウドエージェントはCLAUDE.mdにも対応しますが
 実際に使うクライアントで適用を確認してください。
 
 指示ファイルの整備と、クラウド環境で依存・DB・型生成・検査が動くことは別です。
-クラウドsetupは [`P4-11`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/45)、
-Dev Container再現性は [`P4-12`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/43) で追跡します。
-今回クラウドエージェントの実動確認はしていません。エージェントに
-Azure資格情報を渡したり、検証として無断でprovisionを実行したりしないでください。
+P4-10の指示整備ではクラウド環境の実動を確認していません。クラウドsetupとその確認は
+[`P4-11`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/45)、
+Dev Container再現性は
+[`P4-12`](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/43) で追跡します。
+エージェントにAzure資格情報を渡したり、検証として無断でprovisionを実行したりしないでください。
+
+### Copilotクラウドエージェントのセットアップ
+
+`.github/workflows/copilot-setup-steps.yml` は、Copilotの作業前にPython/Node依存と
+PostgreSQL・Fuseki・Azuriteを準備し、DB migration、Blob container作成、API型生成、
+サービスのreadinessを確認します。`just check`、integration test、`just check-all`は
+自動実行しません。検査はタスクに必要なものをエージェントが選びます。
+
+GitHubの仕様上、このworkflowがdefault branchに存在しない間はCopilotのセットアップに
+使われません。またsetupのstepが失敗すると後続stepは省略されますが、Copilotは不完全な
+環境でも作業を開始し得ます。setup結果はCopilotのsession logsとActionsのworkflow runで
+確認してください。必要なら`docker compose ps`と`docker compose logs postgres fuseki azurite`
+で状態を調べ、PostgreSQLは`docker compose exec -T postgres psql -U ontology -d ontology -c 'SELECT 1'`、
+Fusekiは`curl -fsS 'http://localhost:3030/$/ping'`でreadinessを確かめます。
+Azuriteは`uv run python scripts/init-local-storage.py`でBlob container作成を再試行できます。
+不足している場合は原因を解消してから必要なセットアップを再実行します
+（依存は`uv sync --all-packages`と`pnpm install --frozen-lockfile`、サービスは
+`docker compose up -d --build postgres fuseki azurite`、DB拡張はCompose内のPostgreSQLへ
+`CREATE EXTENSION IF NOT EXISTS vector`と`CREATE EXTENSION IF NOT EXISTS pg_trgm`を適用し、
+migration/API型生成は`just migrate`と`just gen-api`）。`.env`が無い場合だけ
+`.env.example`から作成します。検査を実行できないときは成功扱いせず、未実施項目と
+エラーをそのまま報告してください。
 
 ## 行動規範
 
