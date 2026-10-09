@@ -1,0 +1,160 @@
+name: Copilot setup steps
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+      - .env.example
+      - apps/web/package.json
+      - docker-compose.yml
+      - justfile
+      - packages/api/alembic/**
+      - packages/api/pyproject.toml
+      - packages/core/pyproject.toml
+      - packages/mcp-server/pyproject.toml
+      - pnpm-lock.yaml
+      - pyproject.toml
+      - scripts/init-local-storage.py
+      - uv.lock
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+      - .env.example
+      - apps/web/package.json
+      - docker-compose.yml
+      - justfile
+      - packages/api/alembic/**
+      - packages/api/pyproject.toml
+      - packages/core/pyproject.toml
+      - packages/mcp-server/pyproject.toml
+      - pnpm-lock.yaml
+      - pyproject.toml
+      - scripts/init-local-storage.py
+      - uv.lock
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install just
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl --proto '=https' --tlsv1.2 -LsSf https://just.systems/install.sh \
+            | sh -s -- --to "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify development tools
+        run: |
+          uv --version
+          node --version | grep -Eq '^v22\.'
+          pnpm --version | grep -Eq '^9\.'
+          just --version
+          java -version 2>&1 | grep -Eq 'version "21\.'
+          jq --version
+
+      - name: Install locked dependencies
+        run: |
+          uv sync --all-packages
+          uv run python -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+          pnpm install --frozen-lockfile
+
+      - name: Start local services
+        run: |
+          if [ ! -f .env ]; then cp .env.example .env; fi
+          docker compose up -d --build postgres fuseki azurite
+
+      - name: Wait for PostgreSQL query readiness
+        run: |
+          set -eu
+          ready=false
+          for attempt in $(seq 1 60); do
+            if docker compose exec -T postgres \
+              psql -q -U ontology -d ontology -c 'SELECT 1' >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            echo "::error::PostgreSQL did not complete SELECT 1 readiness"
+            docker compose logs postgres >&2
+            exit 1
+          fi
+
+      - name: Wait for Fuseki HTTP readiness
+        run: |
+          set -eu
+          ready=false
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent 'http://localhost:3030/$/ping' >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            echo "::error::Fuseki did not respond successfully at /$/ping"
+            docker compose logs fuseki >&2
+            exit 1
+          fi
+
+      - name: Initialize local development services
+        run: |
+          docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 \
+            -U ontology -d ontology \
+            -c 'CREATE EXTENSION IF NOT EXISTS vector' \
+            -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm'
+          uv run python scripts/init-local-storage.py
+
+      - name: Apply database migrations
+        run: just migrate
+
+      - name: Generate API types
+        run: just gen-api
+
+      - name: Verify initialized services
+        run: |
+          set -eu
+          docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 \
+            -U ontology -d ontology \
+            -c 'SELECT 1'
+          extensions=$(docker compose exec -T postgres psql -qAt \
+            -U ontology -d ontology \
+            -c "SELECT count(*) = 2 FROM pg_extension WHERE extname IN ('vector', 'pg_trgm')")
+          if [ "$extensions" != "t" ]; then
+            echo "::error::PostgreSQL is missing vector or pg_trgm"
+            exit 1
+          fi
+          migration=$(docker compose exec -T postgres psql -qAt \
+            -U ontology -d ontology \
+            -c 'SELECT count(*) > 0 FROM alembic_version')
+          if [ "$migration" != "t" ]; then
+            echo "::error::No Alembic migration was recorded"
+            exit 1
+          fi
+          curl --fail --silent --show-error 'http://localhost:3030/$/ping'
