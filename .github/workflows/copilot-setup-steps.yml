@@ -61,12 +61,9 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Install just
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl --proto '=https' --tlsv1.2 -LsSf https://just.systems/install.sh \
-            | sh -s -- --to "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: extractions/setup-just@v4
+        with:
+          just-version: "1"
 
       - name: Verify development tools
         run: |
