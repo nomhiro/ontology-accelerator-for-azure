@@ -2,21 +2,6 @@ name: Copilot setup steps
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - .github/workflows/copilot-setup-steps.yml
-      - .env.example
-      - apps/web/package.json
-      - docker-compose.yml
-      - justfile
-      - packages/api/alembic/**
-      - packages/api/pyproject.toml
-      - packages/core/pyproject.toml
-      - packages/mcp-server/pyproject.toml
-      - pnpm-lock.yaml
-      - pyproject.toml
-      - scripts/init-local-storage.py
-      - uv.lock
   pull_request:
     paths:
       - .github/workflows/copilot-setup-steps.yml
