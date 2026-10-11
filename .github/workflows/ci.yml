@@ -9,11 +9,14 @@ on:
 permissions:
   contents: read
 
-# ## アクションの版(`P4-04`、2026-09-13 に更新)
+# ## アクションの版と固定(`P4-04` / `P4-18`)
 #
 # **7 つすべてが Node 24 の実行環境へ移った**(Actions Runner v2.327.1 以降が
 # 必要。GitHub ホストのランナーは自動更新される)。更新前に各メジャーの
 # リリースノートを読み、**この設定に効く破壊的変更が無いことを確かめた**。
+# さらに全 Action を upstream で照合した 40 文字の commit SHA で固定している。
+# `# vX` / `# vX.Y.Z` は Dependabot が更新に使う版情報であり、タグ自体を実行時に
+# 参照するものではない。更新方針は [ADR-0054](../../docs/adr/0054-github-actions-sha-pinning.md)。
 #
 # | アクション | 版 | 確かめたこと |
 # |---|---|---|
@@ -24,9 +27,12 @@ permissions:
 # | `docker/setup-buildx-action` | v4 | Node 24 化のみ |
 # | `dorny/paths-filter` | v4 | Node 24 化のみ |
 # | `pnpm/action-setup` | v6 | v6 は pnpm 11 への対応。**`version: 9` は変えない** — `pnpm-lock.yaml` が `lockfileVersion: '9.0'` なので、メジャーを上げると `--frozen-lockfile` が落ちる |
+# | `actions/setup-java` | v5 | Copilot setup で Java 21 を設定する。workflow は Java 21 を検査する |
+# | `extractions/setup-just` | v4 | Copilot setup で just 1 系を設定する |
 #
-# **SHA では固定していない。** タグ固定のままなのは意図した状態ではなく、
-# 供給網の固定は `P4-07` で扱う(バックログに追記した)。
+# `uses` は全て SHA で固定する。Dependabot は週次の GitHub Actions 更新 PR を作る。
+# PR は自動マージせず、既存 CI の結果を確認して人がレビューする(ADR-0053 のとおり、
+# 人手レビュー数を branch protection の必須条件にはしない)。
 
 # **main では打ち消さない**(P2A-12)。
 #
@@ -55,8 +61,8 @@ jobs:
       reasoner: ${{ steps.filter.outputs.reasoner }}
       vkg: ${{ steps.filter.outputs.vkg }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -168,9 +174,9 @@ jobs:
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
 
@@ -242,10 +248,10 @@ jobs:
       #
       # **`licenses list --json` の出力の形は 9 と 10 で同じ**ことを実測した
       # (dict: ライセンス → パッケージの配列)。ローカルは 10 である。
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 9
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -259,13 +265,13 @@ jobs:
     if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 9
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -279,7 +285,7 @@ jobs:
       #
       # **ここで生成することが検出の仕組みそのものである**(ADR-0044 決定2)。
       # API を変えて Web が追従していなければ、次の `build`(`tsc`)が落ちる。
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
 
@@ -299,7 +305,7 @@ jobs:
     if: needs.changes.outputs.infra == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Bicep をビルドして構文を検証する
         run: az bicep build --file infra/main.bicep --stdout > /dev/null
@@ -325,13 +331,12 @@ jobs:
             context: containers/ontop
             dockerfile: containers/ontop/Dockerfile
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Windows 上で書いたシェルスクリプトが Linux で動くことを含めて検証する。
       - name: イメージをビルドする
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -355,9 +360,9 @@ jobs:
     if: needs.changes.outputs.reasoner == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # 検査結果の JSON の判定に uv（ontology_core.console）を使う。
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - name: 依存関係を入れる
@@ -391,9 +396,9 @@ jobs:
     if: needs.changes.outputs.vkg == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # 応答の JSON の判定に uv（ontology_core.console）を使う。
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - name: 依存関係を入れる
@@ -406,7 +411,7 @@ jobs:
     if: needs.changes.outputs.shell == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # **バージョンを固定した docker イメージを使う。** ubuntu-latest に apt で
       # 入る shellcheck は 0.9.0 で、ローカルで使っていた 0.11.0 と指摘が違う
       # （0.9.0 だけが SC2015 を出した）。**ローカルの検査が CI より緩い**状態は、
@@ -439,7 +444,7 @@ jobs:
       # check-platform-admin.py（ontology_core を import する）を本物として
       # 実行する。トークンの解釈こそが検証したい対象なので、そこはスタブに
       # しない（P2A-09）。
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - name: 依存関係を入れる
