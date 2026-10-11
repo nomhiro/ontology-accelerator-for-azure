@@ -16,7 +16,11 @@ bare `python` in shell scripts. Under `set -e`, capture nonzero exits with
 suppression only to the specific docker/ARM-ID command, never export it.
 Keep new Bicep parameters string-compatible with azd substitution.
 
-Verify action tags exist before updating; setup-uv's exact `v10.1.0` must not
-be guessed into `v10`. Respect paths-filter dependencies and main's
-non-cancelling CI runs. A skipped check is not evidence of a test passing.
+Pin external workflow actions to verified full commit SHAs and retain the
+release tag/version in a comment so Dependabot can track updates. Dependabot
+updates GitHub Actions weekly only; review proposed versions and CI results
+without auto-merging or widening workflow permissions. Verify action tags
+before updating; setup-uv's exact `v10.1.0` must not be guessed into `v10`.
+Respect paths-filter dependencies and main's non-cancelling CI runs. A skipped
+check is not evidence of a test passing.
 Container/JDBC changes must retain TLS verification and license/SHA records.

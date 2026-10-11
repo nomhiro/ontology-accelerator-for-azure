@@ -92,7 +92,7 @@ milestoneの集計カウンターと直接割当が食い違ったため、集�
 | `P4-15` | 共通検査コマンドとWindows/Linuxの手順を揃える | [#49](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/49) | 必須 | [`justfile`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/justfile)、AGENTS.md、CI。check-allはWeb/全シェル等を含まず、up-vkgのstdin '<'はPowerShellとの互換性が未確認。 |
 | `P4-16` | 2つ目のNode workspace packageのライセンス検査を確認する | [#50](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/50) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) [`P4-03`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md)、[ADR-0049](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0049-license-scanning-in-ci.md)、[`scripts/check-licenses.py`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/scripts/check-licenses.py)。pnpm licenses listはapps/webから実行し別packageは未検証。 |
 | `P4-17` | Java依存・コンテナ基盤のライセンス検査範囲を決める | [#51](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/51) | 任意/条件付き | [ADR-0049](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/adr/0049-license-scanning-in-ci.md)決定6、[`docs/third-party-licenses.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/third-party-licenses.md)。現行自動検査はJava/基盤imageを意図的に範囲外としている。 |
-| `P4-18` | GitHub ActionsのSHA固定とDependabot更新方針を整備する | [#48](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/48) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) P4-07補足、ci.yml先頭。最新tagへの更新は完了したがSHA固定/Dependabotは無い。 |
+| `P4-18` | GitHub ActionsのSHA固定とDependabot更新方針を整備する | [#48](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/48) | 必須 | [`docs/backlog.md`](https://github.com/nomhiro/ontology-accelerator-for-azure/blob/6b1ecd89c76ec943e3b0e4e13ee4817f7390d585/docs/backlog.md) P4-07補足、[ADR-0054](adr/0054-github-actions-sha-pinning.md)。 |
 | `P4-19` | Dev Containerのツール版とサービス転送ポートを固定する | [#56](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/56) | 必須 | [P4-12 / #43](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/43) の実測で確認した、未追跡のDev Container lockfile、未固定の初期化ツール、ComposeとforwardPortsの不一致を扱う。 |
 | `P4-20` | paths-filter対応のmain必須CI集約checkを追加する | [#60](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/60) | 必須 | [P4-14 / #46](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/46)、[ADR-0053](adr/0053-main-branch-protection.md)。7つの条件付きjobの正当なskipと必要jobの未実行を区別する、常時実行・fail-closedの集約checkが存在しない。 |
 
@@ -3232,7 +3232,7 @@ Node パッケージを足したときに拾えるかは確かめていない。
 
 ---
 
-### `P4-07` の補足: タグ固定のままである
+### `P4-07` の補足: Action の SHA 固定（`P4-18` で対応）
 
 `P4-04` で 7 つのアクションを最新メジャーへ上げたが、**SHA では固定して
 いない**。タグは動かせるので、供給網の観点では弱い。
@@ -3240,6 +3240,12 @@ Node パッケージを足したときに拾えるかは確かめていない。
 **awesome-azd の申請（`P4-07`）と v0.1.0（`P4-08`）の前に決める。**
 固定すると更新のたびに SHA を引き直す手間が増えるので、Dependabot の
 設定と合わせて判断する（現時点で Dependabot は設定していない）。
+
+この判断と実装は `P4-18` / [Issue #48](https://github.com/nomhiro/ontology-accelerator-for-azure/issues/48)
+で行った。2026-10-11 に `.github/workflows/` の外部 Action を upstream のタグと
+照合した commit SHA へ固定し、GitHub Actions のみを週次で更新する Dependabot 設定を
+追加した。人手レビューと自動マージなしの方針、pnpm 9 / lockfile の範囲は
+[ADR-0054](adr/0054-github-actions-sha-pinning.md) に記録した。
 
 ---
 
@@ -3273,7 +3279,8 @@ being forced to run on Node.js 24」と警告していた（実測。2026-09-13 
 成り立たない** — CLAUDE.md に罠として追記した。
 
 **SHA では固定していない。** タグ固定のままなのは意図した状態ではなく、
-供給網の固定は `P4-07` の範囲で扱う（下記に追記した）。
+供給網の固定は `P4-07` の範囲で扱う（下記に追記した）。その後の決定・実装は
+`P4-18` / [ADR-0054](adr/0054-github-actions-sha-pinning.md) に記録した。
 
 ---
 
